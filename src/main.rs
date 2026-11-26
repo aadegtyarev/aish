@@ -14,7 +14,10 @@ fn main() -> ExitCode {
         return ExitCode::from(127);
     }
     let _log = llmsh::shell::init_logging();
-    match llmsh::run() {
+    // A panic is a failed start too: unwinding restores the terminal, then bash.
+    let res = std::panic::catch_unwind(llmsh::run)
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("llmsh panicked")));
+    match res {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             // Never leave the user without a shell: log and fall back to plain bash.

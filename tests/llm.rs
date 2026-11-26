@@ -1104,3 +1104,33 @@ fn the_completion_sidecar_sourcing_bashrc_is_not_replaced_by_llmsh() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "survived");
 }
+
+#[test]
+fn failed_start_falls_back_to_a_usable_bash_without_looping() {
+    let home = TempDir::new().unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_llmsh"), bin.join("llmsh")).unwrap();
+    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
+    let (code, out, err) = run_init(init_cmd(&home, &["--yes"], &[]));
+    assert_eq!(code, 0, "{out}{err}");
+    let mut c = Command::new("bash");
+    c.arg("-i")
+        .env_clear()
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("HOME", home.path())
+        .env("HISTFILE", home.path().join("hist"))
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("TERM", "xterm")
+        // every llmsh start fails; the block would exec llmsh forever without the guard
+        .env("LLMSH_TEST_FAIL_START", "1");
+    let mut p = spawn(c);
+    p.expect("E> ").unwrap();
+    p.send("echo ok-$((6*7)) $LLMSH_DISABLE\r").unwrap();
+    p.expect("ok-42 1").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

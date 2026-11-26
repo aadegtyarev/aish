@@ -635,6 +635,104 @@ struct Stage {
     roots: Option<Vec<String>>,
 }
 
+/// Names a recursive search must never read, wherever they are in the tree.
+const SECRET_NAMES: &[&str] = &[
+    ".env*",
+    "*.env",
+    "id_*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.kdbx",
+    "*.keystore",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".pgpass",
+    ".netrc",
+    "_netrc",
+    ".bash_history",
+    ".zsh_history",
+    ".sh_history",
+    ".python_history",
+    ".psql_history",
+    ".mysql_history",
+    ".node_repl_history",
+    ".lesshst",
+    "shadow*",
+    "gshadow*",
+    "sudoers*",
+    "hosts.yml",
+];
+const SECRET_DIR_NAMES: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".password-store",
+    ".kube",
+    ".docker",
+    "gcloud",
+    "aider",
+];
+
+/// `argv` with exclusions for every secret pattern, placed last (before a
+/// `--`) so they win over any `--include`/`-g` the user gave.
+fn with_excludes(argv: &[String], rg: bool) -> Vec<String> {
+    let mut extra: Vec<String> = Vec::new();
+    for n in SECRET_NAMES {
+        extra.push(if rg {
+            format!("--glob=!{n}")
+        } else {
+            format!("--exclude={n}")
+        });
+    }
+    for d in SECRET_DIR_NAMES {
+        extra.push(if rg {
+            format!("--glob=!{d}")
+        } else {
+            format!("--exclude-dir={d}")
+        });
+    }
+    let at = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+    let mut out = argv[..at].to_vec();
+    out.extend(extra);
+    out.extend_from_slice(&argv[at..]);
+    out
+}
+
+/// Executable `name` found through PATH entries that are absolute and not
+/// inside the working tree (a planted `./git` must never run).
+pub fn resolve_program(name: &str, cwd: &str) -> Option<PathBuf> {
+    resolve_in(name, cwd, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+fn resolve_in(name: &str, cwd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let cwd_real = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+    safe_dirs_in(path, &cwd_real).into_iter().find_map(|d| {
+        let p = d.join(name);
+        let m = std::fs::metadata(&p).ok()?;
+        (m.is_file() && m.permissions().mode() & 0o111 != 0).then_some(p)
+    })
+}
+
+/// PATH entries that are safe to use from `cwd`.
+pub fn safe_path_dirs(cwd_real: &Path) -> Vec<PathBuf> {
+    safe_dirs_in(&std::env::var_os("PATH").unwrap_or_default(), cwd_real)
+}
+
+fn safe_dirs_in(path: &std::ffi::OsStr, cwd_real: &Path) -> Vec<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|d| d.is_absolute() && d.components().all(|c| c != Component::ParentDir))
+        .filter(|d| {
+            let real = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
+            // at `/` everything is "inside": system directories stay usable
+            cwd_real == Path::new("/") || (!real.starts_with(cwd_real) && !d.starts_with(cwd_real))
+        })
+        .collect()
+}
+
 fn stage_plan(w: &[String]) -> Option<Stage> {
     let name = w.first()?.as_str();
     let args = &w[1..];
@@ -726,7 +824,7 @@ fn stage_plan(w: &[String]) -> Option<Stage> {
         })),
         "du" => {
             let p = simple(&Spec {
-                short: "abchHkLmsxS",
+                short: "abchHkmsxS",
                 short_val: "dt",
                 long: &[
                     "all",
@@ -822,7 +920,7 @@ fn stage_plan(w: &[String]) -> Option<Stage> {
         }),
         "grep" => {
             let p = simple(&Spec {
-                short: "EFGiIvwxcLlonbHhqsaTUrR",
+                short: "EFGiIvwxcLlonbHhqsaTUr",
                 short_val: "eAmBCf",
                 long: &[
                     "extended-regexp",
@@ -845,7 +943,6 @@ fn stage_plan(w: &[String]) -> Option<Stage> {
                     "no-messages",
                     "text",
                     "recursive",
-                    "dereference-recursive",
                     "color",
                     "colour",
                     "null",
@@ -865,16 +962,19 @@ fn stage_plan(w: &[String]) -> Option<Stage> {
                 ],
                 digits: false,
             })?;
-            let rec =
-                p.has("r") || p.has("R") || p.has("recursive") || p.has("dereference-recursive");
+            let rec = p.has("r") || p.has("recursive");
             Some(Stage {
-                argv: w.to_vec(),
+                argv: if rec {
+                    with_excludes(w, false)
+                } else {
+                    w.to_vec()
+                },
                 roots: rec.then(|| search_roots(&p)),
             })
         }
         "rg" => {
             let p = simple(&Spec {
-                short: "iIsSvwxclLnNHhqFuU",
+                short: "iIsSvwxclnNHhqFuU",
                 short_val: "eAmBCtgj",
                 long: &[
                     "ignore-case",
@@ -918,7 +1018,7 @@ fn stage_plan(w: &[String]) -> Option<Stage> {
             })?;
             // rg always walks directories
             Some(Stage {
-                argv: w.to_vec(),
+                argv: with_excludes(w, true),
                 roots: Some(search_roots(&p)),
             })
         }
@@ -1107,7 +1207,26 @@ fn find_stage(w: &[String]) -> Option<Stage> {
 
 /// Existing path-like words, resolved: a symlink must not smuggle a secret.
 fn paths_ok(words: &[String], cwd: &str) -> bool {
-    words.iter().all(|w| {
+    // path-like parts of a word: itself, `--opt=VALUE`, `-fVALUE`, `rev:path`
+    let mut parts: Vec<String> = Vec::new();
+    for w in words {
+        parts.push(w.clone());
+        if w.starts_with('-') {
+            if let Some((_, v)) = w.split_once('=') {
+                parts.push(v.to_owned());
+            }
+            if !w.starts_with("--") && w.len() > 2 {
+                parts.push(w[2..].to_owned());
+            }
+        }
+        if let Some((_, v)) = w.split_once(':') {
+            parts.push(v.to_owned());
+        }
+        if let Some((_, v)) = w.rsplit_once(':') {
+            parts.push(v.to_owned());
+        }
+    }
+    parts.iter().all(|w| {
         if is_secret_path(w) {
             return false;
         }
@@ -1549,5 +1668,117 @@ mod tests {
         assert!(Path::new(&p.stages[0][1]).is_absolute() || home().is_empty());
         let p = plan("ls '~/x'", &[], "/tmp/x").unwrap();
         assert_eq!(p.stages[0][1], "~/x");
+    }
+
+    #[test]
+    fn round2_recursive_search_excludes_secret_names_last() {
+        let p = plan("grep -r --include='*' KEY .", &[], "/tmp/x").unwrap();
+        let a = &p.stages[0];
+        let inc = a.iter().position(|x| x == "--include=*").unwrap();
+        let ex = a.iter().position(|x| x == "--exclude=.env*").unwrap();
+        assert!(ex > inc, "excludes come after the user's --include: {a:?}");
+        assert!(
+            a.contains(&"--exclude-dir=.ssh".to_owned())
+                && a.contains(&"--exclude=id_*".to_owned())
+        );
+        assert!(
+            a.contains(&"KEY".to_owned()) && a.contains(&".".to_owned()),
+            "{a:?}"
+        );
+        // before a `--`, never after it
+        let p = plan("grep -r -- KEY .", &[], "/tmp/x").unwrap();
+        let a = &p.stages[0];
+        let dd = a.iter().position(|x| x == "--").unwrap();
+        assert!(a.iter().position(|x| x == "--exclude=.env*").unwrap() < dd);
+        // rg: always, `-uu` and --hidden keep working but the excludes win
+        for c in [
+            "rg KEY",
+            "rg -uu KEY .",
+            "rg --hidden --no-ignore KEY src",
+            "rg -g '*.rs' KEY",
+        ] {
+            let p = plan(c, &[], "/tmp/x").unwrap();
+            let a = &p.stages[0];
+            assert!(
+                a.contains(&"--glob=!.env*".to_owned()) && a.contains(&"--glob=!.ssh".to_owned()),
+                "{c}: {a:?}"
+            );
+            let last_glob = a.iter().rposition(|x| x.starts_with("--glob=")).unwrap();
+            assert!(
+                a.iter()
+                    .take(last_glob)
+                    .all(|x| x != "KEY" || c == "rg KEY")
+                    || last_glob > 0
+            );
+        }
+        // non-recursive grep of named files is not rewritten
+        assert_eq!(
+            plan("grep x a.txt", &[], "/tmp/x").unwrap().stages[0],
+            ["grep", "x", "a.txt"]
+        );
+    }
+
+    #[test]
+    fn round2_no_symlink_following_searches() {
+        for c in [
+            "grep -R x .",
+            "grep --dereference-recursive x .",
+            "rg -L x",
+            "rg --follow x",
+            "rg -uuL x",
+            "du -L .",
+        ] {
+            assert!(!ok(c), "{c}");
+        }
+        assert!(ok("grep -r x ."));
+    }
+
+    #[test]
+    fn round2_program_lookup_ignores_relative_and_cwd_entries() {
+        let d = std::env::temp_dir().join(format!("llmsh-pl-{}", std::process::id()));
+        let tree = d.join("proj");
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        let fake = tree.join("bin/git");
+        std::fs::write(&fake, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let ok_dir = d.join("trusted");
+        std::fs::create_dir_all(&ok_dir).unwrap();
+        let real = ok_dir.join("git");
+        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let path = std::env::join_paths([
+            PathBuf::from(""),
+            PathBuf::from("."),
+            PathBuf::from("bin"),
+            tree.join("bin"),
+            tree.join("bin/../bin"),
+            ok_dir.clone(),
+        ])
+        .unwrap();
+        let cwd = tree.to_str().unwrap();
+        assert_eq!(resolve_in("git", cwd, &path), Some(real));
+        let only_bad = std::env::join_paths([PathBuf::from("."), tree.join("bin")]).unwrap();
+        assert_eq!(resolve_in("git", cwd, &only_bad), None);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn round2_glued_values_and_rev_path_are_secret_checked() {
+        for c in [
+            "grep --file=id_rsa x",
+            "grep --file=~/.ssh/known x",
+            "grep -f.env x",
+            "grep -fid_ed25519 x",
+            "git show HEAD:.env",
+            "git show HEAD:~/.ssh/id_rsa",
+            "git show HEAD:config/prod.env",
+            "git show HEAD~2:id_rsa",
+        ] {
+            assert!(!ok(c), "{c}");
+        }
+        assert!(ok("git show HEAD:src/main.rs"));
+        assert!(ok("grep --file=pats.txt x"));
     }
 }

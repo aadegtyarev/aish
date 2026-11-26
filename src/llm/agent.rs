@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use llmsh_llm::{Error, Event, Message, Request, Tool, ToolCall};
 use serde_json::{json, Value};
 
-use super::allow::{is_secret_path, plan, Plan};
+use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
 use super::context::trim_middle;
 use super::render::{unsafe_cmd, Renderer};
@@ -139,12 +139,18 @@ fn cap(s: &str) -> String {
 /// Environment of an auto-run command: nothing inherited but the basics
 /// (no BASH_ENV, no hooks, no credentials); git is told not to run anything
 /// from configuration.
-fn clean_env(is_git: bool) -> Vec<(String, String)> {
+fn clean_env(is_git: bool, cwd: &str) -> Vec<(String, String)> {
     let var = |k: &str| std::env::var(k).ok();
     let mut e: Vec<(String, String)> = vec![
         (
             "PATH".into(),
-            var("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
+            std::env::join_paths(safe_path_dirs(
+                &std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.into()),
+            ))
+            .ok()
+            .and_then(|p| p.into_string().ok())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
         ),
         ("HOME".into(), var("HOME").unwrap_or_default()),
         ("TERM".into(), "dumb".into()),
@@ -205,11 +211,19 @@ fn run_plan(plan: &Plan, cwd: &str, cancel: &AtomicBool) -> (String, Option<i32>
             kill_all(&mut children, pgid);
             return ("cannot run".into(), None, false);
         };
-        let mut c = Command::new(prog);
+        let Some(exe) = resolve_program(prog, cwd) else {
+            kill_all(&mut children, pgid);
+            return (
+                format!("cannot run {prog}: not found in a trusted PATH directory"),
+                None,
+                false,
+            );
+        };
+        let mut c = Command::new(exe);
         c.args(&argv[1..])
             .current_dir(cwd)
             .env_clear()
-            .envs(clean_env(prog == "git"))
+            .envs(clean_env(prog == "git", cwd))
             .stdin(prev.take().map_or(Stdio::null(), Stdio::from))
             .stderr(Stdio::from(err))
             .process_group(pgid);

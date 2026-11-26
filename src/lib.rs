@@ -38,11 +38,18 @@ pub fn exec_bash(args: &[std::ffi::OsString], interactive: bool) -> std::io::Err
     if interactive {
         cmd.arg("-i");
     }
+    if interactive {
+        // The fallback after a failed start: ~/.bashrc must not start llmsh again.
+        cmd.env("LLMSH_DISABLE", "1");
+    }
     cmd.args(args).exec()
 }
 
 /// Run the shell under the proxy; returns its exit code.
 pub fn run() -> Result<i32> {
+    if std::env::var_os("LLMSH_TEST_FAIL_START").is_some() {
+        anyhow::bail!("start failure requested by LLMSH_TEST_FAIL_START");
+    }
     let mut enabled_modules: Option<Vec<String>> = None;
     match config::load() {
         Ok(Some(c)) => {
