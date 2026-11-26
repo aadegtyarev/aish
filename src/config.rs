@@ -133,18 +133,25 @@ impl Config {
             .roles
             .get(role)
             .ok_or_else(|| anyhow!("unknown role '{role}'"))?;
-        let (pid, alias) =
-            r.id.split_once('/')
-                .ok_or_else(|| anyhow!("role '{role}': id '{}' must be 'provider/alias'", r.id))?;
+        self.resolve_ref(&r.id, &r.effort)
+            .map_err(|e| anyhow!("role '{role}': {e}"))
+    }
+
+    /// Resolve a `provider/alias` reference; `effort` is the role-level setting.
+    pub fn resolve_ref(&self, id: &str, effort: &Setting<String>) -> Result<Resolved<'_>> {
+        let (pid, alias) = id
+            .split_once('/')
+            .ok_or_else(|| anyhow!("id '{id}' must be 'provider/alias'"))?;
         let provider = self
             .providers
             .iter()
             .find(|p| p.id == pid)
-            .ok_or_else(|| anyhow!("role '{role}': unknown provider '{pid}'"))?;
-        let (alias, model) = provider.models.get_key_value(alias).ok_or_else(|| {
-            anyhow!("role '{role}': provider '{pid}' has no model alias '{alias}'")
-        })?;
-        let effort = match &r.effort {
+            .ok_or_else(|| anyhow!("unknown provider '{pid}'"))?;
+        let (alias, model) = provider
+            .models
+            .get_key_value(alias)
+            .ok_or_else(|| anyhow!("provider '{pid}' has no model alias '{alias}'"))?;
+        let effort = match effort {
             Setting::Unset => model.effort.clone().value(),
             e => e.clone().value(),
         };

@@ -4,6 +4,7 @@ pub mod blocks;
 pub mod complete;
 pub mod config;
 pub mod editor;
+pub mod llm;
 pub mod module;
 pub mod modules;
 pub mod osc;
@@ -50,6 +51,8 @@ pub fn run() -> Result<i32> {
         Ok(None) => tracing::info!("no config"),
         Err(e) => tracing::warn!("config: {e:#}"),
     }
+    let llm = llm::Llm::new();
+    llm::firstrun::spawn(llm.clone());
     pty::clear_nonblock(0);
     pty::clear_nonblock(1);
     let rc = shell::install_rc()?;
@@ -104,6 +107,7 @@ pub fn run() -> Result<i32> {
             enabled_modules.as_deref(),
             nonce,
             std::fs::File::from(w),
+            llm,
         );
         (Some(ctl), Some(std::fs::File::from(r)))
     } else {

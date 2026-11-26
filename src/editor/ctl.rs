@@ -21,7 +21,8 @@ use lineedit_wip::{CursorReportFilter, Editor, Event, MemHistory, Theme};
 use super::resolve::Resolver;
 use super::scan::Scan;
 use crate::blocks::{Block, BlockTracker};
-use crate::module::{self, Env, Module};
+use crate::llm::Llm;
+use crate::module::{self, Env, Module, TaskMaker, TaskShared};
 
 /// Output silence after OSC 133;B before we take over the input line.
 pub const QUIET: Duration = Duration::from_millis(10);
@@ -92,6 +93,13 @@ pub struct Controller {
     events: Vec<Event>,
     notice: Vec<u8>,
     seen_blocks: u64,
+    llm: Arc<Llm>,
+    tasks: TaskMaker,
+    /// An answer is streaming: keys are buffered, Ctrl-C cancels.
+    task: Option<Arc<TaskShared>>,
+    /// Text for the input line at the next prompt (a command from the model).
+    pending_prefill: Option<String>,
+    typeahead: Vec<u8>,
 }
 
 fn width() -> u16 {
@@ -112,8 +120,16 @@ impl Controller {
         enabled: Option<&[String]>,
         nonce: String,
         wake: File,
+        llm: Arc<Llm>,
     ) -> Shared {
+        let wake = Arc::new(wake);
+        let tasks = TaskMaker {
+            stdout: Arc::new(stdout.try_clone().expect("dup stdout")),
+            wake: wake.clone(),
+        };
         let env = Env {
+            llm: llm.clone(),
+            tasks: tasks.clone(),
             tracker,
             resolver: Resolver::default(),
             history: SharedHistory::new(Box::new(MemHistory::default())),
@@ -122,7 +138,7 @@ impl Controller {
         // A late plugin result writes a byte to the wake pipe; the input thread
         // polls it next to stdin and calls `poll_plugins` (no lock taken here).
         let mut b = Editor::builder().theme(Theme::from_env()).waker(move || {
-            let _ = (&wake).write(&[1]);
+            let _ = (&*wake).write(&[1]);
         });
         for m in &mut modules {
             for p in m.editor_plugins(&env) {
@@ -144,6 +160,11 @@ impl Controller {
             events: Vec::with_capacity(8),
             notice: Vec::new(),
             seen_blocks: 0,
+            llm,
+            tasks,
+            task: None,
+            pending_prefill: None,
+            typeahead: Vec::new(),
         }))
     }
 
@@ -154,6 +175,7 @@ impl Controller {
     /// Prompt printed, nothing typed into bash's line, not yet ours.
     pub fn armed(&self) -> bool {
         self.scan.b_seen
+            && self.task.is_none()
             && !self.prompt
             && !self.dirty
             && !self.disabled
@@ -242,18 +264,41 @@ impl Controller {
         if !self.armed() {
             return;
         }
+        if let Some(n) = self.llm.take_notice() {
+            // bash's prompt is on this line: put the notice in its place and
+            // have bash repaint the prompt below (picked up at the next quiet).
+            let th = self.ed.theme();
+            let (a, b) = if th.enabled {
+                (format!("\x1b[{}m", th.dim), "\x1b[0m")
+            } else {
+                (String::new(), "")
+            };
+            let _ = write!(self.stdout, "\r\x1b[2K{a}{n}{b}\r\n");
+            self.scan.col = 0;
+            self.scan.b_seen = false;
+            self.send(REDRAW_KEY);
+            return;
+        }
         for m in &mut self.modules {
             m.on_prompt();
         }
         self.prompt = true;
         let w = width();
         self.ed.reset_screen(self.scan.column(w));
+        if let Some(p) = self.pending_prefill.take() {
+            self.ed.set_text(&p);
+        }
         let _ = self.stdout.write_all(b"\x1b[?2004h");
         if self.use_dsr {
             let _ = self.stdout.write_all(b"\x1b[6n");
             self.dsr = Some(Instant::now());
         }
         self.draw();
+        if !self.typeahead.is_empty() {
+            let mut ta = std::mem::take(&mut self.typeahead);
+            let n = ta.len();
+            self.on_input(&mut ta, n);
+        }
     }
 
     /// Leave prompt mode. `sent`: we are handing control to bash (a line,
@@ -270,6 +315,25 @@ impl Controller {
 
     /// Bytes from the keyboard. `buf[..n]` is valid; passthrough may rewrite it.
     pub fn on_input(&mut self, buf: &mut [u8], n: usize) -> Input {
+        if let Some(t) = &self.task {
+            let mut data = buf[..n].to_vec();
+            if self.dsr.is_some() {
+                let mut out = Vec::with_capacity(n);
+                if self.dsr_filter.filter(&buf[..n], &mut out) {
+                    self.dsr = None;
+                    out.extend(self.dsr_filter.take_held());
+                }
+                data = out;
+            }
+            for b in data {
+                if b == 0x03 {
+                    t.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                } else if self.typeahead.len() < 65536 {
+                    self.typeahead.push(b);
+                }
+            }
+            return Input::Handled(false);
+        }
         if !self.prompt {
             if let Some(t) = self.dsr {
                 let mut out = Vec::with_capacity(n);
@@ -308,6 +372,13 @@ impl Controller {
 
     /// A plugin delivered something (async completion...).
     pub fn poll_plugins(&mut self) {
+        if let Some(done) = self.task.as_ref().and_then(|t| t.take_done()) {
+            // The answer is over: bash gets Enter on its empty line and
+            // prints a fresh prompt, where the editor takes over again.
+            self.task = None;
+            self.pending_prefill = done;
+            self.send(b"\r");
+        }
         if !self.prompt {
             return;
         }
@@ -349,11 +420,18 @@ impl Controller {
                     }
                     let mut notice = std::mem::take(&mut self.notice);
                     notice.clear();
+                    let mut task = Some(self.tasks.make(self.ed.theme(), width()));
+                    let shared = task.as_ref().map(|t| t.shared.clone());
                     let handled = self
                         .modules
                         .iter_mut()
-                        .any(|m| m.on_intercept(&line, &mut notice));
-                    if handled {
+                        .any(|m| m.on_intercept(&line, &mut notice, &mut task));
+                    if handled && task.is_none() {
+                        // Answer comes from a worker thread; it writes the rows.
+                        let _ = self.ed.draw_final(&mut self.stdout, width(), &line);
+                        self.leave(true);
+                        self.task = shared;
+                    } else if handled {
                         // The typed line stays on screen, the notice follows,
                         // and a bare Enter makes bash print a fresh prompt (its
                         // line is empty: an empty block, which the tracker drops).
@@ -442,6 +520,7 @@ mod tests {
             Some(&[]),
             "n1".into(),
             null(),
+            Llm::new(),
         )
     }
 

@@ -42,7 +42,6 @@ bash's readline sees nothing until Enter, then the line is typed into bash
 the mode switch, `TERM=dumb`, `LLMSH_EDITOR=0`, or any program that is running
 (vim, ssh...) is plain passthrough. Output arriving while editing (background job)
 makes bash repaint its prompt below it and the line is redrawn.
-`?`-lines (see UX.md) are not sent to bash yet: a dim notice is printed.
 Robustness rules: our OSC 133 marks carry a per-session nonce (`llmsh=<id>`), so marks
 of foreign shells (ssh, docker exec, nested integrations) never start prompt mode. If bash
 echoes anything after the prompt mark (type-ahead typed during the previous command), that
@@ -72,6 +71,22 @@ red, strings yellow, `$vars` cyan, comments dim; `NO_COLOR` disables colors and 
 Completion candidates come from a long-lived `bash --norc -i` sidecar (pipes, no pty, own session)
 that sources bash-completion and `~/.bashrc`; answers arrive asynchronously (300 ms limit, then
 plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
+
+## Model features
+
+- `?`, `? text`, `?N text`, `?!` ask the chat model (context: last N blocks trimmed to a token
+  budget, cwd, OS, git). The answer streams under the line with a dim `│ `; Ctrl-C stops it
+  (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
+  Ctrl-C clears). `?!` starts a fresh conversation. Secrets are masked before text goes to a
+  non-local provider. Keys typed while it streams are applied afterwards.
+- `llmsh` (inside a session) shows the roles and whether they answer; `llmsh chat <provider/alias>`,
+  `llmsh complete <..>` switch a role for this session, `llmsh on|off` toggles model suggestions,
+  `llmsh config` puts `${EDITOR:-vi} ~/.config/llmsh/config.yaml` in the line. `llmsh status` and
+  `llmsh config` also work as CLI commands; any other arguments go to bash. Tab completes them.
+- First start without a config probes ollama (`:11434`), LM Studio (`:1234`) and `$OPENAI_API_KEY`
+  (override URLs for tests with `LLMSH_PROBE_OLLAMA`, `LLMSH_PROBE_LMSTUDIO`, `LLMSH_OPENAI_URL`),
+  writes a config and prints one line. The config is re-read when its mtime changes.
+- Network I/O (crate `crates/llmsh-llm`, blocking `ureq` on worker threads) never runs on the key path.
 
 ## License
 

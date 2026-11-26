@@ -214,7 +214,7 @@ fn model_line_does_not_reach_bash() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? hello\r").unwrap();
-    p.expect("model not connected yet").unwrap();
+    p.expect("модель не настроена · llmsh config").unwrap();
     p.expect("E> ").unwrap();
     settle();
     // A glob stays a shell command.

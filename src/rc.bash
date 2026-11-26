@@ -112,4 +112,6 @@ if (( __llmsh_mode > 0 )); then
 fi
 # llmsh asks for a prompt repaint after stray output with this private key.
 bind '"\e[1337~": redraw-current-line' 2>/dev/null
+# Our bracketed-paste submit must not flash the pasted text in reverse video.
+bind 'set enable-active-region off' 2>/dev/null
 unset LLMSH __llmsh_h1 __llmsh_h2

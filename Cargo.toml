@@ -26,8 +26,10 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
 lineedit-wip = { path = "crates/llmsh-editor" }
+llmsh-llm = { path = "crates/llmsh-llm" }
 vte = "0.15"
 
 [dev-dependencies]
 expectrl = "0.7"
 tempfile = "3"
+llmsh-llm = { path = "crates/llmsh-llm", features = ["mock"] }

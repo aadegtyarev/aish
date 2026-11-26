@@ -8,6 +8,8 @@ use lineedit_wip::Plugin;
 
 use crate::blocks::BlockTracker;
 use crate::complete::{complete_files, finish, Sidecar, TIMEOUT};
+use crate::llm::cmd::SUBS;
+use crate::llm::Llm;
 use crate::module::{Env, Module};
 
 pub struct CompletionModule;
@@ -47,6 +49,46 @@ impl CompletionSource for Bash {
     }
 }
 
+/// Completes `llmsh` subcommands and model references; everything else goes
+/// to the bash source.
+struct WithLlm {
+    inner: Bash,
+    llm: Arc<Llm>,
+}
+
+impl CompletionSource for WithLlm {
+    fn complete(&mut self, req: &Request, reply: Reply) -> Outcome {
+        if req.words.first().map(String::as_str) != Some("llmsh") || req.words.len() < 2 {
+            return self.inner.complete(req, reply);
+        }
+        let cur = req.cur();
+        let items: Vec<String> = match req.words.len() {
+            2 => SUBS.iter().map(|s| (*s).to_owned()).collect(),
+            3 if matches!(req.words[1].as_str(), "chat" | "complete") => self
+                .llm
+                .config()
+                .map(|c| {
+                    c.providers
+                        .iter()
+                        .flat_map(|p| p.models.keys().map(move |m| format!("{}/{m}", p.id)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => return Outcome::None,
+        };
+        let mut items: Vec<String> = items.into_iter().filter(|i| i.starts_with(cur)).collect();
+        items.sort();
+        if items.is_empty() {
+            return Outcome::None;
+        }
+        Outcome::Ready(lineedit_wip::completion::Candidates {
+            filenames: false,
+            nospace: false,
+            items,
+        })
+    }
+}
+
 impl Module for CompletionModule {
     fn name(&self) -> &'static str {
         "completion"
@@ -69,9 +111,12 @@ impl Module for CompletionModule {
                 resolver.set_extra(r.items.into_iter().skip(1));
             }
         });
-        vec![Box::new(CompletionPager::new(Bash {
-            sidecar: slot,
-            tracker: env.tracker.clone(),
+        vec![Box::new(CompletionPager::new(WithLlm {
+            inner: Bash {
+                sidecar: slot,
+                tracker: env.tracker.clone(),
+            },
+            llm: env.llm.clone(),
         }))]
     }
 }

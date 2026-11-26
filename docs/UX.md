@@ -115,13 +115,13 @@ llmsh лишь добавляет:
 
 ## Управление llmsh
 
-Одна встроенная функция `llm`, без подкоманд-зверинца:
+Внутри сессии строка `llmsh` / `llmsh <подкоманда>` перехватывается (голое `llm` не трогаем — оно принадлежит пользователю). Те же `llmsh status` и `llmsh config` работают и как обычные CLI-команды; прочие аргументы уходят в bash:
 
 ```
-$ llm              ← статус: провайдеры, роли, доступность (одна строка на роль)
-$ llm chat cloud/main       ← сменить модель роли (Tab дополняет имена)
-$ llm off / llm on          ← выключить/включить подсказки модели
-$ llm config                ← открыть ~/.config/llmsh/config.yaml в $EDITOR
+$ llmsh            ← статус: провайдеры, роли, доступность (одна строка на роль)
+$ llmsh chat cloud/main       ← сменить модель роли (Tab дополняет имена)
+$ llmsh off / llmsh on          ← выключить/включить подсказки модели
+$ llmsh config             ← кладёт `${EDITOR:-vi} ~/.config/llmsh/config.yaml` в строку ввода (Enter — открыть)
 ```
 
 ## Первый запуск
@@ -131,7 +131,7 @@ $ llm config                ← открыть ~/.config/llmsh/config.yaml в $E
 об этом одной строкой:
 
 ```
-llmsh · chat: cloud/gpt-6 · complete: local/qwen2.5-coder:1.5b · llm config — изменить
+llmsh · chat: cloud/gpt-6 · complete: local/qwen2.5-coder:1.5b · llmsh config — изменить
 ```
 
 Это единственный раз, когда llmsh говорит без спроса.

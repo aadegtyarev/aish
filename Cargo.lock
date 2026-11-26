@@ -379,6 +379,7 @@ dependencies = [
  "crossterm",
  "expectrl",
  "lineedit-wip",
+ "llmsh-llm",
  "nix 0.29.0",
  "serde",
  "serde_yaml",
