@@ -13,6 +13,7 @@ use nix::libc;
 use nix::pty::openpty;
 
 use crate::blocks::BlockTracker;
+use crate::editor::ctl::{self, Input, Shared, ESC_WAIT, QUIET};
 use crate::osc::Filter;
 
 /// Spawn `cmd` on a fresh pty as session leader with the pty as controlling
@@ -39,10 +40,28 @@ pub fn spawn(mut cmd: Command, ws: &libc::winsize) -> Result<(Child, File)> {
     Ok((child, File::from(pty.master)))
 }
 
+/// Wait up to `d` for `f` to become readable (or hang up).
+fn readable(f: &File, d: std::time::Duration) -> bool {
+    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+    let ms = PollTimeout::try_from(d).unwrap_or(PollTimeout::MAX);
+    let mut fds = [PollFd::new(f.as_fd(), PollFlags::POLLIN)];
+    !matches!(poll(&mut fds, ms), Ok(0))
+}
+
 /// Terminal -> pty. Raw blocking read/write, no buffering, no allocation.
-pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool) {
+/// With a controller, bytes are routed through the line editor while it owns
+/// the prompt and forwarded untouched otherwise.
+pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<Shared>) {
     let mut buf = [0u8; 4096];
+    let mut pending = false;
     loop {
+        if let (true, Some(c)) = (pending, &ed) {
+            if !readable(&stdin, ESC_WAIT) {
+                ctl::lock(c).flush_keys();
+                pending = false;
+                continue;
+            }
+        }
         match stdin.read(&mut buf) {
             Ok(0) => {
                 if !is_tty {
@@ -51,7 +70,20 @@ pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool) {
                 return;
             }
             Ok(n) => {
-                if master.write_all(&buf[..n]).is_err() {
+                let len = match &ed {
+                    None => n,
+                    Some(c) => match ctl::lock(c).on_input(&mut buf, n) {
+                        Input::Forward(l) => {
+                            pending = false;
+                            l
+                        }
+                        Input::Handled(p) => {
+                            pending = p;
+                            0
+                        }
+                    },
+                };
+                if len > 0 && master.write_all(&buf[..len]).is_err() {
                     return;
                 }
             }
@@ -63,11 +95,24 @@ pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool) {
 
 /// Pty -> terminal. Each chunk is forwarded first (minus private OSCs), and
 /// only then fed to the block tracker, so parsing never delays display.
-pub fn pump_output(mut master: File, mut stdout: File, tracker: Arc<Mutex<BlockTracker>>) {
+pub fn pump_output(
+    mut master: File,
+    mut stdout: File,
+    tracker: Arc<Mutex<BlockTracker>>,
+    ed: Option<Shared>,
+) {
+    let mut armed = false;
     let mut buf = vec![0u8; 64 * 1024];
     let mut out = Vec::with_capacity(buf.len());
     let mut filter = Filter::default();
     loop {
+        if let (true, Some(c)) = (armed, &ed) {
+            if !readable(&master, QUIET) {
+                ctl::lock(c).on_quiet();
+                armed = false;
+                continue;
+            }
+        }
         let n = match master.read(&mut buf) {
             Ok(0) => return,
             Ok(n) => n,
@@ -76,8 +121,24 @@ pub fn pump_output(mut master: File, mut stdout: File, tracker: Arc<Mutex<BlockT
         };
         out.clear();
         filter.filter(&buf[..n], &mut out);
-        if stdout.write_all(&out).is_err() {
-            return;
+        match &ed {
+            None => {
+                if stdout.write_all(&out).is_err() {
+                    return;
+                }
+            }
+            Some(c) => {
+                let mut g = ctl::lock(c);
+                if g.in_prompt() {
+                    armed = g.output_in_prompt(&out);
+                } else {
+                    drop(g);
+                    if stdout.write_all(&out).is_err() {
+                        return;
+                    }
+                    armed = ctl::lock(c).after_passthrough_output(&out);
+                }
+            }
         }
         if let Ok(mut t) = tracker.lock() {
             t.feed(&buf[..n]);

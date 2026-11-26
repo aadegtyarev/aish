@@ -144,3 +144,99 @@ fn args_and_non_tty_exec_plain_bash() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
 }
+
+// ---- line editor (prompt mode) ----
+
+/// Colors on (ghost text needs them), seeded history, no DSR answers.
+fn editor_session(home: &TempDir, history: &str) -> Session {
+    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
+    std::fs::write(home.path().join("hist"), history).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", home.path())
+        .env("HISTFILE", home.path().join("hist"))
+        .env("TERM", "xterm")
+        .env("XDG_STATE_HOME", home.path().join("state"));
+    let mut p = Session::spawn(cmd).unwrap();
+    p.set_expect_timeout(Some(Duration::from_secs(10)));
+    p
+}
+
+/// Wait until the editor has taken over the prompt (quiet timer + history load).
+fn settle() {
+    std::thread::sleep(Duration::from_millis(400));
+}
+
+#[test]
+fn ghost_text_accept_and_run() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "echo hi\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ech").unwrap();
+    p.expect("o hi").unwrap(); // ghost, drawn by us, bash has seen nothing
+    p.send("\x1b[C").unwrap(); // right arrow accepts
+    p.send("\r").unwrap();
+    p.expect("\x07hi\r\n").unwrap(); // output of the command (after OSC 133;C)
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn ctrl_c_clears_line() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("zzzbad").unwrap();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo fine\r").unwrap();
+    let m = p.expect("fine\r\n").unwrap();
+    let before = String::from_utf8_lossy(m.before()).into_owned();
+    assert!(!before.contains("not found"), "{before:?}");
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn model_line_does_not_reach_bash() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? hello\r").unwrap();
+    p.expect("model not connected yet").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // A glob stays a shell command.
+    p.send("echo ?x\r").unwrap();
+    let m = p.expect("E> ").unwrap();
+    let out = String::from_utf8_lossy(m.before()).into_owned();
+    assert!(out.contains("?x") && !out.contains("not found"), "{out:?}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn editing_keys_and_submit_to_bash() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "");
+    p.expect("E> ").unwrap();
+    settle();
+    // type, move, edit: "echo abXd" -> Ctrl-A, Alt-D kills "echo", retype
+    p.send("echo abcd").unwrap();
+    p.send("\x1b[D\x1b[D\x7f").unwrap(); // left left backspace -> "echo acd"
+    p.send("X").unwrap(); // "echo aXcd"
+    p.send("\r").unwrap();
+    p.expect("aXcd\r\n").unwrap();
+    p.expect("E> ").unwrap();
+    // Ctrl-D on empty line reaches bash and exits it.
+    settle();
+    p.send("\x04").unwrap();
+    p.expect(Eof).unwrap();
+}

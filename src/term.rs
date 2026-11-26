@@ -69,13 +69,17 @@ impl Signals {
 
     /// WINCH resizes the pty (and is re-synced once now, closing the race with
     /// startup); TERM/QUIT/HUP restore the terminal, hang up the shell, exit.
-    pub fn watch(mut self, master: File, child_pid: u32) {
+    pub fn watch(mut self, master: File, child_pid: u32, ed: Option<crate::editor::ctl::Shared>) {
         std::thread::spawn(move || {
             use signal_hook::consts::*;
             set_window_size(master.as_raw_fd(), &window_size());
             for sig in self.0.forever() {
                 if sig == SIGWINCH {
-                    set_window_size(master.as_raw_fd(), &window_size());
+                    let apply = || set_window_size(master.as_raw_fd(), &window_size());
+                    match &ed {
+                        Some(c) => crate::editor::ctl::lock(c).resize(apply),
+                        None => apply(),
+                    }
                     continue;
                 }
                 let _ = crossterm::terminal::disable_raw_mode();

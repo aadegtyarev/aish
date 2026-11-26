@@ -101,4 +101,6 @@ if (( __llmsh_mode > 0 )); then
   # Don't leak into nested shells / tmux, which lack our functions.
   export -n PROMPT_COMMAND PS0
 fi
+# llmsh asks for a prompt repaint after stray output with this private key.
+bind '"\e[1337~": redraw-current-line' 2>/dev/null
 unset LLMSH __llmsh_h1 __llmsh_h2

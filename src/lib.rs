@@ -2,6 +2,7 @@
 
 pub mod blocks;
 pub mod config;
+pub mod editor;
 pub mod osc;
 pub mod pty;
 pub mod shell;
@@ -67,12 +68,21 @@ pub fn run() -> Result<i32> {
             return Err(e);
         }
     };
-    signals.watch(m_sig, child.id());
     let is_tty = raw.is_some();
-    std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty));
+    let ed = if is_tty && editor::ctl::wanted() {
+        Some(editor::ctl::Controller::start(
+            m_in.try_clone()?,
+            stdout.try_clone()?,
+        ))
+    } else {
+        None
+    };
+    signals.watch(m_sig, child.id(), ed.clone());
+    let ed_in = ed.clone();
+    std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty, ed_in));
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        pty::pump_output(master, stdout, tracker);
+        pty::pump_output(master, stdout, tracker, ed);
         let _ = done_tx.send(());
     });
 

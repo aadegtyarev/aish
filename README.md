@@ -31,3 +31,29 @@ Config: `$XDG_CONFIG_HOME/llmsh/config.yaml` (optional). Log: `~/.local/state/ll
   OSC 133 and OSC 7 are forwarded as-is.
 - Command text comes from `history 1`; commands skipped by `HISTCONTROL`/`set +o history`
   are recorded with an empty command.
+
+## Line editor (prompt mode)
+
+bash prints its prompt; llmsh owns only the input area. After OSC 133;B and a short
+output silence (10 ms) llmsh switches to prompt mode: keys go to our own emacs-style
+editor (`src/editor/`), bash's readline sees nothing until Enter, then the line is
+typed into bash (`line\r`), so history, PS2 and everything else stay native. Anything
+typed before the mode switch, `TERM=dumb`, `LLMSH_EDITOR=0`, or any program that is
+running (vim, ssh...) is plain passthrough. Output arriving while editing (background
+job) makes bash repaint its prompt below it and the line is redrawn.
+`?`-lines (see UX.md) are not sent to bash yet: a dim notice is printed.
+
+| Keys | Action |
+|---|---|
+| ←/→, Ctrl-B/F, Home/End, Ctrl-A/E | move (graphemes); → / End / Ctrl-F at end accept the ghost suggestion |
+| Alt-B/F, Ctrl-←/→, Alt-←/→ | word move; Alt-→ / Alt-F at end accept one word of the ghost |
+| Backspace, Ctrl-H, Del, Ctrl-D (empty line: EOF to bash) | delete |
+| Ctrl-W, Alt-Backspace, Alt-D, Ctrl-U, Ctrl-K, Ctrl-Y | kill / yank |
+| Ctrl-_ , Ctrl-T | undo, transpose |
+| ↑/↓, Ctrl-P/N | history (prefix-filtered if the line is not empty) |
+| Ctrl-R | inline fuzzy history search (↑/↓/Ctrl-R select, Enter -> line, Esc/Ctrl-G cancel) |
+| Ctrl-C / Ctrl-L | clear line + `^C` to bash / clear screen |
+| Bracketed paste | inserted verbatim |
+
+History comes from `$HISTFILE` (default `~/.bash_history`). Highlighting: unknown first word
+red, strings yellow, `$vars` cyan, comments dim; `NO_COLOR` disables colors and the ghost text.
