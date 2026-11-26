@@ -129,6 +129,13 @@ pub trait Module: Send {
     /// The shell prompt is shown and the editor took over the input line.
     fn on_prompt(&mut self) {}
 
+    /// The prompt is about to be shown: a module may continue earlier work
+    /// (the agent resuming after the user ran its command) by taking `task`.
+    /// Must be cheap and return false when there is nothing to do.
+    fn on_resume(&mut self, _task: &mut Option<Task>) -> bool {
+        false
+    }
+
     /// A line the editor's intercept plugins claimed. Write what should be
     /// shown below it into `out` (no trailing newline) and return true if this
     /// module handled it; the line is then not sent to the shell. For a slow

@@ -508,3 +508,244 @@ fn quiet_marker_is_drawn_at_the_right_edge_and_not_left_in_scrollback() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- agent: tools -------------------------------------------------------
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// No `complete` role: ghost suggestions would add requests to the count.
+fn config_kind(url: &str, kind: &str) -> String {
+    config(url)
+        .replace("type: chat", &format!("type: {kind}"))
+        .replace("  complete: {id: mock/m}\n", "")
+}
+
+fn with_kind(home: &TempDir, m: &Mock, kind: &str) -> Session {
+    let dir = home.path().join(".config/llmsh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), config_kind(&m.url(), kind)).unwrap();
+    spawn(base(home))
+}
+
+/// Answer by step: `steps[i]` is `(text, calls)` for the i-th request; the
+/// last one repeats.
+type Calls = Vec<(&'static str, &'static str, String)>;
+
+fn stepped(kind: &'static str, steps: Vec<(&'static str, Calls)>) -> Mock {
+    let n = Arc::new(AtomicUsize::new(0));
+    Mock::start(move |_, c| {
+        let i = n.fetch_add(1, Ordering::SeqCst).min(steps.len() - 1);
+        let (text, calls) = &steps[i];
+        let calls: Vec<(&str, &str, &str)> =
+            calls.iter().map(|(a, b, d)| (*a, *b, d.as_str())).collect();
+        if calls.is_empty() {
+            if kind == "chat" {
+                mock::chat_stream(c, &[text], Duration::ZERO)
+            } else {
+                mock::resp_stream(c, &[text], Duration::ZERO)
+            }
+        } else if kind == "chat" {
+            mock::chat_calls_stream(c, text, &calls)
+        } else {
+            mock::resp_calls_stream(c, text, &calls)
+        }
+    })
+}
+
+fn run_call(id: &'static str, cmd: &str) -> Calls {
+    vec![(id, "run", serde_json::json!({ "command": cmd }).to_string())]
+}
+
+fn agent_steps() -> Vec<(&'static str, Calls)> {
+    vec![
+        ("Смотрю. ", run_call("c1", "ls Cargo.toml")),
+        ("Собираю. ", run_call("c2", "echo built")),
+        ("Готово: all-done\n", vec![]),
+    ]
+}
+
+fn agent_flow(kind: &'static str) {
+    let home = TempDir::new().unwrap();
+    let m = stepped(kind, agent_steps());
+    let mut p = with_kind(&home, &m, kind);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? собери проект\r").unwrap();
+    // read-only command ran by llmsh itself: dim line, no output shown
+    p.expect("$ ls Cargo.toml · 1 строк").unwrap();
+    // the mutating one waits in the input line
+    p.expect("E> ").unwrap();
+    p.expect("echo built").unwrap();
+    settle();
+    assert_eq!(m.requests().len(), 2);
+    p.send("\r").unwrap();
+    p.expect("built").unwrap();
+    // the loop continues by itself and streams under a new section
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    let reqs = m.requests();
+    assert_eq!(reqs.len(), 3);
+    let first = &reqs[0].body;
+    assert!(first.contains("\"tools\""), "{first}");
+    let last = &reqs[2].body;
+    assert!(last.contains("Cargo.toml"), "read-only result sent");
+    assert!(last.contains("exit: 0") && last.contains("built"), "{last}");
+    assert!(!last.contains("edited"), "{last}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn agent_runs_readonly_then_hands_off_and_continues_chat() {
+    agent_flow("chat");
+}
+
+#[test]
+fn agent_runs_readonly_then_hands_off_and_continues_responses() {
+    agent_flow("responses");
+}
+
+#[test]
+fn agent_edited_command_is_reported_as_edited() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", agent_steps());
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? собери\r").unwrap();
+    p.expect("echo built").unwrap();
+    settle();
+    p.send(" twice\r").unwrap();
+    p.expect("all-done").unwrap();
+    let last = m.requests()[2].body.clone();
+    assert!(last.contains("edited the command"), "{last}");
+    assert!(last.contains("echo built twice"), "{last}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn agent_stops_silently_when_the_line_is_abandoned() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", agent_steps());
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? собери\r").unwrap();
+    p.expect("echo built").unwrap();
+    settle();
+    p.send("\x03").unwrap(); // clear the line
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("printf 'other\\n'\r").unwrap();
+    p.expect("other\r\n").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert_eq!(m.requests().len(), 2, "no continuation request");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn agent_ctrl_c_stops_it() {
+    let home = TempDir::new().unwrap();
+    let n = Arc::new(AtomicUsize::new(0));
+    let m = Mock::start(move |_, c| {
+        if n.fetch_add(1, Ordering::SeqCst) == 0 {
+            mock::chat_calls_stream(c, "", &[("c1", "run", r#"{"command":"ls Cargo.toml"}"#)]);
+        } else {
+            mock::sse_head(c);
+            mock::sse_data(c, &mock::chat_chunk("thinking\n"));
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? x\r").unwrap();
+    p.expect("thinking").unwrap();
+    p.send("\x03").unwrap();
+    p.expect("⏹").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn agent_step_cap() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", vec![("", run_call("c", "pwd"))]);
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? loop\r").unwrap();
+    p.expect("лимит шагов (12)").unwrap();
+    p.expect("E> ").unwrap();
+    assert_eq!(m.requests().len(), 13);
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn tools_rejected_with_400_falls_back_once_and_is_remembered() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|r, c| {
+        if r.body.contains("\"tools\"") {
+            mock::json(
+                c,
+                400,
+                r#"{"error":{"message":"tools are not supported by this model"}}"#,
+            );
+        } else {
+            mock::chat_stream(
+                c,
+                &["Вот:\n```bash\necho fallback-ran\n```\n"],
+                Duration::ZERO,
+            );
+        }
+    });
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? q\r").unwrap();
+    p.expect("E> ").unwrap();
+    p.expect("echo fallback-ran").unwrap();
+    assert_eq!(m.requests().len(), 2);
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? again\r").unwrap();
+    p.expect("echo fallback-ran").unwrap();
+    // remembered: the next question did not try tools again
+    assert_eq!(m.requests().len(), 3);
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn tools_off_in_config_sends_no_tools() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let dir = home.path().join(".config/llmsh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        config_kind(&m.url(), "chat").replace("{id: test}", "{id: test, tools: off}"),
+    )
+    .unwrap();
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? hi\r").unwrap();
+    p.expect("echo llm-ran").unwrap();
+    assert!(!m.requests()[0].body.contains("\"tools\""));
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

@@ -382,6 +382,7 @@ dependencies = [
  "llmsh-llm",
  "nix 0.29.0",
  "serde",
+ "serde_json",
  "serde_yaml",
  "signal-hook",
  "tempfile",

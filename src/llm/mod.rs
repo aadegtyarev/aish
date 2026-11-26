@@ -2,10 +2,13 @@
 //! and model suggestions. Nothing here runs on the keystroke path: all network
 //! work happens on worker threads.
 
+pub mod agent;
+pub mod allow;
 pub mod ask;
 pub mod cmd;
 pub mod context;
 pub mod firstrun;
+pub mod jobs;
 pub mod mask;
 pub mod render;
 pub mod suggest;
@@ -29,6 +32,8 @@ pub struct Target {
     pub label: String,
     pub window: Option<u64>,
     pub local: bool,
+    /// Offer function tools (the agent loop); false = single-step `?`.
+    pub tools: bool,
 }
 
 #[derive(Default)]
@@ -46,6 +51,11 @@ pub struct Llm {
     pub suggest_on: AtomicBool,
     pub convo: Mutex<Vec<Message>>,
     notice: Mutex<Option<String>>,
+    /// Models that answered 400 to tools in this session (`provider/alias`).
+    no_tools: Mutex<std::collections::HashSet<String>>,
+    /// An agent turn waiting for the user to run a proposed command.
+    pub pending: Mutex<Option<agent::Pending>>,
+    pub jobs: Mutex<jobs::Jobs>,
 }
 
 impl Llm {
@@ -57,6 +67,9 @@ impl Llm {
             suggest_on: AtomicBool::new(true),
             convo: Mutex::new(Vec::new()),
             notice: Mutex::new(None),
+            no_tools: Mutex::default(),
+            pending: Mutex::new(None),
+            jobs: Mutex::default(),
         })
     }
 
@@ -131,7 +144,22 @@ impl Llm {
             label: format!("{}/{}", r.provider.id, r.alias),
             window: r.model.context_window.clone().value(),
             local: is_local(&r.provider.url),
+            tools: !matches!(r.model.tools, Setting::Off)
+                && !self
+                    .no_tools
+                    .lock()
+                    .is_ok_and(|s| s.contains(&format!("{}/{}", r.provider.id, r.alias))),
         })
+    }
+
+    pub fn mark_no_tools(&self, label: &str) {
+        if let Ok(mut s) = self.no_tools.lock() {
+            s.insert(label.to_owned());
+        }
+    }
+
+    pub fn allow(&self) -> Vec<String> {
+        self.config().map(|c| c.allow.clone()).unwrap_or_default()
     }
 
     pub fn set_notice(&self, s: String) {

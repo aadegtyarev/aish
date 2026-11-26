@@ -7,6 +7,7 @@ use lineedit_wip::{Class, Plugin, Span};
 use std::sync::{Arc, Mutex};
 
 use crate::blocks::BlockTracker;
+use crate::llm::agent;
 use crate::llm::cmd::{self, is_llmsh_line, is_short_line, Cmd};
 use crate::llm::render::Renderer;
 use crate::llm::suggest::{LsCache, ModelSuggest};
@@ -86,8 +87,23 @@ impl Module for ModelModule {
         ]
     }
 
-    fn on_block_finished(&mut self, _block: &crate::blocks::Block) {
+    fn on_block_finished(&mut self, block: &crate::blocks::Block) {
         self.ls.invalidate();
+        if let Some((llm, _)) = &self.env {
+            agent::on_block(llm, block);
+        }
+    }
+
+    fn on_resume(&mut self, task: &mut Option<Task>) -> bool {
+        let Some((llm, tracker)) = self.env.clone() else {
+            return false;
+        };
+        if !agent::resumable(&llm) {
+            return false;
+        }
+        let Some(t) = task.take() else { return false };
+        ask::run_task(t, move |t| agent::resume(&llm, &tracker, t));
+        true
     }
 
     fn on_intercept(&mut self, line: &str, out: &mut Vec<u8>, task: &mut Option<Task>) -> bool {
@@ -101,6 +117,9 @@ impl Module for ModelModule {
             return llmsh_command(&llm, line, out, task);
         }
         let p = ask::parse(line);
+        if let Ok(mut pend) = llm.pending.lock() {
+            *pend = None; // a new question ends a paused turn
+        }
         if p.reset {
             if let Ok(mut c) = llm.convo.lock() {
                 c.clear();

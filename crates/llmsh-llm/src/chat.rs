@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::{Endpoint, Error, Item, Request, Role, State};
+use crate::{Endpoint, Error, Item, Part, Request, Role, State, ToolCall};
 
 pub(crate) fn messages(req: &Request) -> Vec<Value> {
     let mut m = Vec::with_capacity(req.messages.len() + 1);
@@ -14,7 +14,38 @@ pub(crate) fn messages(req: &Request) -> Vec<Value> {
             Role::User => "user",
             Role::Assistant => "assistant",
         };
-        m.push(json!({"role": role, "content": x.text()}));
+        let calls: Vec<Value> = x
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::ToolCall(c) => Some(json!({
+                    "id": c.id, "type": "function",
+                    "function": {"name": c.name, "arguments": c.arguments},
+                })),
+                _ => None,
+            })
+            .collect();
+        let results: Vec<&Part> = x
+            .parts
+            .iter()
+            .filter(|p| matches!(p, Part::ToolResult { .. }))
+            .collect();
+        for r in results {
+            if let Part::ToolResult { id, content } = r {
+                m.push(json!({"role": "tool", "tool_call_id": id, "content": content}));
+            }
+        }
+        let text = x.text();
+        if !calls.is_empty() {
+            let c = if text.is_empty() {
+                Value::Null
+            } else {
+                json!(text)
+            };
+            m.push(json!({"role": role, "content": c, "tool_calls": calls}));
+        } else if !text.is_empty() || x.parts.is_empty() {
+            m.push(json!({"role": role, "content": text}));
+        }
     }
     m
 }
@@ -49,6 +80,14 @@ pub(crate) fn body(ep: &Endpoint, req: &Request) -> String {
             b["stop"] = json!(req.stop);
         }
     }
+    if !req.tools.is_empty() {
+        b["tools"] = json!(req
+            .tools
+            .iter()
+            .map(|t| json!({"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.parameters}}))
+            .collect::<Vec<_>>());
+    }
     if let Some(e) = &ep.effort {
         b["reasoning_effort"] = json!(e);
     }
@@ -71,6 +110,32 @@ pub(crate) fn parse(v: &Value, st: &mut State) -> Item {
         }
     }
     let d = &v["choices"][0]["delta"];
+    if let Some(tc) = d["tool_calls"].as_array() {
+        for c in tc {
+            let i = c["index"].as_u64().unwrap_or(0) as usize;
+            if i > 64 {
+                continue;
+            }
+            while st.calls.len() <= i {
+                st.calls.push(ToolCall {
+                    id: String::new(),
+                    name: String::new(),
+                    arguments: String::new(),
+                });
+            }
+            let t = &mut st.calls[i];
+            if let Some(id) = c["id"].as_str() {
+                t.id = id.to_owned();
+            }
+            if let Some(n) = c["function"]["name"].as_str() {
+                t.name.push_str(n);
+            }
+            if let Some(a) = c["function"]["arguments"].as_str() {
+                t.arguments.push_str(a);
+            }
+        }
+        return Item::Alive;
+    }
     match d["content"].as_str() {
         Some(s) if !s.is_empty() => Item::Delta(s.to_owned()),
         _ if d["reasoning_content"].is_string() || d["reasoning"].is_string() => Item::Alive,

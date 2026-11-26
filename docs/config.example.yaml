@@ -8,6 +8,7 @@ providers:
       big:
         id: qwen3:32b
         context_window: 32768
+        # tools: off              # never offer function tools (agent steps) to this model
 
   - id: cloud
     url: https://api.openai.com/v1
@@ -29,3 +30,9 @@ roles:
 # Name of the in-session control command (status, chat, complete, on/off, config).
 # It always wins over any program of that name; `off` disables it (`llmsh ...` still works).
 # command: ai
+
+# Extra read-only command prefixes the agent (`?`) may run by itself, without
+# asking. Everything else is put into your input line for Enter.
+# allow:
+#   - make check
+#   - docker ps

@@ -48,7 +48,16 @@ pub enum Role {
     Assistant,
 }
 
-/// A tool call requested by the model (reserved for tool use; not sent yet).
+/// A function tool offered to the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tool {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema of the arguments object.
+    pub parameters: serde_json::Value,
+}
+
+/// A tool call requested by the model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
     pub id: String,
@@ -59,9 +68,9 @@ pub struct ToolCall {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {
     Text(String),
-    /// Reserved: tool calls are not serialized yet.
+    /// Assistant message: a call of a tool (always `Role::Assistant`).
     ToolCall(ToolCall),
-    /// Reserved: tool results are not serialized yet.
+    /// The result of a call (always `Role::User`), matched by `id`.
     ToolResult {
         id: String,
         content: String,
@@ -87,6 +96,27 @@ impl Message {
             parts: vec![Part::Text(text.into())],
         }
     }
+    /// An assistant turn: optional text followed by tool calls.
+    pub fn assistant_calls(text: &str, calls: &[ToolCall]) -> Self {
+        let mut parts = Vec::new();
+        if !text.is_empty() {
+            parts.push(Part::Text(text.to_owned()));
+        }
+        parts.extend(calls.iter().cloned().map(Part::ToolCall));
+        Message {
+            role: Role::Assistant,
+            parts,
+        }
+    }
+    pub fn tool_result(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Message {
+            role: Role::User,
+            parts: vec![Part::ToolResult {
+                id: id.into(),
+                content: content.into(),
+            }],
+        }
+    }
     /// Concatenated text parts.
     pub fn text(&self) -> String {
         self.parts
@@ -106,6 +136,8 @@ pub struct Request {
     pub max_tokens: u32,
     pub temperature: Option<f32>,
     pub stop: Vec<String>,
+    /// Function tools offered to the model (empty = none).
+    pub tools: Vec<Tool>,
     /// Give up if nothing at all (not even reasoning) arrives within this time.
     pub first_token_timeout: Duration,
 }
@@ -118,6 +150,7 @@ impl Request {
             max_tokens: 2048,
             temperature: None,
             stop: Vec::new(),
+            tools: Vec::new(),
             first_token_timeout: FIRST_TOKEN_CHAT,
         }
     }
@@ -172,6 +205,7 @@ enum Msg {
     /// Something arrived (reasoning, keep-alive): resets the timeouts.
     Alive,
     Delta(String),
+    Tools(Vec<ToolCall>),
     Done(Usage),
     Err(Error),
 }
@@ -182,6 +216,31 @@ pub(crate) struct State {
     pub usage: Usage,
     /// A finish reason was seen (chat); `[DONE]`/completed end the stream anyway.
     pub finished: bool,
+    /// Tool calls being assembled from argument deltas.
+    pub calls: Vec<ToolCall>,
+    /// Responses API: item id of each entry of `calls`.
+    pub item_ids: Vec<String>,
+}
+
+impl State {
+    /// Calls with a name, in order; argument text defaults to `{}`.
+    pub(crate) fn take_calls(&mut self) -> Vec<ToolCall> {
+        self.item_ids.clear();
+        std::mem::take(&mut self.calls)
+            .into_iter()
+            .filter(|c| !c.name.is_empty())
+            .enumerate()
+            .map(|(i, mut c)| {
+                if c.id.is_empty() {
+                    c.id = format!("call_{i}");
+                }
+                if c.arguments.trim().is_empty() {
+                    c.arguments = "{}".into();
+                }
+                c
+            })
+            .collect()
+    }
 }
 
 /// One parsed SSE payload, API independent.
@@ -239,8 +298,19 @@ pub fn stream(
     ep: &Endpoint,
     req: &Request,
     cancel: &AtomicBool,
-    mut on_event: impl FnMut(Event),
+    on_event: impl FnMut(Event),
 ) -> Result<Usage, Error> {
+    stream_tools(ep, req, cancel, on_event).map(|(u, _)| u)
+}
+
+/// Like [`stream`], also returning the tool calls the model made (their
+/// argument deltas are assembled; complete calls arrive with the end).
+pub fn stream_tools(
+    ep: &Endpoint,
+    req: &Request,
+    cancel: &AtomicBool,
+    mut on_event: impl FnMut(Event),
+) -> Result<(Usage, Vec<ToolCall>), Error> {
     let (path, body) = match ep.kind {
         Kind::Chat => ("chat/completions", chat::body(ep, req)),
         Kind::Responses => ("responses", responses::body(ep, req)),
@@ -256,6 +326,7 @@ pub fn stream(
     let start = Instant::now();
     let mut last = start;
     let mut first = true;
+    let mut calls = Vec::new();
     let out = loop {
         if cancel.load(Ordering::Relaxed) {
             break Err(Error::Cancelled);
@@ -278,6 +349,11 @@ pub fn stream(
                 last = Instant::now();
                 on_event(Event::Delta(s));
             }
+            Ok(Msg::Tools(c)) => {
+                first = false;
+                last = Instant::now();
+                calls = c;
+            }
             Ok(Msg::Done(u)) => break Ok(u),
             Ok(Msg::Err(e)) => break Err(e),
             Err(RecvTimeoutError::Timeout) => {}
@@ -286,7 +362,7 @@ pub fn stream(
     };
     // Tells the reader thread to drop the connection at its next line.
     closed.store(true, Ordering::Relaxed);
-    out
+    out.map(|u| (u, calls))
 }
 
 /// Convenience: collect the whole answer.
@@ -330,11 +406,11 @@ fn worker(
         match rd.read_until(b'\n', &mut line) {
             Ok(0) => {
                 // EOF: only a stream that announced its end is complete.
-                let _ = tx.send(if st.finished {
-                    Msg::Done(st.usage)
+                if st.finished {
+                    send_end(&tx, &mut st, None);
                 } else {
-                    Msg::Err(Error::Api("stream ended early".into()))
-                });
+                    let _ = tx.send(Msg::Err(Error::Api("stream ended early".into())));
+                }
                 return;
             }
             Ok(_) => partial = false,
@@ -360,7 +436,7 @@ fn worker(
         };
         let data = data.trim_start();
         if data == "[DONE]" {
-            let _ = tx.send(Msg::Done(st.usage));
+            send_end(&tx, &mut st, None);
             return;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
@@ -368,14 +444,14 @@ fn worker(
         };
         let item = match kind {
             Kind::Chat => chat::parse(&v, &mut st),
-            Kind::Responses => responses::parse(&v),
+            Kind::Responses => responses::parse(&v, &mut st),
         };
         let m = match item {
             Item::Skip => continue,
             Item::Alive => Msg::Alive,
             Item::Delta(s) => Msg::Delta(s),
             Item::Done(u) => {
-                let _ = tx.send(Msg::Done(u));
+                send_end(&tx, &mut st, Some(u));
                 return;
             }
             Item::Err(e) => {
@@ -387,6 +463,15 @@ fn worker(
             return;
         }
     }
+}
+
+/// The tool calls (if any), then the end of the stream.
+fn send_end(tx: &mpsc::Sender<Msg>, st: &mut State, usage: Option<Usage>) {
+    let calls = st.take_calls();
+    if !calls.is_empty() {
+        let _ = tx.send(Msg::Tools(calls));
+    }
+    let _ = tx.send(Msg::Done(usage.unwrap_or(st.usage)));
 }
 
 /// `GET {url}/models`: the model ids the server offers.

@@ -232,3 +232,97 @@ fn quiet_server_longer_than_read_timeout_does_not_break_the_stream() {
     assert_eq!(s, "one two");
     res.unwrap();
 }
+
+fn tools_req(messages: Vec<Message>) -> Request {
+    Request {
+        tools: vec![Tool {
+            name: "run".into(),
+            description: "run a command".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"command":{"type":"string"}}}),
+        }],
+        ..Request::chat("sys", messages)
+    }
+}
+
+fn run_tools(e: &Endpoint, req: &Request) -> (Usage, Vec<ToolCall>, String) {
+    let mut s = String::new();
+    let (u, c) = stream_tools(e, req, &AtomicBool::new(false), |Event::Delta(d)| {
+        s.push_str(&d)
+    })
+    .unwrap();
+    (u, c, s)
+}
+
+#[test]
+fn chat_tool_calls_are_assembled_and_serialized() {
+    let m = Mock::start(|_, c| {
+        chat_calls_stream(
+            c,
+            "checking ",
+            &[
+                ("c1", "run", r#"{"command":"git status"}"#),
+                ("c2", "jobs", "{}"),
+            ],
+        )
+    });
+    let hist = vec![
+        Message::user("q"),
+        Message::assistant_calls(
+            "t",
+            &[ToolCall {
+                id: "p1".into(),
+                name: "run".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            }],
+        ),
+        Message::tool_result("p1", "out"),
+    ];
+    let (_, calls, text) = run_tools(&ep(Kind::Chat, &m), &tools_req(hist));
+    assert_eq!(text, "checking ");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].arguments, r#"{"command":"git status"}"#);
+    assert_eq!(
+        (calls[1].id.as_str(), calls[1].name.as_str()),
+        ("c2", "jobs")
+    );
+    let b: serde_json::Value = serde_json::from_str(&m.requests()[0].body).unwrap();
+    assert_eq!(b["tools"][0]["function"]["name"], "run");
+    let ms = &b["messages"];
+    assert_eq!(ms[2]["tool_calls"][0]["id"], "p1");
+    assert_eq!(
+        ms[2]["tool_calls"][0]["function"]["arguments"],
+        r#"{"command":"ls"}"#
+    );
+    assert_eq!(ms[3]["role"], "tool");
+    assert_eq!(ms[3]["tool_call_id"], "p1");
+    assert_eq!(ms[3]["content"], "out");
+}
+
+#[test]
+fn responses_tool_calls_are_assembled_and_serialized() {
+    let m = Mock::start(|_, c| {
+        resp_calls_stream(c, "", &[("c1", "run", r#"{"command":"git status"}"#)])
+    });
+    let hist = vec![
+        Message::user("q"),
+        Message::assistant_calls(
+            "",
+            &[ToolCall {
+                id: "p1".into(),
+                name: "run".into(),
+                arguments: "{}".into(),
+            }],
+        ),
+        Message::tool_result("p1", "out"),
+    ];
+    let (_, calls, _) = run_tools(&ep(Kind::Responses, &m), &tools_req(hist));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "c1");
+    assert_eq!(calls[0].arguments, r#"{"command":"git status"}"#);
+    let b: serde_json::Value = serde_json::from_str(&m.requests()[0].body).unwrap();
+    assert_eq!(b["tools"][0]["name"], "run");
+    assert_eq!(b["input"][1]["type"], "function_call");
+    assert_eq!(b["input"][1]["call_id"], "p1");
+    assert_eq!(b["input"][2]["type"], "function_call_output");
+    assert_eq!(b["input"][2]["output"], "out");
+}

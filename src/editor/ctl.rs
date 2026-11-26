@@ -281,6 +281,19 @@ impl Controller {
             self.send(REDRAW_KEY);
             return;
         }
+        if self.task.is_none() {
+            let mut task = Some(self.tasks.make(self.ed.theme(), width()));
+            let shared = task.as_ref().map(|t| t.shared.clone());
+            let taken = self.modules.iter_mut().any(|m| m.on_resume(&mut task));
+            if taken && task.is_none() {
+                // bash's prompt is on this line: the continued answer replaces it
+                let _ = self.stdout.write_all(b"\r\x1b[2K");
+                self.scan.col = 0;
+                self.leave(true);
+                self.task = shared;
+                return;
+            }
+        }
         for m in &mut self.modules {
             m.on_prompt();
         }

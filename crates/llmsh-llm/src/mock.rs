@@ -160,3 +160,77 @@ pub fn resp_stream(c: &mut TcpStream, parts: &[&str], delay: Duration) {
         r#"{"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":3}}}"#,
     );
 }
+
+fn halves(s: &str) -> (&str, &str) {
+    let mut i = s.len() / 2;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    s.split_at(i)
+}
+
+/// A chat answer that calls tools: optional `text`, then each `(id, name,
+/// arguments)` with its argument text split over two deltas.
+pub fn chat_calls_stream(c: &mut TcpStream, text: &str, calls: &[(&str, &str, &str)]) {
+    use serde_json::json;
+    sse_head(c);
+    if !text.is_empty() {
+        sse_data(c, &chat_chunk(text));
+    }
+    for (i, (id, name, args)) in calls.iter().enumerate() {
+        let (a, b) = halves(args);
+        let d = |tc: serde_json::Value| json!({"choices": [{"delta": {"tool_calls": [tc]}}]});
+        sse_data(
+            c,
+            &d(json!({"index": i, "id": id, "type": "function",
+                "function": {"name": name, "arguments": a}}))
+            .to_string(),
+        );
+        sse_data(
+            c,
+            &d(json!({"index": i, "function": {"arguments": b}})).to_string(),
+        );
+    }
+    sse_data(
+        c,
+        r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+    );
+    sse_data(c, "[DONE]");
+}
+
+/// Responses flavour of [`chat_calls_stream`].
+pub fn resp_calls_stream(c: &mut TcpStream, text: &str, calls: &[(&str, &str, &str)]) {
+    use serde_json::json;
+    sse_head(c);
+    if !text.is_empty() {
+        sse_data(c, &resp_delta(text));
+    }
+    for (i, (id, name, args)) in calls.iter().enumerate() {
+        let item = format!("fc_{i}");
+        let (a, b) = halves(args);
+        sse_data(
+            c,
+            &json!({"type": "response.output_item.added", "item": {"type": "function_call",
+                "id": item, "call_id": id, "name": name, "arguments": ""}})
+            .to_string(),
+        );
+        for d in [a, b] {
+            sse_data(
+                c,
+                &json!({"type": "response.function_call_arguments.delta",
+                    "item_id": item, "delta": d})
+                .to_string(),
+            );
+        }
+        sse_data(
+            c,
+            &json!({"type": "response.function_call_arguments.done",
+                "item_id": item, "arguments": args})
+            .to_string(),
+        );
+    }
+    sse_data(
+        c,
+        r#"{"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":3}}}"#,
+    );
+}

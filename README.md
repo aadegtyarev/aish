@@ -79,6 +79,11 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
   Ctrl-C clears). `?!` starts a fresh conversation. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
+- Agent steps: when the chat model supports function calling, `?` can run read-only commands itself
+  (a built-in allowlist plus `allow:` in the config; shown as a dim `│ $ cmd · N строк`), read files and
+  command history, and propose one mutating command at a time into your input line: after you run it the
+  model continues with its output. Max 12 steps, Ctrl-C stops. Models without tools fall back to the
+  single-step answer (`tools: off` per model forces it). See docs/UX.md.
 - `ai` (inside a session; always wins over any program of that name — rename or disable it with
   `command: mm` / `command: off` in the config) and its always-available long form `llmsh` show the roles and whether they answer;
   `ai chat <provider/alias>`, `ai complete <..>` switch a role for this session, `ai on|off` toggles model

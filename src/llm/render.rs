@@ -52,7 +52,7 @@ pub fn sanitize(s: &str) -> String {
     s.chars().filter(|&c| !is_bad(c)).collect()
 }
 
-fn unsafe_cmd(cmd: &str) -> bool {
+pub(crate) fn unsafe_cmd(cmd: &str) -> bool {
     cmd.chars().any(|c| is_bad(c) && c != '\n' && c != '\t')
 }
 

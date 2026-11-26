@@ -57,6 +57,9 @@ pub struct Model {
     pub effort: Setting<String>,
     #[serde(default)]
     pub context_window: Setting<u64>,
+    /// `tools: off` — never offer function tools to this model.
+    #[serde(default)]
+    pub tools: Setting<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,6 +103,9 @@ pub struct Config {
     /// Name of the in-session control command (`ai` by default, `off` = none).
     #[serde(default)]
     pub command: Setting<String>,
+    /// Extra command prefixes the agent may run by itself (read-only ones).
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 /// A role resolved to concrete provider/model/effort.

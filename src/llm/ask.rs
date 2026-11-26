@@ -2,16 +2,16 @@
 
 use std::sync::{Arc, Mutex};
 
-use llmsh_llm::{Error, Event, Message, Part, Request};
+use llmsh_llm::{Error, Message, Part};
 
+use super::agent;
 use super::context;
 use super::mask::mask;
-use super::render::Renderer;
 use super::{Llm, Target};
 use crate::blocks::BlockTracker;
 use crate::module::Task;
 
-const SYSTEM: &str = "You are a terse, practical assistant inside the user's bash terminal. \
+pub(crate) const SYSTEM: &str = "You are a terse, practical assistant inside the user's bash terminal. \
 Answer in the user's language. Use light markdown only (**bold**, `code`, short lists). \
 When a shell command is the answer, put exactly one command in a final ```bash fenced block at the end of the reply \
 (multi-line only if unavoidable). If the user only asks for a command, reply with just that block and no prose. \
@@ -63,38 +63,51 @@ pub fn short_reason(e: &Error, t: &Target) -> String {
 /// Earlier turns as sent: masked unless the provider is local. The stored
 /// conversation stays untouched.
 pub fn masked_history(c: &[Message], local: bool) -> Vec<Message> {
+    if local {
+        return c.to_vec();
+    }
     c.iter()
-        .map(|m| {
-            if local {
-                return m.clone();
-            }
-            let t = mask(&m.text());
-            match m.role {
-                llmsh_llm::Role::User => Message::user(t),
-                llmsh_llm::Role::Assistant => Message::assistant(t),
-            }
+        .map(|m| Message {
+            role: m.role,
+            parts: m
+                .parts
+                .iter()
+                .map(|p| match p {
+                    Part::Text(t) => Part::Text(mask(t)),
+                    Part::ToolCall(c) => Part::ToolCall(llmsh_llm::ToolCall {
+                        arguments: mask(&c.arguments),
+                        ..c.clone()
+                    }),
+                    Part::ToolResult { id, content } => Part::ToolResult {
+                        id: id.clone(),
+                        content: mask(content),
+                    },
+                })
+                .collect(),
         })
         .collect()
 }
 
-fn convo_chars(c: &[Message]) -> usize {
-    c.iter().map(|m| m.text().len()).sum()
+fn msg_chars(m: &Message) -> usize {
+    m.parts
+        .iter()
+        .map(|p| match p {
+            Part::Text(t) => t.len(),
+            Part::ToolCall(c) => c.arguments.len() + c.name.len(),
+            Part::ToolResult { content, .. } => content.len(),
+        })
+        .sum()
 }
 
-/// Start answering on a worker thread.
-pub fn spawn(
-    llm: Arc<Llm>,
-    tracker: Arc<Mutex<BlockTracker>>,
-    target: Target,
-    p: Parsed,
-    task: Task,
-) {
+fn convo_chars(c: &[Message]) -> usize {
+    c.iter().map(msg_chars).sum()
+}
+
+/// Run `f` on a worker thread; a panic must not leave the terminal waiting:
+/// the task's drop guard (or this) hands the prompt back with `f`'s prefill.
+pub fn run_task(task: Task, f: impl FnOnce(&Task) -> Option<String> + Send + 'static) {
     std::thread::spawn(move || {
-        // A panic must not leave the terminal waiting: the task's drop guard
-        // (or this) hands the prompt back.
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            answer(&llm, &tracker, &target, &p, &task)
-        }));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&task)));
         match r {
             Ok(prefill) => task.finish(prefill),
             Err(e) => {
@@ -110,6 +123,17 @@ pub fn spawn(
     });
 }
 
+/// Start answering on a worker thread.
+pub fn spawn(
+    llm: Arc<Llm>,
+    tracker: Arc<Mutex<BlockTracker>>,
+    target: Target,
+    p: Parsed,
+    task: Task,
+) {
+    run_task(task, move |task| answer(&llm, &tracker, &target, &p, task));
+}
+
 fn answer(
     llm: &Llm,
     tracker: &Arc<Mutex<BlockTracker>>,
@@ -118,6 +142,10 @@ fn answer(
     task: &Task,
 ) -> Option<String> {
     let mut ctx = context::build(tracker, p.blocks, t.window);
+    let jobs = llm.jobs.lock().map(|j| j.describe()).unwrap_or_default();
+    if !jobs.starts_with("no ") {
+        ctx.push_str(&format!("background jobs:\n{jobs}\n"));
+    }
     if !t.local {
         ctx = mask(&ctx);
     }
@@ -129,58 +157,26 @@ fn answer(
         mask(&p.question)
     };
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
-    let mut messages = masked_history(&history, t.local);
-    messages.push(Message::user(format!("Context:\n{ctx}\nQuestion: {q}")));
-    let req = Request {
-        max_tokens: 2048,
-        ..Request::chat(SYSTEM, messages)
-    };
-    let mut r = Renderer::new(&task.theme, task.cols);
-    let mut full = String::new();
-    let res = llmsh_llm::stream(&t.ep, &req, &task.shared.cancel, |Event::Delta(d)| {
-        full.push_str(&d);
-        let mut out = Vec::new();
-        r.push(&d, &mut out);
-        if !out.is_empty() {
-            task.write(&out);
-        }
-    });
-    let mut out = Vec::new();
-    match res {
-        Ok(u) => {
-            // A cut-off answer never yields a command to run.
-            let cmd = r.finish(&mut out, !u.truncated);
-            if u.truncated {
-                r.note("ответ оборван (лимит токенов)", &mut out);
-            }
-            task.write(&out);
-            remember(llm, &q, &full);
-            cmd
-        }
-        Err(Error::Cancelled) => {
-            r.note("⏹", &mut out);
-            task.write(&out);
-            None
-        }
-        Err(e) => {
-            tracing::warn!("ask: {e}");
-            r.finish(&mut out, false);
-            r.note(&short_reason(&e, t), &mut out);
-            task.write(&out);
-            None
-        }
-    }
+    let turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
+    agent::drive(llm, tracker, t, turn, task)
 }
 
-fn remember(llm: &Llm, q: &str, answer: &str) {
+/// Keep a finished turn: the bare question, the tool traffic, the answer.
+pub fn remember_turn(llm: &Llm, turn: &agent::Turn) {
     let Ok(mut c) = llm.convo.lock() else { return };
-    c.push(Message::user(q));
-    c.push(Message {
-        role: llmsh_llm::Role::Assistant,
-        parts: vec![Part::Text(answer.to_owned())],
-    });
+    c.push(Message::user(turn.q.clone()));
+    c.extend(turn.msgs.iter().skip(1).cloned());
+    // drop whole old turns (up to the next plain question), never half of one
     while c.len() > 2 && convo_chars(&c) > CONVO_CAP {
-        c.drain(..2);
+        let next = c.iter().skip(1).position(|m| {
+            m.role == llmsh_llm::Role::User && matches!(m.parts.first(), Some(Part::Text(_)))
+        });
+        match next {
+            Some(i) => {
+                c.drain(..=i);
+            }
+            None => break,
+        }
     }
 }
 
