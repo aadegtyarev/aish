@@ -86,6 +86,9 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
 - First start without a config probes ollama (`:11434`), LM Studio (`:1234`) and `$OPENAI_API_KEY`
   (override URLs for tests with `LLMSH_PROBE_OLLAMA`, `LLMSH_PROBE_LMSTUDIO`, `LLMSH_OPENAI_URL`),
   writes a config and prints one line. The config is re-read when its mtime changes.
+- Model suggestions (role `complete`): a ghost plugin below history; 150 ms after the last key (Ctrl-Space: now)
+  a worker asks for the continuation (cwd, last 5 commands, `ls` names; `max_tokens` 48, stop `\n`). Stale answers are
+  dropped, results cached per line prefix, 3 failures in a row pause requests for 60 s. `→` / Alt-→ accept.
 - Network I/O (crate `crates/llmsh-llm`, blocking `ureq` on worker threads) never runs on the key path.
 
 ## License

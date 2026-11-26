@@ -236,3 +236,98 @@ fn cli_subcommands_and_bash_passthrough() {
     let o = run(&["-c", "echo via-bash"]);
     assert_eq!(o.stdout, b"via-bash\n");
 }
+
+fn suggest_mock() -> Mock {
+    Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            return mock::json(c, 200, r#"{"data":[]}"#);
+        }
+        if r.body.contains("echo fo\",\"role\"") {
+            mock::chat_stream(c, &["o-bar"], Duration::ZERO);
+        } else if r.body.contains("git che\",\"role\"") {
+            std::thread::sleep(Duration::from_millis(700));
+            mock::chat_stream(c, &["ckout-OLD"], Duration::ZERO);
+        } else if r.body.contains("git chex\",\"role\"") {
+            mock::chat_stream(c, &["git chex-NEW"], Duration::ZERO); // repeats the line
+        } else {
+            mock::chat_stream(c, &[""], Duration::ZERO);
+        }
+    })
+}
+
+#[test]
+fn model_ghost_appears_after_debounce_and_is_accepted() {
+    let home = TempDir::new().unwrap();
+    let m = suggest_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo fo").unwrap();
+    let t = Instant::now();
+    p.expect("o-bar").unwrap();
+    eprintln!("last key -> ghost on screen: {:?}", t.elapsed());
+    assert!(t.elapsed() >= Duration::from_millis(140));
+    p.send("\x1b[C").unwrap(); // accept
+    p.send("\r").unwrap();
+    p.expect("\x07foo-bar\r\n").unwrap();
+    let q = m
+        .requests()
+        .into_iter()
+        .find(|r| r.path.ends_with("/chat/completions"))
+        .unwrap();
+    assert!(
+        q.body.contains("\"max_tokens\":48") && q.body.contains("\"temperature\":0.0"),
+        "{}",
+        q.body
+    );
+    assert!(
+        q.body.contains("cwd:") && q.body.contains("files:"),
+        "{}",
+        q.body
+    );
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn stale_model_suggestion_is_discarded() {
+    let home = TempDir::new().unwrap();
+    let m = suggest_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("git che").unwrap();
+    std::thread::sleep(Duration::from_millis(350)); // request for "git che" is in flight
+    p.send("x").unwrap();
+    let f = p.expect("-NEW").unwrap();
+    assert!(!String::from_utf8_lossy(f.before()).contains("OLD"));
+    std::thread::sleep(Duration::from_millis(800)); // the old answer would land now
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn llmsh_off_silences_suggestions() {
+    let home = TempDir::new().unwrap();
+    let m = suggest_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("llmsh off\r").unwrap();
+    p.expect("выкл").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo fo").unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    p.send("\r").unwrap();
+    p.expect("\x07fo\r\n").unwrap();
+    assert!(m
+        .requests()
+        .iter()
+        .all(|r| !r.path.ends_with("/chat/completions")));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::blocks::BlockTracker;
 use crate::llm::cmd::{self, is_llmsh_line, Cmd};
 use crate::llm::render::Renderer;
+use crate::llm::suggest::{LsCache, ModelSuggest};
 use crate::llm::{ask, Llm};
 use crate::module::{Env, Module, Task};
 
@@ -55,6 +56,7 @@ impl Plugin for Accent {
 #[derive(Default)]
 pub struct ModelModule {
     env: Option<(Arc<Llm>, Arc<Mutex<BlockTracker>>)>,
+    ls: Arc<LsCache>,
 }
 
 fn claims(line: &str) -> bool {
@@ -68,7 +70,20 @@ impl Module for ModelModule {
 
     fn editor_plugins(&mut self, env: &Env) -> Vec<Box<dyn Plugin>> {
         self.env = Some((env.llm.clone(), env.tracker.clone()));
-        vec![Box::new(Intercept::new(claims)), Box::new(Accent)]
+        vec![
+            Box::new(Intercept::new(claims)),
+            Box::new(Accent),
+            Box::new(ModelSuggest::new(
+                env.llm.clone(),
+                env.history.clone(),
+                env.tracker.clone(),
+                self.ls.clone(),
+            )),
+        ]
+    }
+
+    fn on_block_finished(&mut self, _block: &crate::blocks::Block) {
+        self.ls.invalidate();
     }
 
     fn on_intercept(&mut self, line: &str, out: &mut Vec<u8>, task: &mut Option<Task>) -> bool {

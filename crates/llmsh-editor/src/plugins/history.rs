@@ -20,6 +20,14 @@ impl SharedHistory {
             *g = h;
         }
     }
+    /// The most recent history line that extends `prefix` (and is longer).
+    pub fn suggest(&self, prefix: &str) -> Option<String> {
+        self.with(|h| {
+            let i = h.suggest_before(prefix, h.len())?;
+            Some(h.get(i).into_owned())
+        })
+        .flatten()
+    }
     pub(crate) fn with<R>(&self, f: impl FnOnce(&dyn History) -> R) -> Option<R> {
         self.0.read().ok().map(|g| f(&**g))
     }

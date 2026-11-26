@@ -27,9 +27,9 @@ results whose generation is stale and the host's `waker` is called so it can
 ## llmsh modules (`src/module.rs`, `src/modules/`)
 
 `trait Module` hooks: `editor_plugins(env)` (once, returns plugins),
-`on_block_finished(block)`, `on_prompt()`, `on_intercept(line, out)`.
+`on_block_finished(block)`, `on_prompt()`, `on_intercept(line, out, task)` (a slow reply takes the `Task`: a worker thread streams rows to the terminal and calls `finish(prefill)`; meanwhile keys are buffered and Ctrl-C sets the task's cancel flag).
 Built-ins: `history`, `highlight`, `completion` (bash sidecar), `model`
-(`?` lines, placeholder). Config `modules: [history, completion]` selects a
+(`?` questions, `llmsh` command, model suggestions). Config `modules: [history, completion]` selects a
 subset; absent means all.
 
 Lifecycle: startup (config, modules build editor plugins) -> output stream
