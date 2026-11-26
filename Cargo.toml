@@ -1,0 +1,27 @@
+[package]
+name = "llmsh"
+version = "0.1.0"
+edition = "2021"
+description = "bash wrapper with LLM assistance"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+crossterm = "0.28"
+# Direct pty via nix instead of portable-pty: we only target unix, need a plain
+# master fd for a zero-copy blocking read/write loop, and portable-pty's
+# reader/writer wrappers add nothing for that. No tokio either: two blocking
+# threads on raw fds have the lowest latency and no runtime to initialise
+# (startup time matters); revisit when network/LLM I/O arrives.
+nix = { version = "0.29", features = ["term", "ioctl", "fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+signal-hook = "0.3"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vte = "0.15"
+
+[dev-dependencies]
+expectrl = "0.7"
+tempfile = "3"

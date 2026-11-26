@@ -1,0 +1,27 @@
+providers:
+  - id: local
+    url: http://localhost:11434/v1
+    type: chat                    # chat | responses
+    models:
+      coder:
+        id: qwen2.5-coder:1.5b
+      big:
+        id: qwen3:32b
+        context_window: 32768
+
+  - id: cloud
+    url: https://api.openai.com/v1
+    type: responses
+    key: $OPENAI_API_KEY
+    models:
+      main:
+        id: gpt-6
+        effort: medium
+        context_window: 400000
+
+roles:
+  complete:
+    id: local/coder
+  chat:
+    id: cloud/main
+    effort: low
