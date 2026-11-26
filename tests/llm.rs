@@ -749,3 +749,56 @@ fn tools_off_in_config_sends_no_tools() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- background jobs -----------------------------------------------------
+
+fn plain_home() -> (TempDir, Session) {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let p = with_config(&home, &m);
+    std::mem::forget(m);
+    (home, p)
+}
+
+#[test]
+fn finished_background_job_gets_one_line_and_bash_stays_quiet() {
+    let (_h, mut p) = plain_home();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("sleep 1 &\r").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // the hint counts running jobs
+    p.send("x").unwrap();
+    p.expect("[1] ?").unwrap();
+    p.send("\x03").unwrap();
+    // idle at the prompt until it ends
+    let f = p
+        .expect(expectrl::Regex(r"✓.*\[1\] sleep 1 · [0-9]+s"))
+        .unwrap();
+    let before = String::from_utf8_lossy(f.before()).into_owned();
+    assert!(!before.contains("Done"), "bash line leaked: {before:?}");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("jobs\r").unwrap();
+    let f = p.expect("E> ").unwrap();
+    let out = String::from_utf8_lossy(f.before()).into_owned();
+    assert!(!out.contains("sleep"), "table is empty: {out:?}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn failed_background_job_shows_exit_code() {
+    let (_h, mut p) = plain_home();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("sh -c 'sleep 1; exit 3' &\r").unwrap();
+    p.expect("E> ").unwrap();
+    p.expect(expectrl::Regex(r"✗.*\[1\] sh -c .* · [0-9]+s · exit 3"))
+        .unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

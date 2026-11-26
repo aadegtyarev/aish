@@ -255,7 +255,14 @@ fn worker(
         let Some(t) = llm.target("complete") else {
             continue;
         };
-        match ask(&t, tracker, ls, &job) {
+        if let Some(s) = llm.status.get() {
+            s.begin();
+        }
+        let res = ask(&t, tracker, ls, &job);
+        if let Some(s) = llm.status.get() {
+            s.end();
+        }
+        match res {
             Ok(full) => {
                 fails = 0;
                 job.handle.deliver(

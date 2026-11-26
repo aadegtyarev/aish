@@ -79,6 +79,9 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
   Ctrl-C clears). `?!` starts a fresh conversation. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
+- Background jobs: when one finishes while you are at the prompt, a single line appears above it
+  (` ✓ [1] cargo build · 2m13s` / ` ✗ [2] npm test · 41s · exit 1`) in place of bash's `[1]+ Done`; the hint at
+  the right edge shows `[N] ?` while jobs run and `⋯` while a model suggestion is slow.
 - Agent steps: when the chat model supports function calling, `?` can run read-only commands itself
   (a built-in allowlist plus `allow:` in the config; shown as a dim `│ $ cmd · N строк`), read files and
   command history, and propose one mutating command at a time into your input line: after you run it the

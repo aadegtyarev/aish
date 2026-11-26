@@ -11,6 +11,7 @@ pub mod firstrun;
 pub mod jobs;
 pub mod mask;
 pub mod render;
+pub mod status;
 pub mod suggest;
 
 use std::collections::HashMap;
@@ -56,6 +57,10 @@ pub struct Llm {
     /// An agent turn waiting for the user to run a proposed command.
     pub pending: Mutex<Option<agent::Pending>>,
     pub jobs: Mutex<jobs::Jobs>,
+    pub status: std::sync::OnceLock<status::Status>,
+    /// The job poller found a dead pid: the controller should poke the shell.
+    pub job_poll: AtomicBool,
+    job_notices: Mutex<Vec<jobs::Finished>>,
 }
 
 impl Llm {
@@ -70,6 +75,9 @@ impl Llm {
             no_tools: Mutex::default(),
             pending: Mutex::new(None),
             jobs: Mutex::default(),
+            status: std::sync::OnceLock::new(),
+            job_poll: AtomicBool::new(false),
+            job_notices: Mutex::default(),
         })
     }
 
@@ -167,6 +175,19 @@ impl Llm {
         if let Ok(mut n) = self.notice.lock() {
             *n = Some(render::sanitize(&s));
         }
+    }
+
+    pub fn add_job_notices(&self, f: Vec<jobs::Finished>) {
+        if let Ok(mut n) = self.job_notices.lock() {
+            n.extend(f);
+        }
+    }
+
+    pub fn take_job_notices(&self) -> Vec<jobs::Finished> {
+        self.job_notices
+            .lock()
+            .map(|mut n| std::mem::take(&mut *n))
+            .unwrap_or_default()
     }
 
     pub fn take_notice(&self) -> Option<String> {

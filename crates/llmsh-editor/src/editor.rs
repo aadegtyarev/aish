@@ -408,7 +408,9 @@ impl Editor {
         };
         let mut redraw = false;
         for d in items {
-            if d.generation != self.buf.rev() || d.plugin >= self.plugins.len() {
+            if (d.generation != self.buf.rev() && d.generation != crate::plugin::ANY_GENERATION)
+                || d.plugin >= self.plugins.len()
+            {
                 continue; // stale: the line changed since the work started
             }
             let mut plugins = std::mem::take(&mut self.plugins);

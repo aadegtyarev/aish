@@ -412,3 +412,28 @@ fn resize_erase_uses_new_width() {
     e.erase_resized(&mut out, 10).unwrap(); // at width 10: (3+30)/10 = 3 rows up
     assert!(String::from_utf8(out).unwrap().contains("\x1b[3A"));
 }
+
+#[test]
+fn changing_the_right_hint_asks_for_a_redraw_and_shows_the_new_text() {
+    use crate::plugins::{HintText, RightHint};
+    let hint = HintText::new("?");
+    let mut e = Editor::builder()
+        .theme(Theme::default())
+        .with(RightHint::new(hint.clone()))
+        .build();
+    e.reset_screen(4);
+    feed(&mut e, "ab");
+    assert!(drawn(&mut e).contains('?'));
+    let mut ev = Vec::new();
+    e.poll(&mut ev);
+    assert!(ev.is_empty());
+    hint.set("[2] ?"); // from any thread, any time
+    e.poll(&mut ev);
+    assert_eq!(ev, vec![Event::NeedRedraw]);
+    assert!(drawn(&mut e).contains("[2] ?"));
+    // same text again: nothing to redraw
+    ev.clear();
+    hint.set("[2] ?");
+    e.poll(&mut ev);
+    assert!(ev.is_empty());
+}

@@ -74,9 +74,14 @@ impl Module for ModelModule {
     fn editor_plugins(&mut self, env: &Env) -> Vec<Box<dyn Plugin>> {
         self.env = Some((env.llm.clone(), env.tracker.clone()));
         let llm = env.llm.clone();
+        let hint = HintText::new("?");
+        let _ = env
+            .llm
+            .status
+            .set(crate::llm::status::Status::new(hint.clone()));
         vec![
             Box::new(Intercept::new(move |l| claims(l, &llm))),
-            Box::new(RightHint::new(HintText::new("?"))),
+            Box::new(RightHint::new(hint)),
             Box::new(Accent),
             Box::new(ModelSuggest::new(
                 env.llm.clone(),

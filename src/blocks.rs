@@ -25,6 +25,36 @@ pub struct Block {
     pub duration: Duration,
 }
 
+/// A live background job as reported by the shell (`jobs -l`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobRow {
+    pub id: u32,
+    pub pid: u32,
+    /// `Running` or `Stopped`.
+    pub state: String,
+    pub cmd: String,
+}
+
+/// A background job that finished: `status` is the exit code, or `sig:<text>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobEnd {
+    pub id: u32,
+    pub pid: u32,
+    pub status: String,
+    pub cmd: String,
+}
+
+/// Rows of the private `jobs=` / `jobend=` payload: `a\tb\tc\td` per line.
+fn job_fields(p: &[u8]) -> Vec<[String; 4]> {
+    percent_decode(&String::from_utf8_lossy(p))
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(4, '\t').map(str::to_owned);
+            Some([f.next()?, f.next()?, f.next()?, f.next()?])
+        })
+        .collect()
+}
+
 /// Ring buffer of the most recent blocks.
 #[derive(Debug, Default)]
 pub struct Blocks {
@@ -126,6 +156,9 @@ struct Collector {
     nonce: Option<String>,
     path: Option<String>,
     path_version: u64,
+    jobs: Vec<JobRow>,
+    jobs_changed: bool,
+    job_ends: Vec<JobEnd>,
     cwd: String,
     pending_cmd: Option<String>,
     run: Option<Run>,
@@ -230,6 +263,35 @@ impl Perform for Collector {
                 // vte splits on ';', and plain commands may contain it.
                 debug_assert!(PRIVATE_PREFIX.ends_with(b"llmsh;"));
                 let payload = payload.join(&b';');
+                if let Some(p) = payload.strip_prefix(b"jobs=") {
+                    self.jobs = job_fields(p)
+                        .into_iter()
+                        .filter_map(|[id, pid, state, cmd]| {
+                            Some(JobRow {
+                                id: id.parse().ok()?,
+                                pid: pid.parse().ok()?,
+                                state,
+                                cmd,
+                            })
+                        })
+                        .collect();
+                    self.jobs_changed = true;
+                    return;
+                }
+                if let Some(p) = payload.strip_prefix(b"jobend=") {
+                    for [id, pid, status, cmd] in job_fields(p) {
+                        if let (Ok(id), Ok(pid)) = (id.parse(), pid.parse()) {
+                            self.job_ends.push(JobEnd {
+                                id,
+                                pid,
+                                status,
+                                cmd,
+                            });
+                        }
+                    }
+                    self.jobs_changed = true;
+                    return;
+                }
                 if let Some(p) = payload.strip_prefix(b"path=") {
                     self.path = Some(percent_decode(&String::from_utf8_lossy(p)));
                     self.path_version += 1;
@@ -285,6 +347,17 @@ impl BlockTracker {
 
     pub fn cwd(&self) -> &str {
         &self.state.cwd
+    }
+
+    /// The job table and finished jobs, if the shell reported news since the last call.
+    pub fn take_job_update(&mut self) -> Option<(Vec<JobRow>, Vec<JobEnd>)> {
+        if !std::mem::take(&mut self.state.jobs_changed) {
+            return None;
+        }
+        Some((
+            self.state.jobs.clone(),
+            std::mem::take(&mut self.state.job_ends),
+        ))
     }
 
     /// PATH of the shell (reported by the integration whenever it changes)

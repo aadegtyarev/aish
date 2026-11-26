@@ -175,6 +175,9 @@ pub fn pump_output(
         };
         out.clear();
         filter.filter(&buf[..n], &mut out);
+        if let Some(c) = &ed {
+            ctl::with(c, (), |g| g.job_filter(&mut out));
+        }
         match &ed {
             None => {
                 if stdout.write_all(&out).is_err() {
@@ -197,8 +200,10 @@ pub fn pump_output(
                 }
             }
         }
+        let mut jobs_news = None;
         let finished = tracker.lock().ok().and_then(|mut t| {
             t.feed(&buf[..n]);
+            jobs_news = t.take_job_update();
             let total = t.blocks().total();
             if total != seen_blocks {
                 seen_blocks = total;
@@ -207,6 +212,10 @@ pub fn pump_output(
                 None
             }
         });
+        if let (Some((rows, ends)), Some(c)) = (jobs_news, &ed) {
+            let ((), ob) = ctl::with(c, (), |g| g.on_jobs(rows, ends));
+            let _ = write_out(&mut master, &ob);
+        }
         if let (Some((total, b)), Some(c)) = (finished, &ed) {
             ctl::with(c, (), |g| g.on_block(total, &b));
         }

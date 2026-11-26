@@ -79,6 +79,50 @@ __llmsh_pre() {
   return "$rc"
 }
 
+# Background jobs. `__llmsh_jt` is the live table last reported (private OSC
+# `jobs=`: id, pid, state, command per row). From the prompt hook only the table
+# is reported. llmsh pokes `__llmsh_jpoll` (a bind -x key) while idle at the prompt
+# once a job's pid has died: by then bash has printed its own "[1]+ Done" line (llmsh
+# swallows it) and forgotten the job, so the status comes from `wait`, and the
+# row is reported as finished (`jobend=`). `jobs` is parsed in the C locale.
+__llmsh_jt=
+__llmsh_jobs() {
+  local out line rest id pid state cmd tbl= ends= clear= row st
+  if [[ -z $__llmsh_jt ]] && ! compgen -j >/dev/null 2>&1; then return 0; fi
+  out=$(LC_ALL=C jobs -l 2>/dev/null)
+  while IFS= read -r line; do
+    [[ $line =~ ^\[([0-9]+)\][+-]?[[:space:]]+([0-9]+)[[:space:]]+(.*)$ ]] || continue
+    id=${BASH_REMATCH[1]} pid=${BASH_REMATCH[2]} rest=${BASH_REMATCH[3]}
+    state=${rest%%  *}; cmd=${rest#"$state"}; cmd=${cmd#"${cmd%%[! ]*}"}; cmd=${cmd% &}
+    case $state in
+      Running|Stopped*) tbl+="$id"$'\t'"$pid"$'\t'"${state%% *}"$'\t'"$cmd"$'\n' ;;
+      *) clear=1
+         case $state in Done) st=0 ;; "Exit "*) st=${state#Exit } ;; *) st="sig:$state" ;; esac
+         ends+="$id"$'\t'"$pid"$'\t'"$st"$'\t'"$cmd"$'\n' ;;
+    esac
+  done <<<"$out"
+  [[ -n $clear ]] && jobs >/dev/null 2>&1
+  if [[ ${1-} == poll ]]; then
+    while IFS= read -r row; do
+      [[ -n $row ]] || continue
+      IFS=$'\t' read -r id pid state cmd <<<"$row"
+      [[ $'\n'$tbl == *$'\n'"$id"$'\t'"$pid"$'\t'* || $'\n'$ends == *$'\n'"$id"$'\t'"$pid"$'\t'* ]] && continue
+      kill -0 "$pid" 2>/dev/null && continue
+      wait "$pid" 2>/dev/null; st=$?
+      (( st == 127 )) && st=?
+      ends+="$id"$'\t'"$pid"$'\t'"$st"$'\t'"$cmd"$'\n'
+    done <<<"$__llmsh_jt"
+  fi
+  if [[ $tbl != "$__llmsh_jt" ]]; then
+    __llmsh_jt=$tbl; __llmsh_encode "$tbl"; printf '\e]1337;llmsh;jobs=%s\a' "$__llmsh_enc"
+  fi
+  if [[ -n $ends && ${1-} == poll ]]; then
+    __llmsh_encode "$ends"; printf '\e]1337;llmsh;jobend=%s\a' "$__llmsh_enc"
+  fi
+  return 0
+}
+__llmsh_jpoll() { __llmsh_jobs poll; }
+
 # Runs last: cwd + (re)wrap PS1 with A/B marks, even if PROMPT_COMMAND set PS1.
 __llmsh_post() {
   local rc=$?
@@ -88,6 +132,7 @@ __llmsh_post() {
     __llmsh_encode "$PATH"
     printf '\e]1337;llmsh;path=%s\a' "$__llmsh_enc"
   fi
+  __llmsh_jobs prompt
   [[ ${PS1-} == *'133;B;llmsh='* ]] || PS1='\[\e]133;A;llmsh='"$__llmsh_n"'\a\]'"${PS1-}"'\[\e]133;B;llmsh='"$__llmsh_n"'\a\]'
   return $rc
 }
@@ -112,6 +157,7 @@ if (( __llmsh_mode > 0 )); then
 fi
 # llmsh asks for a prompt repaint after stray output with this private key.
 bind '"\e[1337~": redraw-current-line' 2>/dev/null
+bind -x '"\e[1338~": __llmsh_jpoll' 2>/dev/null
 # Our bracketed-paste submit must not flash the pasted text in reverse video.
 bind 'set enable-active-region off' 2>/dev/null
 unset LLMSH __llmsh_h1 __llmsh_h2

@@ -147,6 +147,17 @@ impl Handle {
     }
 }
 
+/// `generation` of a delivery that is valid whatever the line looks like.
+pub(crate) const ANY_GENERATION: u64 = u64::MAX;
+
+impl Handle {
+    /// Like [`Handle::deliver`] for results that do not depend on the line
+    /// (a status change): never dropped as stale.
+    pub fn deliver_any(&self, payload: Box<dyn Any + Send>) {
+        self.deliver(ANY_GENERATION, payload);
+    }
+}
+
 /// What a hook can see and change.
 pub struct Ctx<'a> {
     pub(crate) buf: &'a mut Buffer,

@@ -32,6 +32,10 @@ const DSR_TTL: Duration = Duration::from_secs(1);
 
 /// Bound to `redraw-current-line` in rc.bash.
 const REDRAW_KEY: &[u8] = b"\x1b[1337~";
+/// Bound to the job report function in rc.bash.
+const JOBS_KEY: &[u8] = b"\x1b[1338~";
+/// How long after poking the shell its own job report lines are swallowed.
+const JOB_WINDOW: Duration = Duration::from_millis(1500);
 
 pub type Shared = Arc<Mutex<Controller>>;
 
@@ -99,7 +103,24 @@ pub struct Controller {
     task: Option<Arc<TaskShared>>,
     /// Text for the input line at the next prompt (a command from the model).
     pending_prefill: Option<String>,
+    /// We poked the shell about a finished job: swallow its own report line.
+    job_window: Option<Instant>,
+    job_lines: crate::llm::jobs::LineStripper,
     typeahead: Vec<u8>,
+}
+
+/// While background jobs exist: notice when one of their pids dies (cheap
+/// kill(0) checks twice a second) and ask the controller to poke the shell.
+fn spawn_job_poller(llm: Arc<Llm>, wake: Arc<File>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let dead = llm.jobs.lock().is_ok_and(|j| j.any_dead());
+        if dead {
+            llm.job_poll
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = (&*wake).write(&[1]);
+        }
+    });
 }
 
 fn width() -> u16 {
@@ -127,6 +148,7 @@ impl Controller {
             stdout: Arc::new(stdout.try_clone().expect("dup stdout")),
             wake: wake.clone(),
         };
+        spawn_job_poller(llm.clone(), wake.clone());
         let resolver = Resolver::default();
         let env = Env {
             llm: llm.clone(),
@@ -165,6 +187,8 @@ impl Controller {
             tasks,
             task: None,
             pending_prefill: None,
+            job_window: None,
+            job_lines: Default::default(),
             typeahead: Vec::new(),
         }))
     }
@@ -207,6 +231,35 @@ impl Controller {
         }
     }
 
+    /// Every chunk of shell output, before it is shown: while we have asked
+    /// the shell about a finished job, its own `[1]+ Done ...` line goes.
+    pub fn job_filter(&mut self, out: &mut Vec<u8>) {
+        if self.job_window.is_some_and(|t| t.elapsed() < JOB_WINDOW) {
+            *out = self.job_lines.strip(out);
+        } else {
+            self.job_lines = Default::default();
+        }
+    }
+
+    /// News about background jobs from the shell (output thread).
+    pub fn on_jobs(&mut self, rows: Vec<crate::blocks::JobRow>, ends: Vec<crate::blocks::JobEnd>) {
+        let fin = self
+            .llm
+            .jobs
+            .lock()
+            .map(|mut j| j.apply(&rows, &ends))
+            .unwrap_or_default();
+        if let Some(s) = self.llm.status.get() {
+            s.set_jobs(rows.len());
+        }
+        if !ends.is_empty() {
+            self.job_window = None;
+        }
+        if !fin.is_empty() {
+            self.llm.add_job_notices(fin);
+        }
+    }
+
     fn draw(&mut self) {
         let _ = self.ed.draw(&mut self.stdout, width());
         let _ = self.stdout.flush();
@@ -230,6 +283,9 @@ impl Controller {
 
     /// Output arrived while we own the line: step aside, show it, come back.
     pub fn output_in_prompt(&mut self, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return false; // only private OSCs arrived: nothing to show
+        }
         self.erase();
         let _ = self.stdout.write_all(data);
         let w = width();
@@ -265,9 +321,10 @@ impl Controller {
         if !self.armed() {
             return;
         }
-        if let Some(n) = self.llm.take_notice() {
-            let n = n.replace("{cmd}", &self.llm.command_label());
-            // bash's prompt is on this line: put the notice in its place and
+        let notice = self.llm.take_notice();
+        let jobs = self.llm.take_job_notices();
+        if notice.is_some() || !jobs.is_empty() {
+            // bash's prompt is on this line: put the notices in its place and
             // have bash repaint the prompt below (picked up at the next quiet).
             let th = self.ed.theme();
             let (a, b) = if th.enabled {
@@ -275,7 +332,21 @@ impl Controller {
             } else {
                 (String::new(), "")
             };
-            let _ = write!(self.stdout, "\r\x1b[2K{a}{n}{b}\r\n");
+            let mut text = String::new();
+            for f in &jobs {
+                let (ok, t) = crate::llm::jobs::notice_text(f, width() as usize);
+                let (c, m) = if ok { ("32", "✓") } else { ("31", "✗") };
+                if th.enabled {
+                    text.push_str(&format!(" \x1b[{c}m{m}\x1b[0m {a}{t}{b}\r\n"));
+                } else {
+                    text.push_str(&format!(" {m} {t}\r\n"));
+                }
+            }
+            if let Some(n) = notice {
+                let n = n.replace("{cmd}", &self.llm.command_label());
+                text.push_str(&format!("{a}{n}{b}\r\n"));
+            }
+            let _ = write!(self.stdout, "\r\x1b[2K{text}");
             self.scan.col = 0;
             self.scan.b_seen = false;
             self.send(REDRAW_KEY);
@@ -390,6 +461,16 @@ impl Controller {
 
     /// A plugin delivered something (async completion...).
     pub fn poll_plugins(&mut self) {
+        if self
+            .llm
+            .job_poll
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+            && self.prompt
+            && self.task.is_none()
+        {
+            self.job_window = Some(Instant::now());
+            self.send(JOBS_KEY);
+        }
         if let Some(done) = self.task.as_ref().and_then(|t| t.take_done()) {
             // The answer is over: bash gets Enter on its empty line and
             // prints a fresh prompt, where the editor takes over again.
