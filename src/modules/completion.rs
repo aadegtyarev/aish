@@ -8,7 +8,6 @@ use lineedit_wip::Plugin;
 
 use crate::blocks::BlockTracker;
 use crate::complete::{complete_files, finish, Sidecar, TIMEOUT};
-use crate::editor::resolve::Resolver;
 use crate::llm::cmd::SUBS;
 use crate::llm::Llm;
 use crate::module::{Env, Module};
@@ -55,15 +54,14 @@ impl CompletionSource for Bash {
 struct WithLlm {
     inner: Bash,
     llm: Arc<Llm>,
-    resolver: Resolver,
 }
 
 impl CompletionSource for WithLlm {
     fn complete(&mut self, req: &Request, reply: Reply) -> Outcome {
         let ours = match req.words.first().map(String::as_str) {
             Some("llmsh") => true,
-            Some("ai") => self.resolver.is_free_confirmed("ai"),
-            _ => false,
+            Some(w) => self.llm.command().as_deref() == Some(w),
+            None => false,
         };
         if !ours || req.words.len() < 2 {
             return self.inner.complete(req, reply);
@@ -124,7 +122,6 @@ impl Module for CompletionModule {
                 tracker: env.tracker.clone(),
             },
             llm: env.llm.clone(),
-            resolver: env.resolver.clone(),
         }))]
     }
 }

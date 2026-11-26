@@ -380,18 +380,13 @@ fn first_run_finds_llama_server() {
     p.expect(Eof).unwrap();
 }
 
-/// The sidecar that reports the shell's aliases/functions needs a moment.
-fn sidecar_ready() {
-    std::thread::sleep(Duration::from_millis(2200));
-}
-
 #[test]
 fn ai_is_the_short_command_when_the_shell_has_no_ai() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
     let mut p = with_config(&home, &m);
     p.expect("E> ").unwrap();
-    sidecar_ready();
+    settle();
     p.send("ai\r").unwrap();
     p.expect("chat    mock/m · test · ok ").unwrap();
     p.expect("подсказки: вкл").unwrap();
@@ -416,49 +411,75 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
     p.expect(Eof).unwrap();
 }
 
+fn with_command(home: &TempDir, m: &Mock, command: &str) -> Session {
+    let dir = home.path().join(".config/llmsh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("command: {command}\n{}", config(&m.url())),
+    )
+    .unwrap();
+    spawn(base(home))
+}
+
 #[test]
-fn users_own_ai_wins_over_the_builtin() {
+fn ai_wins_even_over_an_executable_of_that_name() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
     let bin = home.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let ai = bin.join("ai");
     std::fs::write(&ai, "#!/bin/sh\necho real-ai-ran\n").unwrap();
-    std::os::unix::fs::PermissionsExt::set_mode(
-        &mut std::fs::metadata(&ai).unwrap().permissions(),
-        0o755,
-    );
     std::fs::set_permissions(&ai, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let dir = home.path().join(".config/llmsh");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
-    std::fs::write(
-        home.path().join(".bashrc"),
-        format!("PS1='E> '\nexport PATH={}:$PATH\n", bin.display()),
-    )
-    .unwrap();
-    std::fs::write(home.path().join("hist"), "").unwrap();
     let mut cmd = base(&home);
-    // base() rewrites .bashrc: restore ours afterwards
-    std::fs::write(
-        home.path().join(".bashrc"),
-        format!("PS1='E> '\nexport PATH={}:$PATH\n", bin.display()),
-    )
-    .unwrap();
     cmd.env(
         "PATH",
         format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
     );
     let mut p = spawn(cmd);
     p.expect("E> ").unwrap();
-    sidecar_ready();
+    settle();
     p.send("ai\r").unwrap();
-    p.expect("real-ai-ran").unwrap();
+    p.expect("chat    mock/m").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn custom_command_name_works_and_ai_is_left_to_bash() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let mut p = with_command(&home, &m, "mm");
     p.expect("E> ").unwrap();
     settle();
-    // llmsh still works; `?` points at the long form
+    p.send("mm\r").unwrap();
+    p.expect("chat    mock/m · test · ok ").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ai\r").unwrap();
+    p.expect("ai: command not found").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn command_off_leaves_ai_to_bash_but_llmsh_works() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let mut p = with_command(&home, &m, "off");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ai\r").unwrap();
+    p.expect("ai: command not found").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
     p.send("llmsh\r").unwrap();
-    p.expect("chat    mock/m").unwrap();
+    p.expect("chat    mock/m · test · ok ").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();

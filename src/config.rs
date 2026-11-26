@@ -97,6 +97,9 @@ pub struct Config {
     /// Enabled modules by name; absent = all (see docs/PLUGINS.md).
     #[serde(default)]
     pub modules: Option<Vec<String>>,
+    /// Name of the in-session control command (`ai` by default, `off` = none).
+    #[serde(default)]
+    pub command: Setting<String>,
 }
 
 /// A role resolved to concrete provider/model/effort.

@@ -79,8 +79,8 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
   Ctrl-C clears). `?!` starts a fresh conversation. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
-- `ai` (inside a session; claimed only if the shell has no `ai` of its own: alias, function, builtin or
-  PATH executable) and its always-available long form `llmsh` show the roles and whether they answer;
+- `ai` (inside a session; always wins over any program of that name — rename or disable it with
+  `command: mm` / `command: off` in the config) and its always-available long form `llmsh` show the roles and whether they answer;
   `ai chat <provider/alias>`, `ai complete <..>` switch a role for this session, `ai on|off` toggles model
   suggestions, `ai config` puts `${EDITOR:-vi} ~/.config/llmsh/config.yaml` in the line. `llmsh status` and
   `llmsh config` also work as CLI commands; any other arguments go to bash. Tab completes them.

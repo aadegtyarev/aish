@@ -21,19 +21,9 @@ pub fn is_llmsh_line(s: &str) -> bool {
     is_cmd_line(s, "llmsh")
 }
 
-/// The short form, `ai` / `ai <subcommand>`. Only claim it when the shell
-/// does not know `ai` (see `Resolver::is_free_confirmed`).
-pub fn is_ai_line(s: &str) -> bool {
-    is_cmd_line(s, "ai")
-}
-
-/// What to call the command in messages: `ai` unless the user's shell has one.
-pub fn name_for(resolver: &crate::editor::resolve::Resolver) -> &'static str {
-    if resolver.is_free("ai") {
-        "ai"
-    } else {
-        "llmsh"
-    }
+/// The configured short form (`ai` by default), `<name> [<subcommand> ...]`.
+pub fn is_short_line(s: &str, name: Option<&str>) -> bool {
+    name.is_some_and(|n| is_cmd_line(s, n))
 }
 
 #[derive(Debug, PartialEq)]
@@ -222,10 +212,10 @@ mod tests {
             assert!(!is_llmsh_line(t), "{t}");
         }
         for t in ["ai", "ai chat a/b", "ai  off", "ai config"] {
-            assert!(is_ai_line(t), "{t}");
+            assert!(is_short_line(t, Some("ai")), "{t}");
         }
         for t in ["ai write a poem", "aix", "ai -h", "echo ai"] {
-            assert!(!is_ai_line(t), "{t}");
+            assert!(!is_short_line(t, Some("ai")), "{t}");
         }
     }
 

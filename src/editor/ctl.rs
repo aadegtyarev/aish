@@ -94,7 +94,6 @@ pub struct Controller {
     notice: Vec<u8>,
     seen_blocks: u64,
     llm: Arc<Llm>,
-    resolver: Resolver,
     tasks: TaskMaker,
     /// An answer is streaming: keys are buffered, Ctrl-C cancels.
     task: Option<Arc<TaskShared>>,
@@ -163,7 +162,6 @@ impl Controller {
             notice: Vec::new(),
             seen_blocks: 0,
             llm,
-            resolver,
             tasks,
             task: None,
             pending_prefill: None,
@@ -268,7 +266,7 @@ impl Controller {
             return;
         }
         if let Some(n) = self.llm.take_notice() {
-            let n = n.replace("{cmd}", crate::llm::cmd::name_for(&self.resolver));
+            let n = n.replace("{cmd}", &self.llm.command_label());
             // bash's prompt is on this line: put the notice in its place and
             // have bash repaint the prompt below (picked up at the next quiet).
             let th = self.ed.theme();

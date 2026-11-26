@@ -25,3 +25,7 @@ roles:
   chat:
     id: cloud/main
     effort: low
+
+# Name of the in-session control command (status, chat, complete, on/off, config).
+# It always wins over any program of that name; `off` disables it (`llmsh ...` still works).
+# command: ai

@@ -87,6 +87,22 @@ impl Llm {
         c.cfg.clone()
     }
 
+    /// Name of the in-session control command: `ai` unless configured;
+    /// `None` when switched off (`command: off`). Always wins over any
+    /// program of that name; `llmsh` itself works regardless.
+    pub fn command(&self) -> Option<String> {
+        match self.config().map(|c| c.command.clone()) {
+            Some(Setting::Off) => None,
+            Some(Setting::Value(v)) if !v.trim().is_empty() => Some(v.trim().to_owned()),
+            _ => Some("ai".to_owned()),
+        }
+    }
+
+    /// What to call the command in messages.
+    pub fn command_label(&self) -> String {
+        self.command().unwrap_or_else(|| "llmsh".to_owned())
+    }
+
     pub fn set_override(&self, role: &str, id: &str) {
         if let Ok(mut o) = self.over.lock() {
             o.insert(role.to_owned(), id.to_owned());

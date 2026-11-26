@@ -82,8 +82,6 @@ struct Inner {
     /// PATH came from the sidecar: env changes are irrelevant then.
     pinned: bool,
     ready: bool,
-    /// Aliases/functions of the shell were loaded (set_extra called).
-    extra_ready: bool,
 }
 
 /// Shared handle; clone it into the highlighter and the updating threads.
@@ -122,7 +120,6 @@ impl Resolver {
     pub fn set_extra(&self, names: impl IntoIterator<Item = String>) {
         if let Ok(mut g) = self.0.write() {
             g.extra = names.into_iter().map(String::into_boxed_str).collect();
-            g.extra_ready = true;
         }
     }
 
@@ -135,24 +132,6 @@ impl Resolver {
             let (p, c) = scan_path(None);
             self.set_path(p, c, false);
         }
-    }
-
-    /// Nothing in the shell (builtin, keyword, alias, function, PATH) is
-    /// called `w`, as far as is known so far. False until PATH is scanned.
-    pub fn is_free(&self, w: &str) -> bool {
-        self.0.read().is_ok_and(|g| {
-            g.ready
-                && !BUILTINS.contains(&w)
-                && !KEYWORDS.contains(&w)
-                && !g.extra.contains(w)
-                && !g.path_cmds.contains(w)
-        })
-    }
-
-    /// [`is_free`](Self::is_free) and the shell's aliases/functions are
-    /// known: safe to claim the name (a user's own `ai` must always win).
-    pub fn is_free_confirmed(&self, w: &str) -> bool {
-        self.0.read().is_ok_and(|g| g.extra_ready) && self.is_free(w)
     }
 
     pub fn resolves(&self, w: &str) -> bool {

@@ -7,8 +7,7 @@ use lineedit_wip::{Class, Plugin, Span};
 use std::sync::{Arc, Mutex};
 
 use crate::blocks::BlockTracker;
-use crate::editor::resolve::Resolver;
-use crate::llm::cmd::{self, is_ai_line, is_llmsh_line, name_for, Cmd};
+use crate::llm::cmd::{self, is_llmsh_line, is_short_line, Cmd};
 use crate::llm::render::Renderer;
 use crate::llm::suggest::{LsCache, ModelSuggest};
 use crate::llm::{ask, Llm};
@@ -56,13 +55,14 @@ impl Plugin for Accent {
 
 #[derive(Default)]
 pub struct ModelModule {
-    env: Option<(Arc<Llm>, Arc<Mutex<BlockTracker>>, Resolver)>,
+    env: Option<(Arc<Llm>, Arc<Mutex<BlockTracker>>)>,
     ls: Arc<LsCache>,
 }
 
-/// Lines the model module takes. `ai` only while the shell has no `ai` of its own.
-fn claims(line: &str, r: &Resolver) -> bool {
-    is_model_line(line) || is_llmsh_line(line) || (is_ai_line(line) && r.is_free_confirmed("ai"))
+/// Lines the model module takes: `?`, `llmsh ...` and the configured short
+/// command (`ai`), which wins over anything of that name in the system.
+fn claims(line: &str, llm: &Llm) -> bool {
+    is_model_line(line) || is_llmsh_line(line) || is_short_line(line, llm.command().as_deref())
 }
 
 impl Module for ModelModule {
@@ -71,10 +71,10 @@ impl Module for ModelModule {
     }
 
     fn editor_plugins(&mut self, env: &Env) -> Vec<Box<dyn Plugin>> {
-        self.env = Some((env.llm.clone(), env.tracker.clone(), env.resolver.clone()));
-        let r = env.resolver.clone();
+        self.env = Some((env.llm.clone(), env.tracker.clone()));
+        let llm = env.llm.clone();
         vec![
-            Box::new(Intercept::new(move |l| claims(l, &r))),
+            Box::new(Intercept::new(move |l| claims(l, &llm))),
             Box::new(RightHint::new(HintText::new("?"))),
             Box::new(Accent),
             Box::new(ModelSuggest::new(
@@ -91,17 +91,14 @@ impl Module for ModelModule {
     }
 
     fn on_intercept(&mut self, line: &str, out: &mut Vec<u8>, task: &mut Option<Task>) -> bool {
-        let Some((llm, tracker, resolver)) = self.env.clone() else {
+        let Some((llm, tracker)) = self.env.clone() else {
             return false;
         };
-        if !claims(line, &resolver) {
+        if !claims(line, &llm) {
             return false;
-        }
-        if is_llmsh_line(line) || is_ai_line(line) {
-            return llmsh_command(&llm, line, out, task);
         }
         if !is_model_line(line) {
-            return false;
+            return llmsh_command(&llm, line, out, task);
         }
         let p = ask::parse(line);
         if p.reset {
@@ -114,7 +111,7 @@ impl Module for ModelModule {
             }
         }
         let Some(target) = llm.target("chat") else {
-            let n = format!("│ модель не настроена · {} config", name_for(&resolver));
+            let n = format!("│ модель не настроена · {} config", llm.command_label());
             out.extend_from_slice(n.as_bytes());
             return true;
         };
