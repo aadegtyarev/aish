@@ -188,6 +188,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "lineedit-wip"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -206,6 +215,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "expectrl",
+ "lineedit-wip",
  "nix 0.29.0",
  "serde",
  "serde_yaml",
@@ -214,7 +224,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "unicode-segmentation",
  "unicode-width",
  "vte",
 ]

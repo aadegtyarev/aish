@@ -35,13 +35,16 @@ Config: `$XDG_CONFIG_HOME/llmsh/config.yaml` (optional). Log: `~/.local/state/ll
 ## Line editor (prompt mode)
 
 bash prints its prompt; llmsh owns only the input area. After OSC 133;B and a short
-output silence (10 ms) llmsh switches to prompt mode: keys go to our own emacs-style
-editor (`src/editor/`), bash's readline sees nothing until Enter, then the line is
-typed into bash (`line\r`), so history, PS2 and everything else stay native. Anything
-typed before the mode switch, `TERM=dumb`, `LLMSH_EDITOR=0`, or any program that is
-running (vim, ssh...) is plain passthrough. Output arriving while editing (background
-job) makes bash repaint its prompt below it and the line is redrawn.
+output silence (10 ms) llmsh switches to prompt mode: keys go to the line editor
+(`crates/llmsh-editor`, a standalone library crate with a plugin architecture),
+bash's readline sees nothing until Enter, then the line is typed into bash
+(`line\r`), so history, PS2 and everything else stay native. Anything typed before
+the mode switch, `TERM=dumb`, `LLMSH_EDITOR=0`, or any program that is running
+(vim, ssh...) is plain passthrough. Output arriving while editing (background job)
+makes bash repaint its prompt below it and the line is redrawn.
 `?`-lines (see UX.md) are not sent to bash yet: a dim notice is printed.
+Features are modules (history, highlight, completion, model), see
+[docs/PLUGINS.md](docs/PLUGINS.md); config `modules: [..]` selects a subset.
 
 | Keys | Action |
 |---|---|
@@ -52,8 +55,12 @@ job) makes bash repaint its prompt below it and the line is redrawn.
 | Ctrl-_ , Ctrl-T | undo, transpose |
 | ↑/↓, Ctrl-P/N | history (prefix-filtered if the line is not empty) |
 | Ctrl-R | inline fuzzy history search (↑/↓/Ctrl-R select, Enter -> line, Esc/Ctrl-G cancel) |
+| Tab | bash completion (bash-completion + your ~/.bashrc in a sidecar); single match inserts, common prefix inserts, else a pager: Tab/Shift-Tab/arrows cycle with preview, Enter/printable accept, Esc reverts |
 | Ctrl-C / Ctrl-L | clear line + `^C` to bash / clear screen |
 | Bracketed paste | inserted verbatim |
 
 History comes from `$HISTFILE` (default `~/.bash_history`). Highlighting: unknown first word
 red, strings yellow, `$vars` cyan, comments dim; `NO_COLOR` disables colors and the ghost text.
+Completion candidates come from a long-lived `bash --norc -i` sidecar (pipes, no pty, own session)
+that sources bash-completion and `~/.bashrc`; answers arrive asynchronously (300 ms limit, then
+plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.

@@ -1,108 +1,59 @@
-//! In-memory history (from $HISTFILE), prefix lookup and fuzzy search.
+//! History abstraction, an in-memory implementation and the fuzzy scorer.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
-#[derive(Default)]
-pub struct History {
-    /// Oldest first, unique, most recent occurrence kept.
-    entries: Vec<String>,
-}
+/// Source of past command lines, oldest first. Only `len`, `get` and `add`
+/// are required; lookups have default implementations (reverse scan with early
+/// exit) that an implementation may override with an index.
+pub trait History: Send + Sync {
+    /// Number of entries.
+    fn len(&self) -> usize;
+    /// Entry `i` (0 = oldest).
+    fn get(&self, i: usize) -> &str;
+    /// Record a submitted line.
+    fn add(&mut self, line: &str);
 
-pub fn histfile() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("HISTFILE").filter(|v| !v.is_empty()) {
-        return Some(p.into());
-    }
-    Some(PathBuf::from(std::env::var_os("HOME")?).join(".bash_history"))
-}
-
-impl History {
-    pub fn load() -> History {
-        let data = histfile()
-            .and_then(|p| std::fs::read(p).ok())
-            .unwrap_or_default();
-        Self::parse(&String::from_utf8_lossy(&data))
-    }
-
-    pub fn parse(data: &str) -> History {
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut rev: Vec<String> = Vec::new();
-        for line in data.lines().rev() {
-            if line.trim().is_empty() || is_timestamp(line) || line.starts_with(' ') {
-                continue;
-            }
-            if seen.insert(line) {
-                rev.push(line.to_owned());
-            }
-        }
-        rev.reverse();
-        History { entries: rev }
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-    pub fn get(&self, i: usize) -> &str {
-        &self.entries[i]
-    }
-
-    /// Record a submitted line (moves an older duplicate to the end).
-    pub fn push(&mut self, line: &str) {
-        if line.trim().is_empty() || line.starts_with(' ') {
-            return;
-        }
-        if let Some(p) = self.entries.iter().rposition(|e| e == line) {
-            let e = self.entries.remove(p);
-            self.entries.push(e);
-        } else {
-            self.entries.push(line.to_owned());
-        }
+    /// True when there are no entries.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Most recent single-line entry that strictly extends `prefix`.
-    pub fn suggest(&self, prefix: &str) -> Option<&str> {
+    fn suggest(&self, prefix: &str) -> Option<&str> {
         if prefix.is_empty() {
             return None;
         }
         let p = prefix.as_bytes();
-        let first = p[0];
-        self.entries
-            .iter()
+        (0..self.len()).rev().map(|i| self.get(i)).find(|e| {
+            let b = e.as_bytes();
+            b.len() > p.len() && b[0] == p[0] && b.starts_with(p) && !e.contains('\n')
+        })
+    }
+
+    /// Nearest entry before index `before` starting with `prefix` and != `skip`.
+    fn prev_matching(&self, before: usize, prefix: &str, skip: &str) -> Option<usize> {
+        (0..before.min(self.len()))
             .rev()
-            .find(|e| {
-                let b = e.as_bytes();
-                b.len() > p.len() && b[0] == first && b.starts_with(p) && !e.contains('\n')
-            })
-            .map(String::as_str)
+            .find(|&i| self.get(i).starts_with(prefix) && self.get(i) != skip)
     }
 
-    /// Index of the nearest entry before `before` that starts with `prefix`
-    /// and differs from `skip`.
-    pub fn prev_matching(&self, before: usize, prefix: &str, skip: &str) -> Option<usize> {
-        (0..before.min(self.entries.len()))
-            .rev()
-            .find(|&i| self.entries[i].starts_with(prefix) && self.entries[i] != skip)
+    /// Nearest entry after index `after` starting with `prefix` and != `skip`.
+    fn next_matching(&self, after: usize, prefix: &str, skip: &str) -> Option<usize> {
+        (after + 1..self.len()).find(|&i| self.get(i).starts_with(prefix) && self.get(i) != skip)
     }
 
-    pub fn next_matching(&self, after: usize, prefix: &str, skip: &str) -> Option<usize> {
-        (after + 1..self.entries.len())
-            .find(|&i| self.entries[i].starts_with(prefix) && self.entries[i] != skip)
-    }
-
-    /// Best `k` fuzzy matches of `query`, best first (indices into entries).
-    pub fn search(&self, query: &str, k: usize, out: &mut Vec<usize>) {
+    /// Best `k` fuzzy matches of `query`, best first (indices).
+    fn search(&self, query: &str, k: usize, out: &mut Vec<usize>) {
         out.clear();
-        let n = self.entries.len();
+        let n = self.len();
         if query.is_empty() {
             out.extend((0..n).rev().take(k));
             return;
         }
         let ci = !query.bytes().any(|b| b.is_ascii_uppercase());
         let mut top: Vec<(i32, usize)> = Vec::with_capacity(k + 1);
-        for (i, e) in self.entries.iter().enumerate() {
+        for i in 0..n {
+            let e = self.get(i);
             if e.contains('\n') {
                 continue;
             }
@@ -118,6 +69,66 @@ impl History {
             }
         }
         out.extend(top.iter().map(|&(_, i)| i));
+    }
+}
+
+/// Unique entries, most recent occurrence kept.
+#[derive(Default)]
+pub struct MemHistory {
+    entries: Vec<String>,
+}
+
+impl MemHistory {
+    /// Parse a bash history file: skips `#<timestamp>` lines, blank lines and
+    /// lines starting with a space; dedupes keeping the most recent.
+    pub fn parse(data: &str) -> MemHistory {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut rev: Vec<String> = Vec::new();
+        for line in data.lines().rev() {
+            if line.trim().is_empty() || is_timestamp(line) || line.starts_with(' ') {
+                continue;
+            }
+            if seen.insert(line) {
+                rev.push(line.to_owned());
+            }
+        }
+        rev.reverse();
+        MemHistory { entries: rev }
+    }
+}
+
+impl History for MemHistory {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+    fn get(&self, i: usize) -> &str {
+        &self.entries[i]
+    }
+    fn add(&mut self, line: &str) {
+        if line.trim().is_empty() || line.starts_with(' ') {
+            return;
+        }
+        if let Some(p) = self.entries.iter().rposition(|e| e == line) {
+            let e = self.entries.remove(p);
+            self.entries.push(e);
+        } else {
+            self.entries.push(line.to_owned());
+        }
+    }
+    // Faster than the default: direct slice access.
+    fn suggest(&self, prefix: &str) -> Option<&str> {
+        if prefix.is_empty() {
+            return None;
+        }
+        let p = prefix.as_bytes();
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| {
+                let b = e.as_bytes();
+                b.len() > p.len() && b[0] == p[0] && b.starts_with(p) && !e.contains('\n')
+            })
+            .map(String::as_str)
     }
 }
 
@@ -201,25 +212,25 @@ mod tests {
 
     #[test]
     fn parse_dedupes_keeps_recent_skips_timestamps() {
-        let h = History::parse("#1700000000\nls\ngit st\n#1700000001\nls\n\n  hidden\ncd /\n");
+        let h = MemHistory::parse("#1700000000\nls\ngit st\n#1700000001\nls\n\n  hidden\ncd /\n");
         let v: Vec<_> = (0..h.len()).map(|i| h.get(i)).collect();
         assert_eq!(v, ["git st", "ls", "cd /"]);
     }
 
     #[test]
     fn suggest_prefix_most_recent() {
-        let mut h = History::parse("echo hello\necho help\nls\n");
+        let mut h = MemHistory::parse("echo hello\necho help\nls\n");
         assert_eq!(h.suggest("ech"), Some("echo help"));
         assert_eq!(h.suggest("echo help"), None);
         assert_eq!(h.suggest(""), None);
-        h.push("echo hello");
+        h.add("echo hello");
         assert_eq!(h.suggest("echo h"), Some("echo hello"));
         assert_eq!(h.len(), 3);
     }
 
     #[test]
     fn prefix_navigation() {
-        let h = History::parse("git a\nls\ngit b\n");
+        let h = MemHistory::parse("git a\nls\ngit b\n");
         let i = h.prev_matching(3, "git", "git").unwrap();
         assert_eq!(h.get(i), "git b");
         let j = h.prev_matching(i, "git", "git").unwrap();
@@ -230,7 +241,8 @@ mod tests {
 
     #[test]
     fn fuzzy_ranking() {
-        let h = History::parse("cargo build --release\nfoo bar baz\ngit commit -m x\ncat config\n");
+        let h =
+            MemHistory::parse("cargo build --release\nfoo bar baz\ngit commit -m x\ncat config\n");
         let mut out = vec![];
         h.search("gc", 8, &mut out);
         assert_eq!(h.get(out[0]), "git commit -m x");
@@ -256,7 +268,7 @@ mod tests {
         for i in 0..100_000 {
             data.push_str(&format!("command-number {i} --flag value{}\n", i % 97));
         }
-        let h = History::parse(&data);
+        let h = MemHistory::parse(&data);
         let t = std::time::Instant::now();
         let mut hits = 0;
         for q in ["zzz", "command-number 9999", "q", "command-number 1"] {

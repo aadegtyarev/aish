@@ -94,6 +94,9 @@ pub struct Config {
     pub providers: Vec<Provider>,
     #[serde(default)]
     pub roles: HashMap<String, Role>,
+    /// Enabled modules by name; absent = all (see docs/PLUGINS.md).
+    #[serde(default)]
+    pub modules: Option<Vec<String>>,
 }
 
 /// A role resolved to concrete provider/model/effort.

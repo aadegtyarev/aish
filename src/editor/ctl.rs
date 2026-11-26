@@ -1,21 +1,22 @@
-//! I/O side of prompt mode: decides when we own the input line, feeds keys to
-//! the editor, draws, and hands finished lines to bash.
+//! I/O side of prompt mode: decides when we own the input line, feeds bytes
+//! to the editor, draws, and hands finished lines to bash.
 //!
 //! Lock discipline: one mutex around [`Controller`], taken by the input thread
-//! (per read), the output thread (per chunk) and the resize thread. Bulk
-//! passthrough writes happen outside the lock.
+//! (per read), the output thread (per chunk), the resize thread and plugin
+//! wakers. Bulk passthrough writes happen outside the lock.
 
 use std::fs::File;
 use std::io::Write;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use super::highlight::{is_model_line, Resolver};
-use super::history::History;
-use super::keys::{strip_dsr, Decoder, Key};
-use super::render::Renderer;
+use lineedit_wip::plugins::SharedHistory;
+use lineedit_wip::{strip_cursor_reports, Editor, Event, MemHistory, Theme};
+
+use super::resolve::Resolver;
 use super::scan::Scan;
-use super::{Action, Editor};
+use crate::blocks::{Block, BlockTracker};
+use crate::module::{self, Env, Module};
 
 /// Output silence after OSC 133;B before we take over the input line.
 pub const QUIET: Duration = Duration::from_millis(10);
@@ -25,7 +26,6 @@ const DSR_TTL: Duration = Duration::from_secs(1);
 
 /// Bound to `redraw-current-line` in rc.bash.
 const REDRAW_KEY: &[u8] = b"\x1b[1337~";
-const MODEL_NOTICE: &str = " │ model not connected yet";
 
 pub type Shared = Arc<Mutex<Controller>>;
 
@@ -42,10 +42,7 @@ pub enum Input {
 
 pub struct Controller {
     ed: Editor,
-    rend: Renderer,
     scan: Scan,
-    dec: Decoder,
-    keys: Vec<Key>,
     prompt: bool,
     /// Bytes went to bash while its prompt was waiting: its line is not empty.
     dirty: bool,
@@ -53,7 +50,10 @@ pub struct Controller {
     use_dsr: bool,
     master: File,
     stdout: File,
-    out: Vec<u8>,
+    modules: Vec<Box<dyn Module>>,
+    events: Vec<Event>,
+    notice: Vec<u8>,
+    seen_blocks: u64,
 }
 
 fn width() -> u16 {
@@ -67,31 +67,56 @@ pub fn wanted() -> bool {
 }
 
 impl Controller {
-    /// Build the controller; history and PATH are loaded in the background.
-    pub fn start(master: File, stdout: File) -> Shared {
-        let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    /// Build the controller and its editor from the enabled modules.
+    pub fn start(
+        master: File,
+        stdout: File,
+        tracker: Arc<Mutex<BlockTracker>>,
+        enabled: Option<&[String]>,
+    ) -> Shared {
+        let env = Env {
+            tracker,
+            resolver: Resolver::default(),
+            history: SharedHistory::new(Box::new(MemHistory::default())),
+        };
+        let mut modules = module::builtin(enabled);
+        // Late plugin results wake us through this slot (set once `ctl` exists).
+        let slot: Arc<OnceLock<Weak<Mutex<Controller>>>> = Arc::new(OnceLock::new());
+        let waker_slot = slot.clone();
+        let mut b = Editor::builder().theme(Theme::from_env()).waker(move || {
+            let Some(c) = waker_slot.get().and_then(Weak::upgrade) else {
+                return;
+            };
+            // The thread that delivers is never the one holding the lock;
+            // if it is anyway (synchronous delivery), the next key polls.
+            for _ in 0..50 {
+                if let Ok(mut g) = c.try_lock() {
+                    g.poll_plugins();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        for m in &mut modules {
+            for p in m.editor_plugins(&env) {
+                b = b.with_boxed(p);
+            }
+        }
         let ctl = Arc::new(Mutex::new(Controller {
-            ed: Editor::new(color),
-            rend: Renderer::default(),
+            ed: b.build(),
             scan: Scan::default(),
-            dec: Decoder::new(),
-            keys: Vec::with_capacity(16),
             prompt: false,
             dirty: false,
             dsr: None,
             use_dsr: true,
             master,
             stdout,
-            out: Vec::with_capacity(4096),
+            modules,
+            events: Vec::with_capacity(8),
+            notice: Vec::new(),
+            seen_blocks: 0,
         }));
-        let c = ctl.clone();
-        std::thread::spawn(move || {
-            let h = History::load();
-            let (path, cmds) = Resolver::scan_path();
-            let mut g = lock(&c);
-            g.ed.hist = h;
-            g.ed.resolver.set_path(path, cmds);
-        });
+        let _ = slot.set(Arc::downgrade(&ctl));
         ctl
     }
 
@@ -104,23 +129,23 @@ impl Controller {
         self.scan.b_seen && !self.prompt && !self.dirty
     }
 
-    fn flush_out(&mut self) {
-        let _ = self.stdout.write_all(&self.out);
-        self.out.clear();
+    /// A command block finished (called from the output thread).
+    pub fn on_block(&mut self, total: u64, block: &Block) {
+        if total != self.seen_blocks {
+            self.seen_blocks = total;
+            for m in &mut self.modules {
+                m.on_block_finished(block);
+            }
+        }
     }
 
     fn draw(&mut self) {
-        let w = width();
-        self.ed.prepare(w);
-        self.out.clear();
-        self.rend.draw(&mut self.out, &self.ed.view(), w);
-        self.flush_out();
+        let _ = self.ed.draw(&mut self.stdout, width());
+        let _ = self.stdout.flush();
     }
 
     fn erase(&mut self) {
-        self.out.clear();
-        self.rend.erase(&mut self.out);
-        self.flush_out();
+        let _ = self.ed.erase(&mut self.stdout);
     }
 
     /// Output that is going to the terminal while we are NOT in prompt mode;
@@ -169,20 +194,17 @@ impl Controller {
         if !self.armed() {
             return;
         }
-        if self.ed.resolver.path_stale() {
-            let c_path = Resolver::scan_path();
-            self.ed.resolver.set_path(c_path.0, c_path.1);
+        for m in &mut self.modules {
+            m.on_prompt();
         }
         self.prompt = true;
         let w = width();
-        self.rend.reset(self.scan.column(w));
-        self.out.clear();
-        self.out.extend_from_slice(b"\x1b[?2004h");
+        self.ed.reset_screen(self.scan.column(w));
+        let _ = self.stdout.write_all(b"\x1b[?2004h");
         if self.use_dsr {
-            self.out.extend_from_slice(b"\x1b[6n");
+            let _ = self.stdout.write_all(b"\x1b[6n");
             self.dsr = Some(Instant::now());
         }
-        self.flush_out();
         self.draw();
     }
 
@@ -202,7 +224,7 @@ impl Controller {
         if !self.prompt {
             let mut len = n;
             if let Some(t) = self.dsr {
-                let (l, found) = strip_dsr(&mut buf[..n]);
+                let (l, found) = strip_cursor_reports(&mut buf[..n]);
                 len = l;
                 if found || t.elapsed() > DSR_TTL {
                     self.dsr = None;
@@ -213,140 +235,122 @@ impl Controller {
             }
             return Input::Forward(len);
         }
-        let mut keys = std::mem::take(&mut self.keys);
-        self.dec.feed(&buf[..n], &mut |k| keys.push(k));
-        self.run_keys(&mut keys);
-        self.keys = keys;
-        Input::Handled(self.dec.has_pending())
+        let mut ev = std::mem::take(&mut self.events);
+        self.ed.input(&buf[..n], &mut ev);
+        self.ed.poll(&mut ev);
+        self.handle_events(&mut ev);
+        self.events = ev;
+        Input::Handled(self.ed.has_pending_input())
     }
 
     /// Input went quiet while a partial key was pending.
     pub fn flush_keys(&mut self) {
-        let mut keys = std::mem::take(&mut self.keys);
-        self.dec.flush(&mut |k| keys.push(k));
+        let mut ev = std::mem::take(&mut self.events);
+        self.ed.flush_input(&mut ev);
         if self.prompt {
-            self.run_keys(&mut keys);
+            self.handle_events(&mut ev);
         }
-        self.keys = keys;
+        self.events = ev;
+    }
+
+    /// A plugin delivered something (async completion...).
+    pub fn poll_plugins(&mut self) {
+        if !self.prompt {
+            return;
+        }
+        let mut ev = std::mem::take(&mut self.events);
+        self.ed.poll(&mut ev);
+        self.handle_events(&mut ev);
+        self.events = ev;
     }
 
     fn send(&mut self, bytes: &[u8]) {
         let _ = self.master.write_all(bytes);
     }
 
-    fn run_keys(&mut self, keys: &mut Vec<Key>) {
-        let mut it = keys.drain(..);
-        while let Some(k) = it.next() {
-            if let Key::CursorPos(_, c) = k {
-                if self.dsr.take().is_some() && c >= 1 {
-                    let col = (c - 1).min(width() - 1);
-                    if col != self.rend.start_col {
-                        self.erase();
-                        self.rend.reset(col);
-                    }
-                }
-                continue;
-            }
-            match self.ed.handle_key(k) {
-                Action::None => {}
-                a => {
-                    self.finish(a);
-                    // Whatever was typed after the line ended belongs to bash.
-                    let rest: Vec<Key> = it.collect();
-                    self.forward_keys(&rest);
-                    return;
-                }
-            }
-        }
-        drop(it);
-        self.draw();
-    }
-
-    fn forward_keys(&mut self, keys: &[Key]) {
-        let mut b = Vec::new();
-        for k in keys {
-            match k {
-                Key::Char(c) => b.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
-                Key::Enter => b.push(b'\r'),
-                Key::Tab => b.push(b'\t'),
-                Key::Backspace => b.push(0x7f),
-                Key::Paste(s) => b.extend_from_slice(s.as_bytes()),
-                Key::Ctrl(c) if c.is_ascii_lowercase() => b.push(c - b'a' + 1),
-                _ => {}
-            }
-        }
-        if !b.is_empty() {
-            self.send(&b);
-        }
-    }
-
-    /// A key ended prompt mode.
-    fn finish(&mut self, a: Action) {
-        match a {
-            Action::Submit => {
-                let line = self.ed.take_line();
-                if is_model_line(&line) {
-                    self.model_line(&line);
-                } else {
-                    self.erase();
-                    self.leave(true);
-                    let mut b = Vec::with_capacity(line.len() + 1);
-                    for &c in line.as_bytes() {
-                        // Quote controls so readline inserts them literally.
-                        if (c < 0x20 && c != b'\n') || c == 0x7f {
-                            b.push(0x16);
+    fn handle_events(&mut self, events: &mut Vec<Event>) {
+        let mut left = false;
+        for ev in events.drain(..) {
+            match ev {
+                Event::CursorReport(_, c) => {
+                    if !left && self.dsr.take().is_some() && c >= 1 {
+                        let col = (c - 1).min(width() - 1);
+                        if col != self.ed.start_col() {
+                            self.erase();
+                            self.ed.reset_screen(col);
                         }
-                        b.push(c);
                     }
-                    b.push(b'\r');
+                }
+                Event::NeedRedraw => {}
+                Event::Submit(line) => {
+                    if !left {
+                        self.erase();
+                        self.leave(true);
+                        left = true;
+                    }
+                    self.send_line(&line);
+                }
+                Event::Intercepted(line) => {
+                    if left {
+                        continue;
+                    }
+                    let mut notice = std::mem::take(&mut self.notice);
+                    notice.clear();
+                    let handled = self
+                        .modules
+                        .iter_mut()
+                        .any(|m| m.on_intercept(&line, &mut notice));
+                    if handled {
+                        // The typed line stays on screen, the notice follows,
+                        // and a bare Enter makes bash print a fresh prompt (its
+                        // line is empty: an empty block, which the tracker drops).
+                        let _ = self.ed.draw_final(&mut self.stdout, width(), &line);
+                        let _ = self.stdout.write_all(b"\r\n");
+                        let dim = self.ed.theme().enabled;
+                        if dim {
+                            let _ = write!(self.stdout, "\x1b[{}m", self.ed.theme().dim);
+                        }
+                        let _ = self.stdout.write_all(&notice);
+                        if dim {
+                            let _ = self.stdout.write_all(b"\x1b[0m");
+                        }
+                        self.leave(true);
+                        self.send(b"\r");
+                    } else {
+                        self.erase();
+                        self.leave(true);
+                        self.send_line(&line);
+                    }
+                    self.notice = notice;
+                    left = true;
+                }
+                Event::PassKey(b) => {
+                    if !left {
+                        self.erase();
+                        self.leave(true);
+                        left = true;
+                    }
                     self.send(&b);
                 }
             }
-            Action::Interrupt => {
-                self.erase();
-                self.leave(true);
-                self.send(&[0x03]);
-            }
-            Action::Eof => {
-                self.erase();
-                self.leave(true);
-                self.send(&[0x04]);
-            }
-            Action::ClearScreen => {
-                self.erase();
-                self.leave(true);
-                self.send(&[0x0c]);
-            }
-            Action::None => {}
+        }
+        if !left && self.prompt {
+            self.draw();
         }
     }
 
-    /// Model lines are not sent to bash. The typed line stays on screen, a dim
-    /// notice follows, and a bare Enter makes bash print a fresh prompt (its
-    /// line is empty, so this records an empty block, which the tracker drops).
-    fn model_line(&mut self, line: &str) {
-        let w = width();
-        self.ed.prepare(w);
-        self.out.clear();
-        // Draw the finished line without ghost/extra rows, cursor at its end.
-        let mut v = self.ed.view();
-        v.text = line;
-        v.cursor = line.len();
-        v.ghost = "";
-        v.extra = b"";
-        v.extra_rows = 0;
-        self.rend.draw(&mut self.out, &v, w);
-        self.out.extend_from_slice(b"\r\n");
-        if self.ed.color {
-            self.out.extend_from_slice(b"\x1b[2m");
+    /// Type `line` into bash and press Enter.
+    fn send_line(&mut self, line: &str) {
+        let mut b = Vec::with_capacity(line.len() + 1);
+        for &c in line.as_bytes() {
+            // Quote controls so readline inserts them literally.
+            if (c < 0x20 && c != b'\n') || c == 0x7f {
+                b.push(0x16);
+            }
+            b.push(c);
         }
-        self.out.extend_from_slice(MODEL_NOTICE.as_bytes());
-        if self.ed.color {
-            self.out.extend_from_slice(b"\x1b[0m");
-        }
-        self.flush_out();
-        self.leave(true);
-        self.send(b"\r");
+        b.push(b'\r');
+        self.send(&b);
     }
 
     /// Terminal resized: bash gets the new size via `apply`; we erase before

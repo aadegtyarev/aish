@@ -240,3 +240,19 @@ fn editing_keys_and_submit_to_bash() {
     p.send("\x04").unwrap();
     p.expect(Eof).unwrap();
 }
+
+#[test]
+fn tab_completes_path() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ls /us").unwrap();
+    p.send("\t").unwrap();
+    p.expect("/usr/").unwrap();
+    p.send("\r").unwrap(); // runs `ls /usr/`
+    p.expect("bin").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

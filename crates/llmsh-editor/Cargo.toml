@@ -1,0 +1,14 @@
+[package]
+name = "lineedit-wip" # placeholder, final name TBD
+version = "0.1.0"
+edition = "2021"
+description = "Small embeddable emacs-style line editor with a plugin architecture"
+license = "MIT OR Apache-2.0"
+publish = false
+readme = "README.md"
+
+[dependencies]
+unicode-segmentation = "1"
+unicode-width = "0.2"
+# raw mode, window size and poll for the standalone reader only
+libc = "0.2"

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/llmsh-editor"]
+resolver = "2"
+
 [package]
 name = "llmsh"
 version = "0.1.0"
@@ -19,8 +23,8 @@ signal-hook = "0.3"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-unicode-segmentation = "1"
 unicode-width = "0.2"
+lineedit-wip = { path = "crates/llmsh-editor" }
 vte = "0.15"
 
 [dev-dependencies]

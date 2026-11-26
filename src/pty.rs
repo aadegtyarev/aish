@@ -102,6 +102,7 @@ pub fn pump_output(
     ed: Option<Shared>,
 ) {
     let mut armed = false;
+    let mut seen_blocks = 0u64;
     let mut buf = vec![0u8; 64 * 1024];
     let mut out = Vec::with_capacity(buf.len());
     let mut filter = Filter::default();
@@ -140,8 +141,18 @@ pub fn pump_output(
                 }
             }
         }
-        if let Ok(mut t) = tracker.lock() {
+        let finished = tracker.lock().ok().and_then(|mut t| {
             t.feed(&buf[..n]);
+            let total = t.blocks().total();
+            if total != seen_blocks {
+                seen_blocks = total;
+                t.blocks().last(1).next().cloned().map(|b| (total, b))
+            } else {
+                None
+            }
+        });
+        if let (Some((total, b)), Some(c)) = (finished, &ed) {
+            ctl::lock(c).on_block(total, &b);
         }
     }
 }

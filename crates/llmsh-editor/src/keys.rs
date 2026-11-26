@@ -1,31 +1,52 @@
 //! Byte stream -> keys. Handles sequences split across reads, UTF-8, SS3/CSI,
 //! modifiers, bracketed paste and cursor-position reports.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A decoded key press.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
+    /// A printable character.
     Char(char),
     /// Control letter (`b'a'..=b'z'`), `b'_'` for Ctrl-_ and `b' '` for Ctrl-Space.
     Ctrl(u8),
+    /// Alt/Meta plus a character.
     Alt(char),
+    /// Enter / Return.
     Enter,
+    /// Tab.
     Tab,
+    /// Shift-Tab.
     BackTab,
+    /// Backspace (also Ctrl-H).
     Backspace,
+    /// Alt-Backspace.
     AltBackspace,
+    /// Delete.
     Delete,
+    /// Left arrow.
     Left,
+    /// Right arrow.
     Right,
+    /// Up arrow.
     Up,
+    /// Down arrow.
     Down,
+    /// Home.
     Home,
+    /// End.
     End,
+    /// Ctrl-Left.
     CtrlLeft,
+    /// Ctrl-Right.
     CtrlRight,
+    /// Alt-Left.
     AltLeft,
+    /// Alt-Right.
     AltRight,
+    /// Escape.
     Esc,
+    /// Bracketed paste contents.
     Paste(String),
-    /// Reply to DSR 6: (row, col), 1-based.
+    /// Reply to a cursor-position query: (row, col), 1-based.
     CursorPos(u16, u16),
 }
 
@@ -33,7 +54,7 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 const MAX_PENDING: usize = 4096;
 
 #[derive(Default)]
-pub struct Decoder {
+pub(crate) struct Decoder {
     pending: Vec<u8>,
     in_paste: bool,
     paste: Vec<u8>,
@@ -47,7 +68,7 @@ enum Esc {
 }
 
 impl Decoder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Decoder {
             pending: Vec::with_capacity(64),
             in_paste: false,
@@ -56,11 +77,11 @@ impl Decoder {
     }
 
     /// A partial sequence (typically a lone ESC) is waiting for more bytes.
-    pub fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
-    pub fn feed(&mut self, bytes: &[u8], f: &mut impl FnMut(Key)) {
+    pub(crate) fn feed(&mut self, bytes: &[u8], f: &mut impl FnMut(Key)) {
         if self.pending.is_empty() {
             let n = self.parse(bytes, f);
             if n < bytes.len() {
@@ -80,7 +101,7 @@ impl Decoder {
 
     /// Input went quiet: a held back ESC was a real Escape; other partial
     /// sequences are dropped.
-    pub fn flush(&mut self, f: &mut impl FnMut(Key)) {
+    pub(crate) fn flush(&mut self, f: &mut impl FnMut(Key)) {
         let p = std::mem::take(&mut self.pending);
         if p == [0x1b] {
             f(Key::Esc);
@@ -295,9 +316,9 @@ fn csi(d: &[u8]) -> Esc {
     Esc::Done(n, key)
 }
 
-/// Remove DSR cursor-position replies (`ESC [ r ; c R`) from `buf` in place;
+/// Remove cursor-position replies (`ESC [ r ; c R`) from `buf` in place;
 /// returns (new length, whether one was found).
-pub fn strip_dsr(buf: &mut [u8]) -> (usize, bool) {
+pub fn strip_cursor_reports(buf: &mut [u8]) -> (usize, bool) {
     let mut w = 0;
     let mut r = 0;
     let mut found = false;
@@ -421,7 +442,7 @@ mod tests {
     #[test]
     fn strips_dsr() {
         let mut b = *b"a\x1b[3;7Rb";
-        let (n, f) = strip_dsr(&mut b);
+        let (n, f) = strip_cursor_reports(&mut b);
         assert_eq!((&b[..n], f), (&b"ab"[..], true));
     }
 }

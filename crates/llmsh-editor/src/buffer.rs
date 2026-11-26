@@ -15,13 +15,14 @@ enum Kind {
 }
 
 #[derive(Default)]
-pub struct Buffer {
+pub(crate) struct Buffer {
     text: String,
     cursor: usize,
     undo: Vec<(String, usize)>,
     undo_len: usize,
     last: Option<Kind>,
     kill: String,
+    rev: u64,
 }
 
 fn is_word(c: char) -> bool {
@@ -29,27 +30,33 @@ fn is_word(c: char) -> bool {
 }
 
 impl Buffer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Buffer {
             text: String::with_capacity(256),
             ..Default::default()
         }
     }
 
-    pub fn text(&self) -> &str {
+    /// Incremented on every content change.
+    pub(crate) fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    pub(crate) fn text(&self) -> &str {
         &self.text
     }
-    pub fn cursor(&self) -> usize {
+    pub(crate) fn cursor(&self) -> usize {
         self.cursor
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
-    pub fn at_end(&self) -> bool {
+    pub(crate) fn at_end(&self) -> bool {
         self.cursor == self.text.len()
     }
 
     fn checkpoint(&mut self, kind: Kind) {
+        self.rev += 1;
         if kind == Kind::Insert && self.last == Some(Kind::Insert) {
             return;
         }
@@ -76,7 +83,7 @@ impl Buffer {
     }
 
     /// Replace everything (history recall, completion preview): undoable.
-    pub fn set(&mut self, s: &str) {
+    pub(crate) fn set(&mut self, s: &str) {
         self.checkpoint(Kind::Other);
         self.text.clear();
         self.text.push_str(s);
@@ -84,31 +91,32 @@ impl Buffer {
     }
 
     /// Drop all content and history of edits.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
+        self.rev += 1;
         self.text.clear();
         self.cursor = 0;
         self.undo_len = 0;
         self.last = None;
     }
 
-    pub fn take(&mut self) -> String {
+    pub(crate) fn take(&mut self) -> String {
         let s = self.text.clone();
         self.clear();
         s
     }
 
-    pub fn set_cursor(&mut self, c: usize) {
+    pub(crate) fn set_cursor(&mut self, c: usize) {
         self.cursor = c.min(self.text.len());
         self.nav();
     }
 
-    pub fn insert(&mut self, c: char) {
+    pub(crate) fn insert(&mut self, c: char) {
         self.checkpoint(Kind::Insert);
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
     }
 
-    pub fn insert_str(&mut self, s: &str) {
+    pub(crate) fn insert_str(&mut self, s: &str) {
         if s.is_empty() {
             return;
         }
@@ -131,11 +139,11 @@ impl Buffer {
             .map_or(self.cursor, |g| self.cursor + g.len())
     }
 
-    pub fn left(&mut self) {
+    pub(crate) fn left(&mut self) {
         self.cursor = self.prev_boundary();
         self.nav();
     }
-    pub fn right(&mut self) {
+    pub(crate) fn right(&mut self) {
         self.cursor = self.next_boundary();
         self.nav();
     }
@@ -148,11 +156,11 @@ impl Buffer {
             .find('\n')
             .map_or(self.text.len(), |i| self.cursor + i)
     }
-    pub fn home(&mut self) {
+    pub(crate) fn home(&mut self) {
         self.cursor = self.line_start();
         self.nav();
     }
-    pub fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         self.cursor = self.line_end();
         self.nav();
     }
@@ -167,7 +175,7 @@ impl Buffer {
         pos.unwrap_or_else(|| it.peek().map_or(0, |&(i, c)| i + c.len_utf8()))
     }
 
-    pub fn word_right_pos_in(s: &str) -> usize {
+    pub(crate) fn word_right_pos_in(s: &str) -> usize {
         let mut it = s.char_indices().peekable();
         while it.next_if(|&(_, c)| !is_word(c)).is_some() {}
         while it.next_if(|&(_, c)| is_word(c)).is_some() {}
@@ -188,11 +196,11 @@ impl Buffer {
         pos.unwrap_or_else(|| it.peek().map_or(0, |&(i, c)| i + c.len_utf8()))
     }
 
-    pub fn word_left(&mut self) {
+    pub(crate) fn word_left(&mut self) {
         self.cursor = self.word_left_pos();
         self.nav();
     }
-    pub fn word_right(&mut self) {
+    pub(crate) fn word_right(&mut self) {
         self.cursor = self.word_right_pos();
         self.nav();
     }
@@ -210,30 +218,30 @@ impl Buffer {
         self.cursor = a;
     }
 
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         let p = self.prev_boundary();
         self.cut(p, self.cursor, false);
     }
-    pub fn delete(&mut self) {
+    pub(crate) fn delete(&mut self) {
         let n = self.next_boundary();
         self.cut(self.cursor, n, false);
     }
     /// Ctrl-W: back to the previous whitespace-delimited word start.
-    pub fn kill_ws_word_back(&mut self) {
+    pub(crate) fn kill_ws_word_back(&mut self) {
         let p = self.ws_word_left_pos();
         self.cut(p, self.cursor, true);
     }
     /// Alt-Backspace.
-    pub fn kill_word_back(&mut self) {
+    pub(crate) fn kill_word_back(&mut self) {
         let p = self.word_left_pos();
         self.cut(p, self.cursor, true);
     }
     /// Alt-D.
-    pub fn kill_word_fwd(&mut self) {
+    pub(crate) fn kill_word_fwd(&mut self) {
         let p = self.word_right_pos();
         self.cut(self.cursor, p, true);
     }
-    pub fn kill_to_end(&mut self) {
+    pub(crate) fn kill_to_end(&mut self) {
         let e = if self.text[self.cursor..].starts_with('\n') {
             self.cursor + 1
         } else {
@@ -241,12 +249,12 @@ impl Buffer {
         };
         self.cut(self.cursor, e, true);
     }
-    pub fn kill_to_start(&mut self) {
+    pub(crate) fn kill_to_start(&mut self) {
         let s = self.line_start();
         self.cut(s, self.cursor, true);
     }
 
-    pub fn yank(&mut self) {
+    pub(crate) fn yank(&mut self) {
         if self.kill.is_empty() {
             return;
         }
@@ -255,7 +263,7 @@ impl Buffer {
         self.cursor += self.kill.len();
     }
 
-    pub fn transpose(&mut self) {
+    pub(crate) fn transpose(&mut self) {
         let end = if self.at_end() {
             self.cursor
         } else {
@@ -281,10 +289,11 @@ impl Buffer {
         self.cursor = end;
     }
 
-    pub fn undo(&mut self) {
+    pub(crate) fn undo(&mut self) {
         if self.undo_len == 0 {
             return;
         }
+        self.rev += 1;
         self.undo_len -= 1;
         let (s, c) = &self.undo[self.undo_len];
         self.text.clear();

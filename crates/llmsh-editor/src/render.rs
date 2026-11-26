@@ -7,9 +7,10 @@ use std::io::Write;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::highlight::{Class, Span};
+use crate::highlight::{Class, Span};
+use crate::theme::Theme;
 
-pub struct View<'a> {
+pub(crate) struct View<'a> {
     pub text: &'a str,
     pub cursor: usize,
     pub spans: &'a [Span],
@@ -17,13 +18,13 @@ pub struct View<'a> {
     /// Pre-formatted rows below the input, separated by `\n`.
     pub extra: &'a [u8],
     pub extra_rows: u16,
-    pub color: bool,
+    pub theme: &'a Theme,
 }
 
 #[derive(Default)]
-pub struct Renderer {
+pub(crate) struct Renderer {
     pub start_col: u16,
-    cur_row: u16,
+    pub cur_row: u16,
 }
 
 struct Lay {
@@ -31,14 +32,16 @@ struct Lay {
     col: u16,
 }
 
-fn sgr(c: Class) -> &'static [u8] {
-    match c {
-        Class::Default => b"\x1b[0m",
-        Class::Error => b"\x1b[0;31m",
-        Class::Str => b"\x1b[0;33m",
-        Class::Var | Class::Accent => b"\x1b[0;36m",
-        Class::Comment => b"\x1b[0;2m",
-    }
+fn sgr(out: &mut Vec<u8>, c: Class, t: &Theme) {
+    let p = match c {
+        Class::Default => "",
+        Class::Error => &t.error,
+        Class::Str => &t.string,
+        Class::Var => &t.variable,
+        Class::Accent => &t.accent,
+        Class::Comment => &t.comment,
+    };
+    let _ = write!(out, "\x1b[0;{p}m");
 }
 
 /// Emit one grapheme at `lay`, wrapping like a terminal would but without
@@ -83,7 +86,7 @@ fn emit(out: &mut Vec<u8>, lay: &mut Lay, g: &str, width: u16, rec: Option<&mut 
 }
 
 impl Renderer {
-    pub fn reset(&mut self, start_col: u16) {
+    pub(crate) fn reset(&mut self, start_col: u16) {
         self.start_col = start_col;
         self.cur_row = 0;
     }
@@ -96,7 +99,7 @@ impl Renderer {
     }
 
     /// Back to the end of the prompt and clear everything below.
-    pub fn erase(&mut self, out: &mut Vec<u8>) {
+    pub(crate) fn erase(&mut self, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\x1b[?2026h");
         self.to_origin(out);
         out.extend_from_slice(b"\x1b[J\x1b[?2026l");
@@ -104,7 +107,7 @@ impl Renderer {
     }
 
     /// Move the cursor to the end of the drawn input (for finalising a line).
-    pub fn draw(&mut self, out: &mut Vec<u8>, v: &View, width: u16) {
+    pub(crate) fn draw(&mut self, out: &mut Vec<u8>, v: &View, width: u16) {
         let width = width.max(4);
         self.start_col = self.start_col.min(width - 1);
         out.extend_from_slice(b"\x1b[?2026h");
@@ -118,7 +121,7 @@ impl Renderer {
         let mut si = 0;
         let mut style = Class::Default;
         for (i, g) in v.text.grapheme_indices(true) {
-            if v.color {
+            if v.theme.enabled {
                 while si < v.spans.len() && v.spans[si].end <= i {
                     si += 1;
                 }
@@ -127,7 +130,7 @@ impl Renderer {
                     _ => Class::Default,
                 };
                 if cls != style {
-                    out.extend_from_slice(sgr(cls));
+                    sgr(out, cls, v.theme);
                     style = cls;
                 }
             }
@@ -143,8 +146,8 @@ impl Renderer {
         if !cur_set {
             cur = (lay.row, lay.col);
         }
-        if v.color && !v.ghost.is_empty() {
-            out.extend_from_slice(b"\x1b[2m");
+        if v.theme.enabled && !v.ghost.is_empty() {
+            let _ = write!(out, "\x1b[0;{}m", v.theme.ghost);
             let mut gl = Lay {
                 row: lay.row,
                 col: lay.col,
@@ -178,6 +181,8 @@ impl Renderer {
 mod tests {
     use super::*;
 
+    static TH: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(Theme::default);
+
     fn view<'a>(t: &'a str, c: usize, ghost: &'a str) -> View<'a> {
         View {
             text: t,
@@ -186,7 +191,7 @@ mod tests {
             ghost,
             extra: b"",
             extra_rows: 0,
-            color: true,
+            theme: &TH,
         }
     }
 

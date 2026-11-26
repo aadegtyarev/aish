@@ -16,14 +16,19 @@ pub fn state_dir() -> Option<PathBuf> {
 
 /// Write the rc file (atomically, only if changed) and return its path.
 pub fn install_rc() -> Result<PathBuf> {
+    install_file("rc.bash", RC)
+}
+
+/// Write `content` to `<state dir>/<name>` (atomically, only if changed).
+pub fn install_file(name: &str, content: &str) -> Result<PathBuf> {
     let dir = state_dir().context("no HOME")?;
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join("rc.bash");
-    if std::fs::read_to_string(&path).is_ok_and(|s| s == RC) {
+    let path = dir.join(name);
+    if std::fs::read_to_string(&path).is_ok_and(|s| s == content) {
         return Ok(path);
     }
-    let tmp = dir.join(format!("rc.bash.{}", std::process::id()));
-    std::fs::write(&tmp, RC)?;
+    let tmp = dir.join(format!("{name}.{}", std::process::id()));
+    std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, &path)?;
     Ok(path)
 }

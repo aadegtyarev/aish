@@ -1,8 +1,11 @@
 //! llmsh: transparent PTY proxy around bash with command blocks.
 
 pub mod blocks;
+pub mod complete;
 pub mod config;
 pub mod editor;
+pub mod module;
+pub mod modules;
 pub mod osc;
 pub mod pty;
 pub mod shell;
@@ -37,8 +40,12 @@ pub fn exec_bash(args: &[std::ffi::OsString], interactive: bool) -> std::io::Err
 
 /// Run the shell under the proxy; returns its exit code.
 pub fn run() -> Result<i32> {
+    let mut enabled_modules: Option<Vec<String>> = None;
     match config::load() {
-        Ok(Some(c)) => tracing::info!(providers = c.providers.len(), "config loaded"),
+        Ok(Some(c)) => {
+            tracing::info!(providers = c.providers.len(), "config loaded");
+            enabled_modules = c.modules;
+        }
         Ok(None) => tracing::info!("no config"),
         Err(e) => tracing::warn!("config: {e:#}"),
     }
@@ -73,6 +80,8 @@ pub fn run() -> Result<i32> {
         Some(editor::ctl::Controller::start(
             m_in.try_clone()?,
             stdout.try_clone()?,
+            tracker.clone(),
+            enabled_modules.as_deref(),
         ))
     } else {
         None

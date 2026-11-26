@@ -29,10 +29,12 @@ pub struct Block {
 #[derive(Debug, Default)]
 pub struct Blocks {
     ring: VecDeque<Block>,
+    total: u64,
 }
 
 impl Blocks {
     fn push(&mut self, b: Block) {
+        self.total += 1;
         if self.ring.len() == MAX_BLOCKS {
             self.ring.pop_front();
         }
@@ -42,6 +44,11 @@ impl Blocks {
     /// The last `n` blocks, oldest first.
     pub fn last(&self, n: usize) -> impl Iterator<Item = &Block> {
         self.ring.iter().skip(self.ring.len().saturating_sub(n))
+    }
+
+    /// Number of blocks ever finished (monotonic, unlike `len`).
+    pub fn total(&self) -> u64 {
+        self.total
     }
 
     pub fn len(&self) -> usize {
