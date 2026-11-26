@@ -52,9 +52,10 @@ impl Status {
     }
 
     pub fn set_jobs(&self, n: usize) {
+        // under the lock, so a racing begin/end cannot interleave its hint update
+        let Ok(b) = self.0.busy.lock() else { return };
         self.0.jobs.store(n, Ordering::Relaxed);
-        let shown = self.0.busy.lock().is_ok_and(|b| b.shown_at.is_some());
-        if !shown {
+        if b.shown_at.is_none() {
             self.0.hint.set(&self.normal());
         }
     }
@@ -75,7 +76,6 @@ impl Status {
             let Ok(mut b) = me.0.busy.lock() else { return };
             if b.active && b.gen == gen && b.shown_at.is_none() {
                 b.shown_at = Some(Instant::now());
-                drop(b);
                 me.0.hint.set("⋯");
             }
         });
@@ -98,7 +98,6 @@ impl Status {
             let Ok(mut b) = me.0.busy.lock() else { return };
             if !b.active && b.shown_at == Some(t) {
                 b.shown_at = None;
-                drop(b);
                 me.0.hint.set(&me.normal());
             }
         });

@@ -105,6 +105,7 @@ pub struct Controller {
     pending_prefill: Option<String>,
     /// We poked the shell about a finished job: swallow its own report line.
     job_window: Option<Instant>,
+    prefill_watch: bool,
     job_lines: crate::llm::jobs::LineStripper,
     typeahead: Vec<u8>,
 }
@@ -114,7 +115,7 @@ pub struct Controller {
 fn spawn_job_poller(llm: Arc<Llm>, wake: Arc<File>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
-        let dead = llm.jobs.lock().is_ok_and(|j| j.any_dead());
+        let dead = llm.jobs.lock().is_ok_and(|mut j| j.newly_dead());
         if dead {
             llm.job_poll
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -188,6 +189,7 @@ impl Controller {
             task: None,
             pending_prefill: None,
             job_window: None,
+            prefill_watch: false,
             job_lines: Default::default(),
             typeahead: Vec::new(),
         }))
@@ -237,7 +239,12 @@ impl Controller {
         if self.job_window.is_some_and(|t| t.elapsed() < JOB_WINDOW) {
             *out = self.job_lines.strip(out);
         } else {
-            self.job_lines = Default::default();
+            let held = self.job_lines.finish();
+            if !held.is_empty() {
+                let mut v = held;
+                v.append(out);
+                *out = v;
+            }
         }
     }
 
@@ -376,6 +383,8 @@ impl Controller {
         if let Some(p) = self.pending_prefill.take() {
             self.ed.set_text(&p);
             self.typeahead.clear();
+            // while the agent waits for this line: clearing it ends the turn
+            self.prefill_watch = crate::llm::agent::waiting(&self.llm);
         }
         let _ = self.stdout.write_all(b"\x1b[?2004h");
         if self.use_dsr {
@@ -397,6 +406,7 @@ impl Controller {
         // A pending cursor-position reply is still filtered from the input
         // (it must not leak to bash or the next program); `dsr` expires by TTL.
         if sent {
+            self.job_window = None; // left the prompt: bash's own lines stay
             self.scan.b_seen = false;
             let _ = self.stdout.write_all(b"\x1b[?2004l");
         }
@@ -506,6 +516,7 @@ impl Controller {
                 }
                 Event::NeedRedraw => {}
                 Event::Submit(line) => {
+                    self.prefill_watch = false;
                     if !left {
                         self.erase();
                         self.leave(true);
@@ -564,6 +575,11 @@ impl Controller {
                 }
                 _ => {}
             }
+        }
+        if self.prefill_watch && self.ed.text().is_empty() {
+            // Ctrl-C / Ctrl-U: the proposed command was thrown away
+            self.prefill_watch = false;
+            crate::llm::agent::abandon(&self.llm);
         }
         if !left && self.prompt {
             self.draw();

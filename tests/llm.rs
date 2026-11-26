@@ -616,11 +616,11 @@ fn agent_edited_command_is_reported_as_edited() {
     p.send("? собери\r").unwrap();
     p.expect("echo built").unwrap();
     settle();
-    p.send(" twice\r").unwrap();
+    p.send(" now\r").unwrap();
     p.expect("all-done").unwrap();
     let last = m.requests()[2].body.clone();
     assert!(last.contains("edited the command"), "{last}");
-    assert!(last.contains("echo built twice"), "{last}");
+    assert!(last.contains("echo built now"), "{last}");
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
@@ -840,6 +840,49 @@ fn ai_arguments_get_instant_local_ghost_text() {
             .map(|r| r.body.clone())
             .collect::<Vec<_>>()
     );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn clearing_the_proposed_line_ends_the_turn_even_if_the_same_command_is_typed_later() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", agent_steps());
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? собери\r").unwrap();
+    p.expect("echo built").unwrap();
+    settle();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo built\r").unwrap();
+    p.expect("built\r\n").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert_eq!(m.requests().len(), 2, "no continuation request");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn a_different_command_with_the_same_program_does_not_continue_the_turn() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", agent_steps());
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? собери\r").unwrap();
+    p.expect("echo built").unwrap();
+    settle();
+    // replace the whole line (Ctrl-A, Ctrl-K) with another echo and run it
+    p.send("\x01\x0becho something-else-entirely-different\r")
+        .unwrap();
+    p.expect("something-else-entirely-different\r\n").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert_eq!(m.requests().len(), 2, "no continuation request");
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }

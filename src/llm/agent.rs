@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use llmsh_llm::{Error, Event, Message, Request, Tool, ToolCall};
 use serde_json::{json, Value};
 
-use super::allow::{is_read_only, is_secret_path};
+use super::allow::{is_secret_path, plan, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
 use super::context::trim_middle;
 use super::render::{unsafe_cmd, Renderer};
@@ -136,33 +136,108 @@ fn cap(s: &str) -> String {
     trim_middle(s.trim_end(), OUT_CAP)
 }
 
-/// Run an allowlisted command in `cwd`; (text, exit code or None on timeout/cancel).
-fn run_readonly(cmd: &str, cwd: &str, cancel: &AtomicBool) -> (String, Option<i32>, bool) {
+/// Environment of an auto-run command: nothing inherited but the basics
+/// (no BASH_ENV, no hooks, no credentials); git is told not to run anything
+/// from configuration.
+fn clean_env(is_git: bool) -> Vec<(String, String)> {
+    let var = |k: &str| std::env::var(k).ok();
+    let mut e: Vec<(String, String)> = vec![
+        (
+            "PATH".into(),
+            var("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
+        ),
+        ("HOME".into(), var("HOME").unwrap_or_default()),
+        ("TERM".into(), "dumb".into()),
+        ("NO_COLOR".into(), "1".into()),
+        ("PAGER".into(), "cat".into()),
+        ("SYSTEMD_PAGER".into(), "cat".into()),
+    ];
+    for k in ["LANG", "LC_ALL", "USER", "LOGNAME", "TZ"] {
+        if let Some(v) = var(k) {
+            e.push((k.into(), v));
+        }
+    }
+    if is_git {
+        for (k, v) in [
+            ("GIT_PAGER", "cat"),
+            ("GIT_OPTIONAL_LOCKS", "0"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_CONFIG_COUNT", "4"),
+            ("GIT_CONFIG_KEY_0", "core.fsmonitor"),
+            ("GIT_CONFIG_VALUE_0", "false"),
+            ("GIT_CONFIG_KEY_1", "core.pager"),
+            ("GIT_CONFIG_VALUE_1", "cat"),
+            ("GIT_CONFIG_KEY_2", "diff.external"),
+            ("GIT_CONFIG_VALUE_2", ""),
+            ("GIT_CONFIG_KEY_3", "core.hooksPath"),
+            ("GIT_CONFIG_VALUE_3", "/dev/null"),
+        ] {
+            e.push((k.into(), v.into()));
+        }
+    }
+    e
+}
+
+/// Run a plan (a pipeline, no shell) in `cwd`; stdout and stderr of every
+/// stage are merged. (text, exit code of the last stage, timed out)
+fn run_plan(plan: &Plan, cwd: &str, cancel: &AtomicBool) -> (String, Option<i32>, bool) {
     use std::os::unix::process::CommandExt;
-    let mut c = Command::new("bash");
-    c.arg("-c")
-        .arg(format!("exec 2>&1; {cmd}"))
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env("PAGER", "cat")
-        .env("GIT_PAGER", "cat")
-        .env("SYSTEMD_PAGER", "")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("NO_COLOR", "1")
-        .env("TERM", "dumb")
-        .process_group(0);
-    let mut child = match c.spawn() {
-        Ok(c) => c,
-        Err(e) => return (format!("cannot run: {e}"), None, false),
+    let Ok((mut rd, wr)) = std::io::pipe() else {
+        return ("cannot run: pipe".into(), None, false);
     };
-    let mut out = child.stdout.take();
+    let mut children: Vec<std::process::Child> = Vec::new();
+    let mut prev: Option<std::process::ChildStdout> = None;
+    let mut pgid = 0i32;
+    let last = plan.stages.len().saturating_sub(1);
+    let kill_all = |children: &mut Vec<std::process::Child>, pgid: i32| {
+        if pgid > 0 {
+            let pg = nix::unistd::Pid::from_raw(-pgid);
+            let _ = nix::sys::signal::kill(pg, nix::sys::signal::Signal::SIGKILL);
+        }
+        for c in children.iter_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    };
+    for (i, argv) in plan.stages.iter().enumerate() {
+        let (Some(prog), Ok(err), Ok(outw)) = (argv.first(), wr.try_clone(), wr.try_clone()) else {
+            kill_all(&mut children, pgid);
+            return ("cannot run".into(), None, false);
+        };
+        let mut c = Command::new(prog);
+        c.args(&argv[1..])
+            .current_dir(cwd)
+            .env_clear()
+            .envs(clean_env(prog == "git"))
+            .stdin(prev.take().map_or(Stdio::null(), Stdio::from))
+            .stderr(Stdio::from(err))
+            .process_group(pgid);
+        if i == last {
+            c.stdout(Stdio::from(outw));
+        } else {
+            c.stdout(Stdio::piped());
+        }
+        match c.spawn() {
+            Ok(mut ch) => {
+                if i == 0 {
+                    pgid = ch.id() as i32;
+                }
+                prev = ch.stdout.take();
+                children.push(ch);
+            }
+            Err(e) => {
+                kill_all(&mut children, pgid);
+                return (format!("cannot run {prog}: {e}"), None, false);
+            }
+        }
+    }
+    drop(wr);
     let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
     let b2 = buf.clone();
     let reader = std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
-        while let Some(Ok(n)) = out.as_mut().map(|o| o.read(&mut chunk)) {
+        while let Ok(n) = rd.read(&mut chunk) {
             if n == 0 {
                 break;
             }
@@ -180,22 +255,27 @@ fn run_readonly(cmd: &str, cwd: &str, cancel: &AtomicBool) -> (String, Option<i3
         }
     });
     let start = Instant::now();
-    let (code, timed_out, stopped) = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break (st.code(), false, false),
-            Ok(None) => {}
-            Err(_) => break (None, false, false),
+    let mut code = None;
+    let mut timed_out = false;
+    loop {
+        let done = children
+            .iter_mut()
+            .all(|c| matches!(c.try_wait(), Ok(Some(_))));
+        if done {
+            code = children
+                .last_mut()
+                .and_then(|c| c.try_wait().ok().flatten())
+                .and_then(|s| s.code());
+            break;
         }
         let stop = cancel.load(Ordering::Relaxed);
         if stop || start.elapsed() >= RUN_TIMEOUT {
-            let pg = nix::unistd::Pid::from_raw(-(child.id() as i32));
-            let _ = nix::sys::signal::kill(pg, nix::sys::signal::Signal::SIGKILL);
-            let _ = child.kill();
-            let _ = child.wait();
-            break (None, !stop, stop);
+            kill_all(&mut children, pgid);
+            timed_out = !stop;
+            break;
         }
         std::thread::sleep(Duration::from_millis(10));
-    };
+    }
     // a backgrounded grandchild could keep the pipe open: do not wait for it
     let t0 = Instant::now();
     while !reader.is_finished() && t0.elapsed() < Duration::from_millis(300) {
@@ -205,7 +285,6 @@ fn run_readonly(cmd: &str, cwd: &str, cancel: &AtomicBool) -> (String, Option<i3
         .lock()
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
-    let _ = stopped;
     (text, code, timed_out)
 }
 
@@ -331,9 +410,14 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 return done("error: missing command".into(), "run: ?".into());
             };
             let bg = v["background"].as_bool().unwrap_or(false);
-            if !bg && is_read_only(&cmd, &env.llm.allow()) {
-                let cwd = cwd_of(env.tracker);
-                let (out, code, timed_out) = run_readonly(&cmd, &cwd, env.cancel);
+            let cwd = cwd_of(env.tracker);
+            let read_only = if bg {
+                None
+            } else {
+                plan(&cmd, &env.llm.allow(), &cwd)
+            };
+            if let Some(pl) = read_only {
+                let (out, code, timed_out) = run_plan(&pl, &cwd, env.cancel);
                 let lines = out.lines().count();
                 let tail = if timed_out {
                     " · таймаут 10 с".to_owned()
@@ -576,6 +660,38 @@ fn note_only(task: &Task, text: &str) {
     task.write(&out);
 }
 
+/// Levenshtein distance over chars.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// `ran` is the proposed command with a small edit: the same first two words
+/// and at most 30% of the characters changed. Anything else is a different
+/// command the agent must not continue with.
+pub(crate) fn small_edit(proposed: &str, ran: &str) -> bool {
+    let (p, r) = (proposed.trim(), ran.trim());
+    if !p
+        .split_whitespace()
+        .take(2)
+        .eq(r.split_whitespace().take(2))
+    {
+        return false;
+    }
+    let longest = p.chars().count().max(r.chars().count()).max(1);
+    edit_distance(p, r) * 10 <= longest * 3
+}
+
 /// A block finished: is it the command a paused turn waits for?
 pub fn on_block(llm: &Llm, block: &Block) {
     let Ok(mut g) = llm.pending.lock() else {
@@ -591,8 +707,7 @@ pub fn on_block(llm: &Llm, block: &Block) {
     }
     let ran = block.command.trim();
     let same = ran == p.proposed.trim();
-    let first = |s: &str| s.split_whitespace().next().unwrap_or("").to_owned();
-    if !same && first(ran) != first(&p.proposed) {
+    if !same && !small_edit(&p.proposed, ran) {
         *g = None; // the user did something else: the agent stops silently
         return;
     }
@@ -628,6 +743,18 @@ pub fn on_block(llm: &Llm, block: &Block) {
     p.result = Some(res);
 }
 
+/// The proposed line was cleared or replaced: the turn ends.
+pub fn abandon(llm: &Llm) {
+    if let Ok(mut p) = llm.pending.lock() {
+        *p = None;
+    }
+}
+
+/// Is a paused turn waiting for its command to be run?
+pub fn waiting(llm: &Llm) -> bool {
+    llm.pending.lock().is_ok_and(|p| p.is_some())
+}
+
 /// Is a paused turn ready to continue?
 pub fn resumable(llm: &Llm) -> bool {
     llm.pending
@@ -660,6 +787,17 @@ pub fn start_turn(history: Vec<Message>, user_msg: String, q: String) -> Turn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_small_edits_continue_the_turn() {
+        assert!(small_edit("echo built", "echo built"));
+        assert!(small_edit("cargo build --release", "cargo build --releas"));
+        // the review scenario: a different command with the same program
+        assert!(!small_edit("sudo apt install x", "sudo cat /etc/shadow"));
+        assert!(!small_edit("rm -rf build", "rm -rf /"));
+        assert!(!small_edit("ls", "ls /root/secret-things-and-more"));
+        assert!(!small_edit("git status", "echo hi"));
+    }
 
     #[test]
     fn read_file_refuses_secrets_and_caps() {
@@ -706,14 +844,36 @@ mod tests {
     #[test]
     fn readonly_runner_captures_output_and_times_out() {
         let c = AtomicBool::new(false);
-        let (o, code, t) = run_readonly("ls / | head -1; ls /nonexistent-x", "/", &c);
+        let pl = |c: &str| plan(c, &[], "/tmp").unwrap();
+        let (o, code, t) = run_plan(&pl("ls /nonexistent-x"), "/", &c);
         assert!(!t && code != Some(0), "{o}");
         assert!(o.contains("nonexistent-x"), "stderr merged: {o}");
-        let (o, code, _) = run_readonly("pwd", "/tmp", &c);
+        let (o, code, _) = run_plan(&pl("pwd"), "/tmp", &c);
         assert_eq!((o.trim(), code), ("/tmp", Some(0)));
+        let (o, code, _) = run_plan(&pl("ls / | head -1"), "/", &c);
+        assert_eq!((o.lines().count(), code), (1, Some(0)));
+        // no inherited environment
+        std::env::set_var("LLMSH_SECRET_X", "1");
+        let (o, _, _) = run_plan(
+            &Plan {
+                stages: vec![vec!["env".into()]],
+            },
+            "/",
+            &c,
+        );
+        assert!(
+            !o.contains("LLMSH_SECRET_X") && o.contains("TERM=dumb"),
+            "{o}"
+        );
         let stop = AtomicBool::new(true);
         let t0 = Instant::now();
-        let (_, code, _) = run_readonly("sleep 5", "/", &stop);
+        let (_, code, _) = run_plan(
+            &Plan {
+                stages: vec![vec!["sleep".into(), "5".into()]],
+            },
+            "/",
+            &stop,
+        );
         assert!(code.is_none() && t0.elapsed() < Duration::from_secs(2));
     }
 }
