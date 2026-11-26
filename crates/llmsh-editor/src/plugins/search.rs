@@ -1,16 +1,16 @@
-use std::io::Write;
-
-use unicode_width::UnicodeWidthChar;
-
 use super::history::SharedHistory;
 use crate::history::fuzzy;
 use crate::keys::Key;
-use crate::plugin::{Ctx, Decoration, Handled, Plugin};
+use crate::plugin::{Ctx, Decoration, Handled, Plugin, RowStyle};
 
 const ROWS: usize = 8;
 
 struct State {
     query: String,
+    /// Every entry matching `query` as a subsequence (None = all, for the
+    /// empty query). Appending a character only narrows it.
+    pool: Option<Vec<usize>>,
+    /// Best matches, best first.
     results: Vec<usize>,
     sel: usize,
 }
@@ -34,12 +34,47 @@ impl HistorySearch {
         }
     }
 
-    fn requery(&mut self) {
-        if let Some(s) = &mut self.st {
-            let q = s.query.clone();
-            self.hist.with(|h| h.search(&q, ROWS, &mut s.results));
-            s.sel = 0;
-        }
+    /// Recompute results. `narrow`: the query only grew, so the old pool is a
+    /// superset of the new matches.
+    fn requery(&mut self, narrow: bool) {
+        let Some(s) = &mut self.st else { return };
+        let q = s.query.clone();
+        let ci = !q.bytes().any(|b| b.is_ascii_uppercase());
+        self.hist.with(|h| {
+            let n = h.len();
+            if q.is_empty() {
+                s.pool = None;
+                s.results.clear();
+                s.results.extend((0..n).rev().take(ROWS));
+                return;
+            }
+            let old = if narrow { s.pool.take() } else { None };
+            let candidates: Box<dyn Iterator<Item = usize>> = match old {
+                Some(p) => Box::new(p.into_iter()),
+                None => Box::new(0..n),
+            };
+            let mut pool = Vec::new();
+            let mut top: Vec<(i32, usize)> = Vec::with_capacity(ROWS + 1);
+            for i in candidates {
+                let e = h.get(i);
+                if e.contains('\n') {
+                    continue;
+                }
+                if let Some(m) = fuzzy(q.as_bytes(), e.as_bytes(), ci, None) {
+                    pool.push(i);
+                    let sc = m + (i * 24 / n.max(1)) as i32;
+                    if top.len() == ROWS && (sc, i) <= *top.last().unwrap_or(&(i32::MIN, 0)) {
+                        continue;
+                    }
+                    let at = top.partition_point(|&(ts, ti)| (ts, ti) > (sc, i));
+                    top.insert(at, (sc, i));
+                    top.truncate(ROWS);
+                }
+            }
+            s.pool = Some(pool);
+            s.results = top.iter().map(|&(_, i)| i).collect();
+        });
+        s.sel = 0;
     }
 }
 
@@ -59,39 +94,40 @@ impl Plugin for HistorySearch {
         }
         self.st = Some(State {
             query: String::new(),
+            pool: None,
             results: Vec::new(),
             sel: 0,
         });
-        self.requery();
+        self.requery(false);
         Handled::Yes
     }
     fn on_key(&mut self, ctx: &mut Ctx, key: &Key) -> Handled {
         let Some(s) = &mut self.st else {
             return Handled::Pass;
         };
-        let mut requery = false;
+        let mut requery = None;
         match key {
             Key::Char(c) => {
                 s.query.push(*c);
-                requery = true;
+                requery = Some(true);
             }
             Key::Paste(t) => {
                 s.query.push_str(t.lines().next().unwrap_or(""));
-                requery = true;
+                requery = Some(true);
             }
             Key::Backspace => {
                 s.query.pop();
-                requery = true;
+                requery = Some(false);
             }
             Key::Ctrl(b'u') => {
                 s.query.clear();
-                requery = true;
+                requery = Some(false);
             }
             Key::Ctrl(b'w') => {
                 let t = s.query.trim_end().len();
                 let cut = s.query[..t].rfind(' ').map_or(0, |i| i + 1);
                 s.query.truncate(cut);
-                requery = true;
+                requery = Some(false);
             }
             Key::Ctrl(b'r') | Key::Down | Key::Ctrl(b'n') => {
                 if s.sel + 1 < s.results.len() {
@@ -102,7 +138,7 @@ impl Plugin for HistorySearch {
             Key::Enter | Key::Tab | Key::Right | Key::End => {
                 let pick = s.results.get(s.sel).copied();
                 self.st = None;
-                if let Some(text) = pick.and_then(|i| self.hist.with(|h| h.get(i).to_owned())) {
+                if let Some(text) = pick.and_then(|i| self.hist.with(|h| h.get(i).into_owned())) {
                     ctx.set_text(&text);
                 }
                 return Handled::Yes;
@@ -113,58 +149,44 @@ impl Plugin for HistorySearch {
             }
             _ => {}
         }
-        if requery {
-            self.requery();
+        if let Some(narrow) = requery {
+            self.requery(narrow);
         }
         Handled::Yes
     }
-    fn decorate(&mut self, ctx: &mut Ctx, width: u16, out: &mut Decoration) {
+    fn decorate(&mut self, _ctx: &mut Ctx, _width: u16, out: &mut Decoration) {
         let Some(s) = &self.st else { return };
         out.show_input(&s.query, s.query.len());
         out.hide_ghost();
         let ci = !s.query.bytes().any(|b| b.is_ascii_uppercase());
-        let th = ctx.theme().clone();
         for (row, &i) in s.results.iter().enumerate() {
             let sel = row == s.sel;
-            let Some(cand) = self.hist.with(|h| h.get(i).to_owned()) else {
+            let Some(cand) = self.hist.with(|h| h.get(i).into_owned()) else {
                 continue;
             };
             fuzzy(s.query.as_bytes(), cand.as_bytes(), ci, Some(&mut self.pos));
             let pos = &self.pos;
             out.push_row(|r| {
-                let _ = if sel {
-                    write!(r, "\x1b[{}m> ", th.selection)
+                let base = if sel {
+                    RowStyle::Selected
                 } else {
-                    write!(r, "  ")
+                    RowStyle::Normal
                 };
-                let mut budget = usize::from(width).saturating_sub(4);
-                let mut hl = false;
+                let hl = if sel {
+                    RowStyle::MatchedSelected
+                } else {
+                    RowStyle::Matched
+                };
+                r.push(base, if sel { "> " } else { "  " });
                 let mut pi = 0;
                 for (bi, c) in cand.char_indices() {
-                    let w = if c < ' ' { 1 } else { c.width().unwrap_or(0) };
-                    if w > budget {
-                        break;
-                    }
-                    budget -= w;
                     while pi < pos.len() && pos[pi] < bi {
                         pi += 1;
                     }
                     let m = pi < pos.len() && pos[pi] < bi + c.len_utf8();
-                    if m != hl {
-                        hl = m;
-                        let _ = write!(r, "\x1b[0m");
-                        if sel {
-                            let _ = write!(r, "\x1b[{}m", th.selection);
-                        }
-                        if m {
-                            let _ = write!(r, "\x1b[{}m", th.matched);
-                        }
-                    }
-                    let c = if c < ' ' { ' ' } else { c };
                     let mut tmp = [0u8; 4];
-                    r.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
+                    r.push(if m { hl } else { base }, c.encode_utf8(&mut tmp));
                 }
-                let _ = write!(r, "\x1b[0m\x1b[K");
             });
         }
     }

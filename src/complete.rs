@@ -10,7 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const TIMEOUT: Duration = Duration::from_millis(300);
-const MAX_RESTARTS: u32 = 5;
+const MAX_RESTARTS: usize = 5;
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
+
+/// Kill a sidecar and reap it off-thread (no zombies, no hang).
+fn reap(mut c: Child) {
+    let _ = c.kill();
+    std::thread::spawn(move || {
+        let _ = c.wait();
+    });
+}
 
 use lineedit_wip::completion::{unescape, Candidates, Request, MAX_ITEMS};
 
@@ -86,7 +95,8 @@ struct Inner {
     rx: Option<Receiver<Msg>>,
     next_id: u64,
     ready: bool,
-    restarts: u32,
+    /// Start times of recent (re)starts: at most MAX_RESTARTS per window.
+    starts: Vec<Instant>,
 }
 
 pub struct Sidecar {
@@ -141,7 +151,7 @@ impl Sidecar {
                 rx: None,
                 next_id: 1,
                 ready: false,
-                restarts: 0,
+                starts: Vec::new(),
             }),
         });
         {
@@ -152,13 +162,17 @@ impl Sidecar {
     }
 
     fn spawn(&self, g: &mut Inner) {
-        g.child = None;
+        if let Some(c) = g.child.take() {
+            reap(c);
+        }
         g.stdin = None;
+        g.rx = None;
         g.ready = false;
-        if g.restarts > MAX_RESTARTS {
+        g.starts.retain(|t| t.elapsed() < RESTART_WINDOW);
+        if g.starts.len() >= MAX_RESTARTS {
             return;
         }
-        g.restarts += 1;
+        g.starts.push(Instant::now());
         use std::os::unix::process::CommandExt;
         let mut cmd = Command::new("bash");
         // No controlling terminal: an interactive bash would otherwise grab the
@@ -188,6 +202,16 @@ impl Sidecar {
         g.stdin = child.stdin.take();
         g.rx = Some(rx);
         g.child = Some(child);
+    }
+
+    /// Throw the process away (it is respawned by the next request).
+    fn kill(g: &mut Inner) {
+        if let Some(c) = g.child.take() {
+            reap(c);
+        }
+        g.stdin = None;
+        g.rx = None;
+        g.ready = false;
     }
 
     fn alive(g: &mut Inner) -> bool {
@@ -232,7 +256,7 @@ impl Sidecar {
                     Ok(_) => {}
                     Err(RecvTimeoutError::Timeout) => return None,
                     Err(RecvTimeoutError::Disconnected) => {
-                        g.child = None;
+                        Self::kill(&mut g);
                         return None;
                     }
                 }
@@ -246,17 +270,23 @@ impl Sidecar {
             .as_mut()
             .is_some_and(|s| s.write_all(&req).and_then(|_| s.flush()).is_ok());
         if !ok {
-            g.child = None;
+            Self::kill(&mut g);
             return None;
         }
         loop {
-            let left = deadline.checked_duration_since(Instant::now())?;
-            match g.rx.as_ref()?.recv_timeout(left) {
+            // A ready sidecar that does not answer in time is hung (or runs a
+            // slow/looping completion function): kill it, the next request
+            // starts a fresh one (within the restart budget).
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                Self::kill(&mut g);
+                return None;
+            };
+            let rx = g.rx.as_ref()?;
+            match rx.recv_timeout(left) {
                 Ok((rid, reply)) if rid == id => return Some(reply),
-                Ok(_) => {} // late reply of an earlier, timed-out request
-                Err(RecvTimeoutError::Timeout) => return None,
-                Err(RecvTimeoutError::Disconnected) => {
-                    g.child = None;
+                Ok(_) => {} // stale reply
+                Err(_) => {
+                    Self::kill(&mut g);
                     return None;
                 }
             }

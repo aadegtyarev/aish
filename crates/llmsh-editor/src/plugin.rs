@@ -21,6 +21,7 @@ use crate::theme::Theme;
 
 /// Whether a hook consumed its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Handled {
     /// Consumed: no later plugin and not the core sees it.
     Yes,
@@ -30,6 +31,7 @@ pub enum Handled {
 
 /// Verdict of [`Plugin::on_submit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubmitAction {
     /// Let the line through.
     Submit,
@@ -39,30 +41,59 @@ pub enum SubmitAction {
     Edit(String),
 }
 
+/// Look of a piece of a decoration row; the theme maps it to attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowStyle {
+    /// Plain text.
+    Normal,
+    /// Selected item.
+    Selected,
+    /// Matched characters (search).
+    Matched,
+    /// Matched characters inside the selected item.
+    MatchedSelected,
+    /// Secondary text.
+    Dim,
+}
+
+/// One row of a [`Decoration`]: styled text segments. The editor strips
+/// control characters and truncates the row to the terminal width.
+#[derive(Default)]
+pub struct Row {
+    pub(crate) segs: Vec<(RowStyle, String)>,
+}
+
+impl Row {
+    /// Append a segment.
+    pub fn push(&mut self, style: RowStyle, text: &str) {
+        match self.segs.last_mut() {
+            Some((s, t)) if *s == style => t.push_str(text),
+            _ => self.segs.push((style, text.to_owned())),
+        }
+    }
+}
+
 /// Extra content a plugin contributes below (or instead of) the input line.
 #[derive(Default)]
 pub struct Decoration {
-    pub(crate) rows: Vec<u8>,
-    pub(crate) nrows: u16,
+    pub(crate) lines: Vec<Row>,
     pub(crate) input: Option<(String, usize)>,
     pub(crate) hide_ghost: bool,
 }
 
 impl Decoration {
-    /// Add a row below the input. `f` writes the row's bytes (SGR allowed, no
-    /// newline); it must fit the terminal width given to `decorate`.
-    pub fn push_row(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
-        if self.nrows > 0 {
-            self.rows.push(b'\n');
-        }
-        f(&mut self.rows);
-        self.nrows += 1;
+    /// Add a row below the input.
+    pub fn push_row(&mut self, f: impl FnOnce(&mut Row)) {
+        let mut r = Row::default();
+        f(&mut r);
+        self.lines.push(r);
     }
 
     /// Show `text` (cursor at byte `cursor`) on the input line instead of the
     /// buffer, e.g. a search query.
     pub fn show_input(&mut self, text: &str, cursor: usize) {
-        self.input = Some((text.to_owned(), cursor));
+        self.input = Some((text.to_owned(), cursor.min(text.len())));
     }
 
     /// Do not draw suggestion text.
@@ -90,7 +121,9 @@ pub struct Handle {
 impl Handle {
     /// Queue `payload` for [`Plugin::on_delivery`], valid for line version
     /// `generation` (see [`Ctx::generation`]); the host is woken (see
-    /// `EditorBuilder::waker`) and calls `Editor::poll`.
+    /// `EditorBuilder::waker`) and calls `Editor::poll`. The waker runs on the
+    /// calling thread right after queueing: it must be quick and must not call
+    /// into the editor (set a flag, write to a pipe).
     pub fn deliver(&self, generation: u64, payload: Box<dyn Any + Send>) {
         if let Ok(mut q) = self.queue.lock() {
             q.push_back(Delivery {
@@ -126,7 +159,8 @@ impl Ctx<'_> {
     pub fn set_text(&mut self, s: &str) {
         self.buf.set(s);
     }
-    /// Move the cursor.
+    /// Move the cursor; offsets are clamped to the text and to a character
+    /// boundary, so a buggy plugin cannot panic the editor.
     pub fn set_cursor(&mut self, c: usize) {
         self.buf.set_cursor(c);
     }
@@ -134,9 +168,12 @@ impl Ctx<'_> {
     pub fn insert(&mut self, s: &str) {
         self.buf.insert_str(s);
     }
-    /// Replace `start..end` by `with` and put the cursor after it.
+    /// Replace `start..end` by `with` and put the cursor after it. Offsets are
+    /// clamped to the text and to character boundaries.
     pub fn replace_range(&mut self, start: usize, end: usize, with: &str) {
         let t = self.buf.text();
+        let end = crate::buffer::floor_boundary(t, end);
+        let start = crate::buffer::floor_boundary(t, start.min(end));
         let mut n = String::with_capacity(t.len() + with.len());
         n.push_str(&t[..start]);
         n.push_str(with);

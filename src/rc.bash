@@ -1,5 +1,9 @@
 # llmsh shell integration (generated; do not edit, overwritten on start)
 # Written to survive `set -u` in user rc files: every expansion uses ${X-}.
+# Session nonce (llmsh passes it in the environment): our OSC 133 marks carry it so
+# marks of foreign shells (ssh, docker exec, nested integrations) are ignored.
+__llmsh_n=${LLMSH_NONCE-}
+unset LLMSH_NONCE
 if [[ -n ${LLMSH_LOGIN-} ]]; then
   [[ -f /etc/profile ]] && source /etc/profile
   for __llmsh_f in ~/.bash_profile ~/.bash_login ~/.profile; do
@@ -56,7 +60,7 @@ __llmsh_pre() {
         printf '\e]1337;llmsh;p=%s\a' "$__llmsh_enc"
       fi
     fi
-    printf '\e]133;D;%s\a' "$rc"
+    printf '\e]133;D;%s;llmsh=%s\a' "$rc" "$__llmsh_n"
     if (( rc != 0 || ms > 5000 )); then
       if (( ms >= 60000 )); then dur="$((ms / 60000))m$((ms % 60000 / 1000))s"
       else dur="$((ms / 1000)).$((ms % 1000 / 100))s"; fi
@@ -70,7 +74,7 @@ __llmsh_pre() {
       fi
     fi
   else
-    printf '\e]133;D;%s\a' "$rc"
+    printf '\e]133;D;%s;llmsh=%s\a' "$rc" "$__llmsh_n"
   fi
   return "$rc"
 }
@@ -79,7 +83,12 @@ __llmsh_pre() {
 __llmsh_post() {
   local rc=$?
   printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "${PWD// /%20}"
-  [[ ${PS1-} == *'133;B'* ]] || PS1='\[\e]133;A\a\]'"${PS1-}"'\[\e]133;B\a\]'
+  if [[ $PATH != "${__llmsh_path-}" ]]; then
+    __llmsh_path=$PATH
+    __llmsh_encode "$PATH"
+    printf '\e]1337;llmsh;path=%s\a' "$__llmsh_enc"
+  fi
+  [[ ${PS1-} == *'133;B;llmsh='* ]] || PS1='\[\e]133;A;llmsh='"$__llmsh_n"'\a\]'"${PS1-}"'\[\e]133;B;llmsh='"$__llmsh_n"'\a\]'
   return $rc
 }
 
@@ -94,9 +103,9 @@ if (( __llmsh_mode > 0 )); then
   # C mark + start timestamp (assignment must live in the current shell; the
   # substring-offset form is the one bash 5.x evaluates there).
   if (( __llmsh_mode == 2 )); then
-    PS0="${PS0-}"'\e]133;C\a${BASH:$((__llmsh_t0=${EPOCHREALTIME//[.,]/})):0}'
+    PS0="${PS0-}"'\e]133;C;llmsh='"$__llmsh_n"'\a${BASH:$((__llmsh_t0=${EPOCHREALTIME//[.,]/})):0}'
   else
-    PS0="${PS0-}"'\e]133;C\a${BASH:$((__llmsh_t0=SECONDS*1000000)):0}'
+    PS0="${PS0-}"'\e]133;C;llmsh='"$__llmsh_n"'\a${BASH:$((__llmsh_t0=SECONDS*1000000)):0}'
   fi
   # Don't leak into nested shells / tmux, which lack our functions.
   export -n PROMPT_COMMAND PS0

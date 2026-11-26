@@ -1,5 +1,6 @@
 //! History abstraction, an in-memory implementation and the fuzzy scorer.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 /// Source of past command lines, oldest first. Only `len`, `get` and `add`
@@ -8,8 +9,8 @@ use std::collections::HashSet;
 pub trait History: Send + Sync {
     /// Number of entries.
     fn len(&self) -> usize;
-    /// Entry `i` (0 = oldest).
-    fn get(&self, i: usize) -> &str;
+    /// Entry `i` (0 = oldest). Owned or borrowed, so databases can implement it.
+    fn get(&self, i: usize) -> Cow<'_, str>;
     /// Record a submitted line.
     fn add(&mut self, line: &str);
 
@@ -18,13 +19,20 @@ pub trait History: Send + Sync {
         self.len() == 0
     }
 
-    /// Most recent single-line entry that strictly extends `prefix`.
-    fn suggest(&self, prefix: &str) -> Option<&str> {
+    /// The most recent single-line entry that strictly extends `prefix`.
+    fn suggest(&self, prefix: &str) -> Option<Cow<'_, str>> {
+        self.suggest_before(prefix, self.len()).map(|i| self.get(i))
+    }
+
+    /// Index of the most recent single-line entry older than `before` that
+    /// strictly extends `prefix` (scans backwards with early exit).
+    fn suggest_before(&self, prefix: &str, before: usize) -> Option<usize> {
         if prefix.is_empty() {
             return None;
         }
         let p = prefix.as_bytes();
-        (0..self.len()).rev().map(|i| self.get(i)).find(|e| {
+        (0..before.min(self.len())).rev().find(|&i| {
+            let e = self.get(i);
             let b = e.as_bytes();
             b.len() > p.len() && b[0] == p[0] && b.starts_with(p) && !e.contains('\n')
         })
@@ -101,8 +109,8 @@ impl History for MemHistory {
     fn len(&self) -> usize {
         self.entries.len()
     }
-    fn get(&self, i: usize) -> &str {
-        &self.entries[i]
+    fn get(&self, i: usize) -> Cow<'_, str> {
+        Cow::Borrowed(&self.entries[i])
     }
     fn add(&mut self, line: &str) {
         if line.trim().is_empty() || line.starts_with(' ') {
@@ -116,19 +124,17 @@ impl History for MemHistory {
         }
     }
     // Faster than the default: direct slice access.
-    fn suggest(&self, prefix: &str) -> Option<&str> {
+    fn suggest_before(&self, prefix: &str, before: usize) -> Option<usize> {
         if prefix.is_empty() {
             return None;
         }
         let p = prefix.as_bytes();
-        self.entries
+        self.entries[..before.min(self.entries.len())]
             .iter()
-            .rev()
-            .find(|e| {
+            .rposition(|e| {
                 let b = e.as_bytes();
                 b.len() > p.len() && b[0] == p[0] && b.starts_with(p) && !e.contains('\n')
             })
-            .map(String::as_str)
     }
 }
 
@@ -220,11 +226,11 @@ mod tests {
     #[test]
     fn suggest_prefix_most_recent() {
         let mut h = MemHistory::parse("echo hello\necho help\nls\n");
-        assert_eq!(h.suggest("ech"), Some("echo help"));
+        assert_eq!(h.suggest("ech").as_deref(), Some("echo help"));
         assert_eq!(h.suggest("echo help"), None);
         assert_eq!(h.suggest(""), None);
         h.add("echo hello");
-        assert_eq!(h.suggest("echo h"), Some("echo hello"));
+        assert_eq!(h.suggest("echo h").as_deref(), Some("echo hello"));
         assert_eq!(h.len(), 3);
     }
 

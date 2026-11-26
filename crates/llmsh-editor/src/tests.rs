@@ -310,3 +310,105 @@ fn draw_final_leaves_line_without_ghost() {
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("? q") && !s.contains("ho hi"));
 }
+
+#[test]
+fn keys_after_enter_are_forwarded_raw() {
+    let mut e = editor_with("");
+    // arrows, Alt and a bracketed paste after the line keep their bytes
+    let rest = "\x1b[A\x1b[1;5C\x1bb\x1b[200~p\x1b[201~";
+    let ev = feed(&mut e, &format!("ls\r{rest}"));
+    assert_eq!(
+        ev,
+        vec![
+            Event::Submit("ls".into()),
+            Event::PassKey(rest.as_bytes().to_vec())
+        ]
+    );
+    // a partial sequence at the end is forwarded as is, too
+    let ev = feed(&mut e, "ls\r\x1b[1");
+    assert_eq!(ev[1], Event::PassKey(b"\x1b[1".to_vec()));
+    assert!(!e.has_pending_input());
+}
+
+#[test]
+fn late_completion_after_cursor_move_is_dropped() {
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut e = Editor::builder()
+        .with(CompletionPager::new(Slow(slot.clone())))
+        .build();
+    feed(&mut e, "ls fo\t");
+    let reply = slot.lock().unwrap().take().unwrap();
+    feed(&mut e, "\x1b[D"); // cursor moved: same text, different position
+    reply.send(Candidates {
+        filenames: false,
+        nospace: false,
+        items: vec!["foo".into()],
+    });
+    let mut ev = vec![];
+    e.poll(&mut ev);
+    assert_eq!(e.text(), "ls fo");
+    assert!(ev.is_empty());
+}
+
+/// A misbehaving plugin passing offsets inside a multi-byte character.
+struct Bad;
+impl Plugin for Bad {
+    fn name(&self) -> &'static str {
+        "bad"
+    }
+    fn bindings(&self) -> &'static [(Key, &'static str)] {
+        &[(Key::Ctrl(b'o'), "bad")]
+    }
+    fn on_action(&mut self, ctx: &mut Ctx, _a: &str) -> Handled {
+        ctx.replace_range(1, 2, "x"); // 1..2 is inside '中'
+        ctx.set_cursor(2);
+        ctx.set_cursor(999);
+        ctx.replace_range(50, 10, "y");
+        Handled::Yes
+    }
+}
+
+#[test]
+fn plugin_offsets_are_clamped_not_panicking() {
+    let mut e = Editor::builder().with(Bad).build();
+    feed(&mut e, "中文\x0f");
+    assert!(e.text().is_char_boundary(e.cursor()));
+}
+
+struct Rows;
+impl Plugin for Rows {
+    fn name(&self) -> &'static str {
+        "rows"
+    }
+    fn decorate(&mut self, _c: &mut Ctx, _w: u16, out: &mut Decoration) {
+        out.push_row(|r| {
+            r.push(
+                RowStyle::Normal,
+                "a\x1b[31mb\u{7}c-this-is-way-too-long-for-the-terminal",
+            )
+        });
+    }
+}
+
+#[test]
+fn decoration_rows_are_sanitized_and_truncated() {
+    let mut e = Editor::builder().with(Rows).build();
+    let mut out: Vec<u8> = Vec::new();
+    e.draw(&mut out, 20).unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(!s.contains("\x1b[31mb"), "{s:?}");
+    assert!(s.contains("a [31mb c-this"), "{s:?}");
+    assert!(!s.contains("terminal"), "{s:?}");
+}
+
+#[test]
+fn resize_erase_uses_new_width() {
+    let mut e = editor_with("");
+    e.reset_screen(3);
+    feed(&mut e, &"a".repeat(30));
+    let mut out: Vec<u8> = Vec::new();
+    e.draw(&mut out, 20).unwrap(); // cursor on row 1 at width 20
+    out.clear();
+    e.erase_resized(&mut out, 10).unwrap(); // at width 10: (3+30)/10 = 3 rows up
+    assert!(String::from_utf8(out).unwrap().contains("\x1b[3A"));
+}

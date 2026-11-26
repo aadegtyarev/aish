@@ -1,11 +1,9 @@
 use std::any::Any;
-use std::io::Write;
-
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::completion::{self, Candidates, CompletionSource, Outcome, Reply, Request};
 use crate::keys::Key;
-use crate::plugin::{Ctx, Decoration, Handled, Plugin};
+use crate::plugin::{Ctx, Decoration, Handled, Plugin, RowStyle};
 
 const ROWS: usize = 8;
 
@@ -227,10 +225,9 @@ impl Plugin for CompletionPager {
         Handled::Yes
     }
 
-    fn decorate(&mut self, ctx: &mut Ctx, width: u16, out: &mut Decoration) {
+    fn decorate(&mut self, _ctx: &mut Ctx, width: u16, out: &mut Decoration) {
         let Some(p) = &mut self.pager else { return };
         p.width = width;
-        let th = ctx.theme().clone();
         let n = p.items.len();
         let (ncols, nrows, cap) = dims(p);
         let mw = maxw(p);
@@ -239,44 +236,39 @@ impl Plugin for CompletionPager {
         let m = cap.min(n - base);
         let p = &*p;
         for r in 0..nrows {
-            out.push_row(|o| {
+            out.push_row(|row| {
                 for c in 0..ncols {
                     let k = r + c * nrows;
                     if k >= m {
                         break;
                     }
                     let selected = p.sel == Some(base + k);
-                    if selected {
-                        let _ = write!(o, "\x1b[{}m", th.selection);
-                    }
                     let mut used = 0;
+                    let mut lab = String::new();
                     for ch in label(p, base + k).chars() {
+                        let ch = if ch.is_control() { ' ' } else { ch };
                         let w = ch.width().unwrap_or(0);
                         if used + w > mw {
                             break;
                         }
                         used += w;
-                        let mut tmp = [0u8; 4];
-                        o.extend_from_slice(
-                            if ch < ' ' {
-                                " "
-                            } else {
-                                ch.encode_utf8(&mut tmp)
-                            }
-                            .as_bytes(),
-                        );
+                        lab.push(ch);
                     }
-                    if selected {
-                        o.extend_from_slice(b"\x1b[0m");
-                    }
-                    o.resize(o.len() + colw - used, b' ');
+                    row.push(
+                        if selected {
+                            RowStyle::Selected
+                        } else {
+                            RowStyle::Normal
+                        },
+                        &lab,
+                    );
+                    row.push(RowStyle::Normal, &" ".repeat(colw - used));
                 }
             });
         }
         if base + m < n {
-            out.push_row(|o| {
-                let _ = write!(o, "\x1b[{}m\u{2026} {} more\x1b[0m", th.dim, n - base - m);
-            });
+            let more = n - base - m;
+            out.push_row(|row| row.push(RowStyle::Dim, &format!("\u{2026} {more} more")));
         }
     }
 }

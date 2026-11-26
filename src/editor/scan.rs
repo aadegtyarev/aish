@@ -18,8 +18,12 @@ enum St {
 pub struct Scan {
     pub col: u16,
     st: St,
-    osc: [u8; 8],
+    osc: [u8; 64],
     osc_n: usize,
+    csi: [u8; 8],
+    csi_n: usize,
+    /// Our session nonce; OSC 133 marks without it (foreign shells) are ignored.
+    nonce: String,
     utf: [u8; 4],
     utf_n: usize,
     utf_need: usize,
@@ -29,26 +33,43 @@ pub struct Scan {
     pub saw_a: bool,
     /// 133;C or D seen since last cleared.
     pub saw_cd: bool,
+    /// 133;B seen since last cleared.
+    pub saw_b: bool,
+    /// Something printable was written after the last B: bash's line is not
+    /// empty (type-ahead echoed by readline) or it is still drawing.
+    pub printed_after_b: bool,
+    /// bash has bracketed paste on (it sent `CSI ? 2004 h`).
+    pub bracketed: bool,
 }
 
 impl Default for Scan {
     fn default() -> Self {
+        Scan::new(String::new())
+    }
+}
+
+impl Scan {
+    pub fn new(nonce: String) -> Self {
         Scan {
+            nonce,
             col: 0,
             st: St::Ground,
-            osc: [0; 8],
+            osc: [0; 64],
             osc_n: 0,
+            csi: [0; 8],
+            csi_n: 0,
             utf: [0; 4],
             utf_n: 0,
             utf_need: 0,
             b_seen: false,
             saw_a: false,
             saw_cd: false,
+            saw_b: false,
+            printed_after_b: false,
+            bracketed: false,
         }
     }
-}
 
-impl Scan {
     pub fn feed(&mut self, data: &[u8], width: u16) {
         let width = width.max(1);
         for &b in data {
@@ -56,7 +77,10 @@ impl Scan {
                 St::Ground => self.ground(b, width),
                 St::Esc => {
                     self.st = match b {
-                        b'[' => St::Csi,
+                        b'[' => {
+                            self.csi_n = 0;
+                            St::Csi
+                        }
                         b']' => {
                             self.osc_n = 0;
                             St::Osc
@@ -71,9 +95,19 @@ impl Scan {
                 }
                 St::Csi => {
                     if (0x40..=0x7e).contains(&b) || b == 0x18 || b == 0x1a {
+                        if &self.csi[..self.csi_n] == b"?2004" {
+                            match b {
+                                b'h' => self.bracketed = true,
+                                b'l' => self.bracketed = false,
+                                _ => {}
+                            }
+                        }
                         self.st = St::Ground;
                     } else if b == 0x1b {
                         self.st = St::Esc;
+                    } else if self.csi_n < self.csi.len() {
+                        self.csi[self.csi_n] = b;
+                        self.csi_n += 1;
                     }
                 }
                 St::Osc => match b {
@@ -110,13 +144,19 @@ impl Scan {
     fn end_osc(&mut self) {
         self.st = St::Ground;
         let o = &self.osc[..self.osc_n];
-        if o.len() >= 5 && &o[..4] == b"133;" && (o.len() == 5 || o[5] == b';') {
+        let tag = format!(";llmsh={}", self.nonce);
+        let ours = self.nonce.is_empty() || o.ends_with(tag.as_bytes());
+        if ours && o.len() >= 5 && &o[..4] == b"133;" && (o.len() == 5 || o[5] == b';') {
             match o[4] {
                 b'A' => {
                     self.b_seen = false;
                     self.saw_a = true;
                 }
-                b'B' => self.b_seen = true,
+                b'B' => {
+                    self.b_seen = true;
+                    self.saw_b = true;
+                    self.printed_after_b = false;
+                }
                 b'C' | b'D' => {
                     self.b_seen = false;
                     self.saw_cd = true;
@@ -129,6 +169,9 @@ impl Scan {
     fn adv(&mut self, w: u16, width: u16) {
         if w == 0 {
             return;
+        }
+        if self.b_seen {
+            self.printed_after_b = true;
         }
         if self.col + w > width {
             self.col = w;
@@ -210,6 +253,32 @@ mod tests {
         }
         assert_eq!(s.col, 2);
         assert!(s.b_seen);
+    }
+
+    #[test]
+    fn foreign_marks_are_ignored() {
+        let mut s = Scan::new("abc".into());
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07", 80); // untagged: ssh/docker/nested shell
+        assert!(!s.b_seen && !s.saw_a && !s.saw_b);
+        s.feed(b"\x1b]133;B;llmsh=zzz\x07", 80);
+        assert!(!s.b_seen);
+        s.feed(b"\x1b]133;A;llmsh=abc\x07$ \x1b]133;B;llmsh=abc\x07", 80);
+        assert!(s.b_seen && s.saw_a);
+        s.feed(b"\x1b]133;D;130;llmsh=abc\x07", 80);
+        assert!(!s.b_seen && s.saw_cd);
+    }
+
+    #[test]
+    fn echo_after_prompt_marks_line_not_empty() {
+        let mut s = Scan::default();
+        s.feed(b"\x1b]133;B\x07\x1b[K\x1b[?2004h", 80);
+        assert!(!s.printed_after_b && s.bracketed);
+        s.feed(b"ls", 80); // readline echoing type-ahead
+        assert!(s.printed_after_b);
+        s.feed(b"\x1b]133;B\x07", 80);
+        assert!(!s.printed_after_b);
+        s.feed(b"\x1b[?2004l", 80);
+        assert!(!s.bracketed);
     }
 
     #[test]

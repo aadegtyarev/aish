@@ -48,17 +48,60 @@ fn readable(f: &File, d: std::time::Duration) -> bool {
     !matches!(poll(&mut fds, ms), Ok(0))
 }
 
+/// Wait for stdin or the wake pipe; (stdin ready, wake ready). `None`
+/// timeout waits forever; a timeout returns (false, false).
+fn wait_input(stdin: &File, wake: &File, timeout: Option<std::time::Duration>) -> (bool, bool) {
+    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+    let ms = match timeout {
+        Some(d) => PollTimeout::try_from(d).unwrap_or(PollTimeout::MAX),
+        None => PollTimeout::NONE,
+    };
+    let mut fds = [
+        PollFd::new(stdin.as_fd(), PollFlags::POLLIN),
+        PollFd::new(wake.as_fd(), PollFlags::POLLIN),
+    ];
+    match poll(&mut fds, ms) {
+        Ok(n) if n > 0 => {
+            let ready = |f: &PollFd| f.revents().is_some_and(|r| !r.is_empty());
+            (ready(&fds[0]), ready(&fds[1]))
+        }
+        Ok(_) => (false, false),
+        Err(_) => (true, false), // EINTR etc.: let read() sort it out
+    }
+}
+
+/// Bytes the controller wants typed into bash (written without any lock held).
+fn write_out(master: &mut File, bytes: &[u8]) -> bool {
+    bytes.is_empty() || master.write_all(bytes).is_ok()
+}
+
 /// Terminal -> pty. Raw blocking read/write, no buffering, no allocation.
 /// With a controller, bytes are routed through the line editor while it owns
-/// the prompt and forwarded untouched otherwise.
-pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<Shared>) {
+/// the prompt and forwarded untouched otherwise; `wake` is the read end of the
+/// pipe plugins use to announce late results.
+pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<(Shared, File)>) {
     let mut buf = [0u8; 4096];
     let mut pending = false;
     loop {
-        if let (true, Some(c)) = (pending, &ed) {
-            if !readable(&stdin, ESC_WAIT) {
-                ctl::lock(c).flush_keys();
-                pending = false;
+        if let Some((c, wake)) = &ed {
+            let timeout = pending.then_some(ESC_WAIT);
+            let (inp, woke) = wait_input(&stdin, wake, timeout);
+            if woke {
+                let mut sink = [0u8; 64];
+                let _ = (&*wake).read(&mut sink);
+                let ((), out) = ctl::with(c, (), |g| g.poll_plugins());
+                if !write_out(&mut master, &out) {
+                    return;
+                }
+            }
+            if !inp {
+                if pending && !woke {
+                    let ((), out) = ctl::with(c, (), |g| g.flush_keys());
+                    pending = false;
+                    if !write_out(&mut master, &out) {
+                        return;
+                    }
+                }
                 continue;
             }
         }
@@ -69,24 +112,33 @@ pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<Sh
                 }
                 return;
             }
-            Ok(n) => {
-                let len = match &ed {
-                    None => n,
-                    Some(c) => match ctl::lock(c).on_input(&mut buf, n) {
+            Ok(n) => match &ed {
+                None => {
+                    if master.write_all(&buf[..n]).is_err() {
+                        return;
+                    }
+                }
+                Some((c, _)) => {
+                    let (r, out) = ctl::with(c, Input::Forward(n), |g| g.on_input(&mut buf, n));
+                    let ok = match r {
                         Input::Forward(l) => {
                             pending = false;
-                            l
+                            write_out(&mut master, &buf[..l])
+                        }
+                        Input::ForwardOwned(v) => {
+                            pending = false;
+                            write_out(&mut master, &v)
                         }
                         Input::Handled(p) => {
                             pending = p;
-                            0
+                            true
                         }
-                    },
-                };
-                if len > 0 && master.write_all(&buf[..len]).is_err() {
-                    return;
+                    };
+                    if !ok || !write_out(&mut master, &out) {
+                        return;
+                    }
                 }
-            }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return,
         }
@@ -109,8 +161,9 @@ pub fn pump_output(
     loop {
         if let (true, Some(c)) = (armed, &ed) {
             if !readable(&master, QUIET) {
-                ctl::lock(c).on_quiet();
+                let ((), ob) = ctl::with(c, (), |g| g.on_quiet());
                 armed = false;
+                let _ = write_out(&mut master, &ob);
                 continue;
             }
         }
@@ -129,15 +182,18 @@ pub fn pump_output(
                 }
             }
             Some(c) => {
-                let mut g = ctl::lock(c);
-                if g.in_prompt() {
-                    armed = g.output_in_prompt(&out);
+                let (handled, ob) =
+                    ctl::with(c, None, |g| g.in_prompt().then(|| g.output_in_prompt(&out)));
+                if let Some(a) = handled {
+                    armed = a;
+                    let _ = write_out(&mut master, &ob);
                 } else {
-                    drop(g);
                     if stdout.write_all(&out).is_err() {
                         return;
                     }
-                    armed = ctl::lock(c).after_passthrough_output(&out);
+                    let (a, ob) = ctl::with(c, false, |g| g.after_passthrough_output(&out));
+                    armed = a;
+                    let _ = write_out(&mut master, &ob);
                 }
             }
         }
@@ -152,7 +208,7 @@ pub fn pump_output(
             }
         });
         if let (Some((total, b)), Some(c)) = (finished, &ed) {
-            ctl::lock(c).on_block(total, &b);
+            ctl::with(c, (), |g| g.on_block(total, &b));
         }
     }
 }

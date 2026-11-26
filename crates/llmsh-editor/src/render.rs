@@ -25,11 +25,19 @@ pub(crate) struct View<'a> {
 pub(crate) struct Renderer {
     pub start_col: u16,
     pub cur_row: u16,
+    cur_hard: u16,
+    cur_cells: u32,
+    /// End column of the drawn input when it (and nothing else) fits on the
+    /// first row; None when it wraps or popups are shown.
+    pub first_row_end: Option<u16>,
 }
 
 struct Lay {
     row: u16,
     col: u16,
+    /// Hard newlines so far, and cells since the last one (for resize math).
+    hard: u16,
+    cells: u32,
 }
 
 fn sgr(out: &mut Vec<u8>, c: Class, t: &Theme) {
@@ -56,6 +64,8 @@ fn emit(out: &mut Vec<u8>, lay: &mut Lay, g: &str, width: u16, rec: Option<&mut 
             out.extend_from_slice(b"\x1b[K\r\n");
             lay.row += 1;
             lay.col = 0;
+            lay.hard += 1;
+            lay.cells = 0;
             return;
         }
         _ => {
@@ -78,6 +88,7 @@ fn emit(out: &mut Vec<u8>, lay: &mut Lay, g: &str, width: u16, rec: Option<&mut 
     }
     out.extend_from_slice(bytes);
     lay.col += w;
+    lay.cells += u32::from(w);
     if lay.col >= width {
         out.extend_from_slice(b"\r\n");
         lay.row += 1;
@@ -89,6 +100,8 @@ impl Renderer {
     pub(crate) fn reset(&mut self, start_col: u16) {
         self.start_col = start_col;
         self.cur_row = 0;
+        self.cur_hard = 0;
+        self.cur_cells = u32::from(start_col);
     }
 
     fn to_origin(&self, out: &mut Vec<u8>) {
@@ -104,9 +117,10 @@ impl Renderer {
         self.to_origin(out);
         out.extend_from_slice(b"\x1b[J\x1b[?2026l");
         self.cur_row = 0;
+        self.cur_hard = 0;
+        self.cur_cells = u32::from(self.start_col);
     }
 
-    /// Move the cursor to the end of the drawn input (for finalising a line).
     pub(crate) fn draw(&mut self, out: &mut Vec<u8>, v: &View, width: u16) {
         let width = width.max(4);
         self.start_col = self.start_col.min(width - 1);
@@ -115,8 +129,11 @@ impl Renderer {
         let mut lay = Lay {
             row: 0,
             col: self.start_col,
+            hard: 0,
+            cells: u32::from(self.start_col),
         };
         let mut cur = (0u16, self.start_col);
+        let mut cur_hc = (0u16, u32::from(self.start_col));
         let mut cur_set = false;
         let mut si = 0;
         let mut style = Class::Default;
@@ -137,6 +154,7 @@ impl Renderer {
             let rec = (i == v.cursor).then_some(&mut cur);
             if rec.is_some() {
                 cur_set = true;
+                cur_hc = (lay.hard, lay.cells);
             }
             emit(out, &mut lay, g, width, rec);
         }
@@ -145,12 +163,15 @@ impl Renderer {
         }
         if !cur_set {
             cur = (lay.row, lay.col);
+            cur_hc = (lay.hard, lay.cells);
         }
         if v.theme.enabled && !v.ghost.is_empty() {
             let _ = write!(out, "\x1b[0;{}m", v.theme.ghost);
             let mut gl = Lay {
                 row: lay.row,
                 col: lay.col,
+                hard: lay.hard,
+                cells: lay.cells,
             };
             for g in v.ghost.graphemes(true) {
                 emit(out, &mut gl, g, width, None);
@@ -174,6 +195,25 @@ impl Renderer {
         let _ = write!(out, "\x1b[{}G", cur.1 + 1);
         out.extend_from_slice(b"\x1b[?2026l");
         self.cur_row = cur.0;
+        self.cur_hard = cur_hc.0;
+        self.cur_cells = cur_hc.1;
+        self.first_row_end = (lay.row == 0 && v.extra_rows == 0).then_some(lay.col);
+    }
+
+    /// Erase after the terminal was resized to `width` columns: assume the
+    /// terminal reflowed the wrapped text, so the cursor row is computed with
+    /// the new width instead of the one we drew with.
+    pub(crate) fn erase_resized(&mut self, out: &mut Vec<u8>, width: u16) {
+        let w = u32::from(width.max(1));
+        let row = u32::from(self.cur_hard) + self.cur_cells / w;
+        out.extend_from_slice(b"\x1b[?2026h");
+        if row > 0 {
+            let _ = write!(out, "\x1b[{row}A");
+        }
+        let _ = write!(out, "\x1b[{}G\x1b[J\x1b[?2026l", self.start_col + 1);
+        self.cur_row = 0;
+        self.cur_hard = 0;
+        self.cur_cells = u32::from(self.start_col);
     }
 }
 

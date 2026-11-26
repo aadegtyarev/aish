@@ -18,7 +18,7 @@ Two layers, both compile-time Rust traits today.
 | `on_submit(ctx, line) -> Submit/Intercept/Edit` | Enter | all plugins consulted; any `Intercept` makes `Event::Intercepted` |
 | `on_delivery(ctx, payload)` | a result arrived through the plugin's `Handle` | only if the line did not change since the request |
 
-Plugins must not block. Slow work (completion sidecar, a model) runs elsewhere
+Plugin offsets are clamped to character boundaries (`Ctx`), and the host runs the editor under `catch_unwind`. Plugins must not block. Slow work (completion sidecar, a model) runs elsewhere
 and calls `Handle::deliver(ctx.generation(), payload)`; the editor drops
 results whose generation is stale and the host's `waker` is called so it can
 `Editor::poll`. Built-ins are plugins too: `HistorySuggest`, `HistorySearch`,

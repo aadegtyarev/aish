@@ -6,6 +6,12 @@ use std::os::fd::{AsRawFd, RawFd};
 
 use nix::libc;
 
+thread_local! {
+    /// Set while a controller call runs under `catch_unwind`: the panic hook must
+    /// not touch the terminal then, the session continues.
+    pub static IN_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 nix::ioctl_read_bad!(tiocgwinsz, libc::TIOCGWINSZ, libc::winsize);
 nix::ioctl_write_ptr_bad!(tiocswinsz, libc::TIOCSWINSZ, libc::winsize);
 
@@ -21,6 +27,10 @@ impl RawGuard {
         crossterm::terminal::enable_raw_mode().ok()?;
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            if IN_GUARD.with(|g| g.get()) {
+                tracing::error!("caught panic: {info}");
+                return;
+            }
             let _ = crossterm::terminal::disable_raw_mode();
             prev(info);
         }));
@@ -77,7 +87,9 @@ impl Signals {
                 if sig == SIGWINCH {
                     let apply = || set_window_size(master.as_raw_fd(), &window_size());
                     match &ed {
-                        Some(c) => crate::editor::ctl::lock(c).resize(apply),
+                        Some(c) => {
+                            crate::editor::ctl::with(c, (), |g| g.resize(apply));
+                        }
                         None => apply(),
                     }
                     continue;

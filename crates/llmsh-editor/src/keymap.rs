@@ -6,6 +6,7 @@ use crate::keys::Key;
 
 /// An editing action that can be bound to a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Command {
     /// Finish the line.
     Accept,
@@ -52,6 +53,7 @@ pub enum Command {
 /// What a key does: a core [`Command`] or an action name implemented by a
 /// plugin (e.g. `"history-search"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Binding {
     /// Core editing command.
     Command(Command),

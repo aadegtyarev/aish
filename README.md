@@ -43,6 +43,14 @@ the mode switch, `TERM=dumb`, `LLMSH_EDITOR=0`, or any program that is running
 (vim, ssh...) is plain passthrough. Output arriving while editing (background job)
 makes bash repaint its prompt below it and the line is redrawn.
 `?`-lines (see UX.md) are not sent to bash yet: a dim notice is printed.
+Robustness rules: our OSC 133 marks carry a per-session nonce (`llmsh=<id>`), so marks
+of foreign shells (ssh, docker exec, nested integrations) never start prompt mode. If bash
+echoes anything after the prompt mark (type-ahead typed during the previous command), that
+prompt stays plain bash (no ghost/highlight) instead of guessing readline's buffer. Bytes
+for bash are never written while the controller lock is held, and a panic in the editor or
+a plugin drops the session to plain passthrough. The shell reports its PATH (private OSC)
+whenever it changes, which feeds the highlighter. A submitted line is typed into bash as one
+bracketed paste when bash has it on (multi-line stays one history entry).
 Features are modules (history, highlight, completion, model), see
 [docs/PLUGINS.md](docs/PLUGINS.md); config `modules: [..]` selects a subset.
 
@@ -64,3 +72,7 @@ red, strings yellow, `$vars` cyan, comments dim; `NO_COLOR` disables colors and 
 Completion candidates come from a long-lived `bash --norc -i` sidecar (pipes, no pty, own session)
 that sources bash-completion and `~/.bashrc`; answers arrive asynchronously (300 ms limit, then
 plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
+
+## License
+
+MIT.

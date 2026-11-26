@@ -43,6 +43,9 @@ pub struct HistorySuggest {
     nav: Option<Nav>,
     own_rev: u64,
     last: String,
+    /// Cached lookup: `(query, history length, hit)`. A longer query that
+    /// extends the cached one can only match the cached hit or something older.
+    cache: Option<(String, usize, Option<usize>)>,
 }
 
 impl HistorySuggest {
@@ -53,6 +56,7 @@ impl HistorySuggest {
             nav: None,
             own_rev: u64::MAX,
             last: String::with_capacity(128),
+            cache: None,
         }
     }
 
@@ -66,7 +70,7 @@ impl HistorySuggest {
             .hist
             .with(|h| {
                 h.prev_matching(nav.pos, &nav.prefix, &nav.draft)
-                    .map(|i| (i, h.get(i).to_owned()))
+                    .map(|i| (i, h.get(i).into_owned()))
             })
             .flatten();
         if let Some((i, text)) = hit {
@@ -85,7 +89,7 @@ impl HistorySuggest {
             .hist
             .with(|h| {
                 h.next_matching(nav.pos, &nav.prefix, &nav.draft)
-                    .map(|i| (i, h.get(i).to_owned()))
+                    .map(|i| (i, h.get(i).into_owned()))
             })
             .flatten();
         match hit {
@@ -126,12 +130,40 @@ impl Plugin for HistorySuggest {
         }
     }
     fn suggest(&mut self, ctx: &mut Ctx) -> Option<&str> {
+        let q = ctx.text();
+        let hit = self.hist.with(|h| {
+            let len = h.len();
+            let before = match &self.cache {
+                Some((cq, clen, chit)) if *clen == len && q.starts_with(cq.as_str()) => {
+                    match chit {
+                        // Still matches: it is the most recent match for `q` too.
+                        Some(i) if h.get(*i).starts_with(q) && h.get(*i).len() > q.len() => {
+                            return Some(*i);
+                        }
+                        Some(i) => *i,
+                        None => return None,
+                    }
+                }
+                _ => len,
+            };
+            h.suggest_before(q, before)
+        })?;
+        match &mut self.cache {
+            Some((cq, clen, chit)) => {
+                cq.clear();
+                cq.push_str(q);
+                *clen = self.hist.with(|h| h.len()).unwrap_or(0);
+                *chit = hit;
+            }
+            None => {
+                self.cache = Some((q.to_owned(), self.hist.with(|h| h.len()).unwrap_or(0), hit));
+            }
+        }
+        let i = hit?;
         self.hist.with(|h| {
-            h.suggest(ctx.text()).map(|e| {
-                self.last.clear();
-                self.last.push_str(e);
-            })
-        })??;
+            self.last.clear();
+            self.last.push_str(&h.get(i));
+        })?;
         Some(&self.last)
     }
     fn on_submit(&mut self, _ctx: &mut Ctx, line: &str) -> SubmitAction {

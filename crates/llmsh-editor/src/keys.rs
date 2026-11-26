@@ -3,6 +3,7 @@
 
 /// A decoded key press.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Key {
     /// A printable character.
     Char(char),
@@ -67,6 +68,16 @@ enum Esc {
     PasteStart(usize),
 }
 
+/// Result of decoding at the start of a byte slice.
+pub(crate) enum One {
+    /// A key and the number of bytes it used.
+    Key(Key, usize),
+    /// Bytes consumed without producing a key (ignored sequence, paste data).
+    Skip(usize),
+    /// The slice is a partial sequence; wait for more bytes.
+    Incomplete,
+}
+
 impl Decoder {
     pub(crate) fn new() -> Self {
         Decoder {
@@ -81,117 +92,96 @@ impl Decoder {
         !self.pending.is_empty()
     }
 
-    pub(crate) fn feed(&mut self, bytes: &[u8], f: &mut impl FnMut(Key)) {
-        if self.pending.is_empty() {
-            let n = self.parse(bytes, f);
-            if n < bytes.len() {
-                self.pending.extend_from_slice(&bytes[n..]);
-            }
-        } else {
-            let mut p = std::mem::take(&mut self.pending);
-            p.extend_from_slice(bytes);
-            let n = self.parse(&p, f);
-            p.drain(..n);
-            if p.len() > MAX_PENDING {
-                p.clear();
-            }
-            self.pending = p;
+    pub(crate) fn take_pending(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+
+    pub(crate) fn set_pending(&mut self, tail: &[u8]) {
+        self.pending.clear();
+        if tail.len() <= MAX_PENDING {
+            self.pending.extend_from_slice(tail);
         }
     }
 
     /// Input went quiet: a held back ESC was a real Escape; other partial
     /// sequences are dropped.
-    pub(crate) fn flush(&mut self, f: &mut impl FnMut(Key)) {
-        let p = std::mem::take(&mut self.pending);
-        if p == [0x1b] {
-            f(Key::Esc);
-        }
-        self.pending = p;
+    pub(crate) fn flush(&mut self) -> Option<Key> {
+        let esc = self.pending == [0x1b];
         self.pending.clear();
+        esc.then_some(Key::Esc)
     }
 
-    /// Returns the number of bytes consumed; the rest is an incomplete tail.
-    fn parse(&mut self, data: &[u8], f: &mut impl FnMut(Key)) -> usize {
+    /// Decode at the start of `data` (non-empty).
+    pub(crate) fn parse_one(&mut self, data: &[u8]) -> One {
+        if self.in_paste {
+            return match find(data, PASTE_END) {
+                Some(p) => {
+                    self.paste.extend_from_slice(&data[..p]);
+                    self.in_paste = false;
+                    let s = String::from_utf8_lossy(&self.paste).into_owned();
+                    self.paste.clear();
+                    One::Key(Key::Paste(s), p + PASTE_END.len())
+                }
+                None => {
+                    // Keep a possible partial terminator for the next read.
+                    let keep = (1..PASTE_END.len().min(data.len() + 1))
+                        .rev()
+                        .find(|&k| data.ends_with(&PASTE_END[..k]))
+                        .unwrap_or(0);
+                    self.paste.extend_from_slice(&data[..data.len() - keep]);
+                    if keep == data.len() {
+                        One::Incomplete
+                    } else {
+                        One::Skip(data.len() - keep)
+                    }
+                }
+            };
+        }
+        let b = data[0];
+        let key = |k: Key| One::Key(k, 1);
+        match b {
+            0x1b => match escape(data) {
+                Esc::Incomplete => One::Incomplete,
+                Esc::Done(n, Some(k)) => One::Key(k, n),
+                Esc::Done(n, None) => One::Skip(n),
+                Esc::PasteStart(n) => {
+                    self.in_paste = true;
+                    One::Skip(n)
+                }
+            },
+            b'\r' | b'\n' => key(Key::Enter),
+            b'\t' => key(Key::Tab),
+            0x08 | 0x7f => key(Key::Backspace),
+            0 => key(Key::Ctrl(b' ')),
+            0x1f => key(Key::Ctrl(b'_')),
+            1..=26 => key(Key::Ctrl(b + b'a' - 1)),
+            0x1c..=0x1e => One::Skip(1),
+            0x20..=0x7e => key(Key::Char(b as char)),
+            _ => match utf8(data) {
+                Utf8::Incomplete => One::Incomplete,
+                Utf8::Bad => One::Skip(1),
+                Utf8::Ok(c, n) => One::Key(Key::Char(c), n),
+            },
+        }
+    }
+
+    /// Test helper: decode a whole chunk, keeping partial tails.
+    #[cfg(test)]
+    pub(crate) fn feed(&mut self, bytes: &[u8], f: &mut impl FnMut(Key)) {
+        let mut data = self.take_pending();
+        data.extend_from_slice(bytes);
         let mut i = 0;
         while i < data.len() {
-            if self.in_paste {
-                match find(&data[i..], PASTE_END) {
-                    Some(p) => {
-                        self.paste.extend_from_slice(&data[i..i + p]);
-                        i += p + PASTE_END.len();
-                        self.in_paste = false;
-                        let s = String::from_utf8_lossy(&self.paste).into_owned();
-                        self.paste.clear();
-                        f(Key::Paste(s));
-                    }
-                    None => {
-                        // Keep a possible partial terminator for the next read.
-                        let rest = &data[i..];
-                        let keep = (1..PASTE_END.len().min(rest.len() + 1))
-                            .rev()
-                            .find(|&k| rest.ends_with(&PASTE_END[..k]))
-                            .unwrap_or(0);
-                        self.paste.extend_from_slice(&rest[..rest.len() - keep]);
-                        return data.len() - keep;
-                    }
+            match self.parse_one(&data[i..]) {
+                One::Key(k, n) => {
+                    i += n;
+                    f(k);
                 }
-                continue;
-            }
-            let b = data[i];
-            match b {
-                0x1b => match escape(&data[i..]) {
-                    Esc::Incomplete => return i,
-                    Esc::Done(n, k) => {
-                        i += n;
-                        if let Some(k) = k {
-                            f(k);
-                        }
-                    }
-                    Esc::PasteStart(n) => {
-                        i += n;
-                        self.in_paste = true;
-                    }
-                },
-                b'\r' | b'\n' => {
-                    i += 1;
-                    f(Key::Enter);
-                }
-                b'\t' => {
-                    i += 1;
-                    f(Key::Tab);
-                }
-                0x08 | 0x7f => {
-                    i += 1;
-                    f(Key::Backspace);
-                }
-                0 => {
-                    i += 1;
-                    f(Key::Ctrl(b' '));
-                }
-                0x1f => {
-                    i += 1;
-                    f(Key::Ctrl(b'_'));
-                }
-                1..=26 => {
-                    i += 1;
-                    f(Key::Ctrl(b + b'a' - 1));
-                }
-                0x1c..=0x1e => i += 1,
-                0x20..=0x7e => {
-                    i += 1;
-                    f(Key::Char(b as char));
-                }
-                _ => match utf8(&data[i..]) {
-                    Utf8::Incomplete => return i,
-                    Utf8::Bad => i += 1,
-                    Utf8::Ok(c, n) => {
-                        i += n;
-                        f(Key::Char(c));
-                    }
-                },
+                One::Skip(n) => i += n,
+                One::Incomplete => break,
             }
         }
-        i
+        self.set_pending(&data[i..]);
     }
 }
 
@@ -316,29 +306,47 @@ fn csi(d: &[u8]) -> Esc {
     Esc::Done(n, key)
 }
 
-/// Remove cursor-position replies (`ESC [ r ; c R`) from `buf` in place;
-/// returns (new length, whether one was found).
-pub fn strip_cursor_reports(buf: &mut [u8]) -> (usize, bool) {
-    let mut w = 0;
-    let mut r = 0;
-    let mut found = false;
-    while r < buf.len() {
-        if buf[r] == 0x1b && buf.get(r + 1) == Some(&b'[') {
-            let mut j = r + 2;
-            while j < buf.len() && (buf[j].is_ascii_digit() || buf[j] == b';') {
-                j += 1;
+/// Removes cursor-position replies (`ESC [ row ; col R`) from forwarded
+/// input, also when a reply is split across reads.
+#[derive(Default)]
+pub struct CursorReportFilter {
+    held: Vec<u8>,
+}
+
+impl CursorReportFilter {
+    /// Filter `input` into `out` (appended); returns whether a reply was
+    /// removed. A trailing partial reply is held back until the next call.
+    pub fn filter(&mut self, input: &[u8], out: &mut Vec<u8>) -> bool {
+        let mut data = std::mem::take(&mut self.held);
+        data.extend_from_slice(input);
+        let mut found = false;
+        let mut r = 0;
+        while r < data.len() {
+            if data[r] == 0x1b && data.get(r + 1).is_none_or(|&b| b == b'[') {
+                let mut j = r + 2;
+                while j < data.len() && (data[j].is_ascii_digit() || data[j] == b';') {
+                    j += 1;
+                }
+                if j == data.len() && j > r + 1 {
+                    self.held.extend_from_slice(&data[r..]); // might still become a reply
+                    break;
+                }
+                if j > r + 2 && data.get(j) == Some(&b'R') {
+                    found = true;
+                    r = j + 1;
+                    continue;
+                }
             }
-            if j < buf.len() && buf[j] == b'R' && j > r + 2 {
-                r = j + 1;
-                found = true;
-                continue;
-            }
+            out.push(data[r]);
+            r += 1;
         }
-        buf[w] = buf[r];
-        w += 1;
-        r += 1;
+        found
     }
-    (w, found)
+
+    /// Drop and return any held bytes (the reply never completed).
+    pub fn take_held(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
+    }
 }
 
 #[cfg(test)]
@@ -351,7 +359,7 @@ mod tests {
         for c in chunks {
             d.feed(c, &mut |k| out.push(k));
         }
-        d.flush(&mut |k| out.push(k));
+        out.extend(d.flush());
         out
     }
 
@@ -413,7 +421,7 @@ mod tests {
         let mut out = vec![];
         d.feed(b"\x1b", &mut |k| out.push(k));
         assert!(out.is_empty() && d.has_pending());
-        d.flush(&mut |k| out.push(k));
+        out.extend(d.flush());
         assert_eq!(out, vec![Key::Esc]);
     }
 
@@ -440,9 +448,30 @@ mod tests {
     }
 
     #[test]
-    fn strips_dsr() {
-        let mut b = *b"a\x1b[3;7Rb";
-        let (n, f) = strip_cursor_reports(&mut b);
-        assert_eq!((&b[..n], f), (&b"ab"[..], true));
+    fn strips_cursor_reports_even_when_split() {
+        let mut f = CursorReportFilter::default();
+        let mut out = vec![];
+        assert!(f.filter(b"a\x1b[3;7Rb", &mut out));
+        assert_eq!(out, b"ab");
+        for split in 1..8 {
+            if split == 2 {
+                continue; // lone trailing ESC is the Escape key: never held back
+            }
+            let s = b"x\x1b[12;34Ry";
+            let mut f = CursorReportFilter::default();
+            let mut out = vec![];
+            let found = f.filter(&s[..split], &mut out) | f.filter(&s[split..], &mut out);
+            assert!(found, "split {split}");
+            assert_eq!(out, b"xy", "split {split}");
+        }
+        // a lone ESC (the Escape key) is not held back
+        let mut f = CursorReportFilter::default();
+        let mut out = vec![];
+        f.filter(b"\x1b", &mut out);
+        assert_eq!(out, b"\x1b");
+        // other sequences pass through
+        let mut out = vec![];
+        f.filter(b"\x1b[A\x1b[1;5C", &mut out);
+        assert_eq!(out, b"\x1b[A\x1b[1;5C");
     }
 }

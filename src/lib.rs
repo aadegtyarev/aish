@@ -11,6 +11,7 @@ pub mod pty;
 pub mod shell;
 pub mod term;
 
+use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
@@ -54,14 +55,27 @@ pub fn run() -> Result<i32> {
     let rc = shell::install_rc()?;
     let signals = term::Signals::register()?;
     let mut cmd = Command::new("bash");
-    cmd.arg("--rcfile").arg(&rc).arg("-i").env("LLMSH", "1");
+    // Session nonce: our OSC 133 marks carry it, foreign ones (ssh, nested
+    // shells with their own integration) are ignored.
+    let nonce = format!(
+        "{:x}{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    );
+    cmd.arg("--rcfile")
+        .arg(&rc)
+        .arg("-i")
+        .env("LLMSH", "1")
+        .env("LLMSH_NONCE", &nonce);
     if is_login() {
         cmd.env("LLMSH_LOGIN", "1");
     }
     let (mut child, master) = pty::spawn(cmd, &term::window_size())?;
 
     let raw = term::RawGuard::enter();
-    let tracker = Arc::new(Mutex::new(blocks::BlockTracker::default()));
+    let tracker = Arc::new(Mutex::new(blocks::BlockTracker::with_nonce(nonce.clone())));
     let setup = (|| -> Result<_> {
         let stdin = pty::dup_std(&std::io::stdin())?;
         let stdout = pty::dup_std(&std::io::stdout())?;
@@ -76,18 +90,27 @@ pub fn run() -> Result<i32> {
         }
     };
     let is_tty = raw.is_some();
-    let ed = if is_tty && editor::ctl::wanted() {
-        Some(editor::ctl::Controller::start(
-            m_in.try_clone()?,
+    let (ed, wake_r) = if is_tty && editor::ctl::wanted() {
+        let (r, w) = nix::unistd::pipe()?;
+        for fd in [&r, &w] {
+            nix::fcntl::fcntl(
+                fd.as_raw_fd(),
+                nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK),
+            )?;
+        }
+        let ctl = editor::ctl::Controller::start(
             stdout.try_clone()?,
             tracker.clone(),
             enabled_modules.as_deref(),
-        ))
+            nonce,
+            std::fs::File::from(w),
+        );
+        (Some(ctl), Some(std::fs::File::from(r)))
     } else {
-        None
+        (None, None)
     };
     signals.watch(m_sig, child.id(), ed.clone());
-    let ed_in = ed.clone();
+    let ed_in = ed.clone().zip(wake_r);
     std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty, ed_in));
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {

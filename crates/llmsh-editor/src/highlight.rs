@@ -2,6 +2,7 @@
 
 /// Style class of a highlighted span; the [`Theme`](crate::Theme) maps it to colors.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Class {
     /// Plain text.
     Default,

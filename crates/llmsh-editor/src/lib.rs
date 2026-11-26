@@ -34,8 +34,8 @@ pub use editor::{Editor, EditorBuilder, Event};
 pub use highlight::{Class, Span};
 pub use history::{fuzzy, History, MemHistory};
 pub use keymap::{Binding, Command, Keymap};
-pub use keys::{strip_cursor_reports, Key};
-pub use plugin::{Ctx, Decoration, Handle, Handled, Plugin, SubmitAction};
+pub use keys::{CursorReportFilter, Key};
+pub use plugin::{Ctx, Decoration, Handle, Handled, Plugin, Row, RowStyle, SubmitAction};
 pub use standalone::{LineReader, Prompt, Signal};
 pub use theme::Theme;
 

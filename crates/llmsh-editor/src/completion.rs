@@ -191,6 +191,7 @@ pub fn common_prefix(items: &[String]) -> &str {
 }
 
 /// What a [`CompletionSource`] answers right away.
+#[non_exhaustive]
 pub enum Outcome {
     /// Candidates are ready now.
     Ready(Candidates),

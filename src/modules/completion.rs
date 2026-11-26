@@ -64,13 +64,9 @@ impl Module for CompletionModule {
                 *g = Some(sc.clone());
             }
             if let Some(r) = sc.names(std::time::Duration::from_secs(10)) {
-                let mut names = r.items.into_iter();
-                let sc_path = names.next().map(std::ffi::OsString::from);
-                resolver.set_extra(names);
-                if let Some(p) = sc_path {
-                    let (path, cmds) = crate::editor::resolve::scan_path(Some(p));
-                    resolver.set_path(path, cmds, true);
-                }
+                // First item is the sidecar's PATH (unused: the shell reports
+                // its live PATH itself); the rest are aliases/functions/builtins.
+                resolver.set_extra(r.items.into_iter().skip(1));
             }
         });
         vec![Box::new(CompletionPager::new(Bash {

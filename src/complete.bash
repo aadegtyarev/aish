@@ -8,12 +8,17 @@ unset HISTFILE
 export LLMSH_SIDECAR=1
 shopt -s progcomp extglob 2>/dev/null
 
+# The user's rc must not replace or end this shell.
+exec() { return 0; }
+exit() { return 0; }
+logout() { return 0; }
 if [[ -r /usr/share/bash-completion/bash_completion ]]; then
   . /usr/share/bash-completion/bash_completion </dev/null
 fi
 if [[ -r ${HOME-}/.bashrc ]]; then
   . "$HOME/.bashrc" </dev/null
 fi
+unset -f exec exit logout
 set +eu +o history +H 2>/dev/null
 trap - DEBUG ERR EXIT 2>/dev/null
 unset PROMPT_COMMAND
@@ -60,7 +65,7 @@ __lc_gen() {
   while :; do
     spec=$(complete -p -- "$cmd" 2>/dev/null)
     if [[ -z $spec ]] && (( tries++ == 0 )) && declare -F _completion_loader >/dev/null; then
-      _completion_loader "$cmd" >/dev/null 2>&1
+      _completion_loader "$cmd" >/dev/null 2>&1 </dev/null
       continue
     fi
     break
@@ -130,7 +135,8 @@ __lc_loop() {
         COMP_TYPE=9
         COMP_KEY=9
         COMPREPLY=()
-        __lc_gen
+        # stdin is the request pipe: completion code must never read from it
+        __lc_gen </dev/null
         local flags=-
         [[ $__lc_opts == *" filenames "* ]] && flags+=f
         [[ $__lc_opts == *" nospace "* ]] && flags+=n

@@ -122,6 +122,10 @@ struct Run {
 
 #[derive(Default)]
 struct Collector {
+    /// When set, OSC 133 marks must carry `llmsh=<nonce>` (foreign shells' marks are ignored).
+    nonce: Option<String>,
+    path: Option<String>,
+    path_version: u64,
     cwd: String,
     pending_cmd: Option<String>,
     run: Option<Run>,
@@ -165,6 +169,15 @@ impl Collector {
     }
 }
 
+impl Collector {
+    fn tagged(&self, params: &[&[u8]]) -> bool {
+        match &self.nonce {
+            None => true,
+            Some(n) => params.iter().any(|p| *p == format!("llmsh={n}").as_bytes()),
+        }
+    }
+}
+
 impl Perform for Collector {
     fn print(&mut self, c: char) {
         if let Some(r) = &mut self.run {
@@ -185,6 +198,7 @@ impl Perform for Collector {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell: bool) {
         match params {
+            [b"133", _, rest @ ..] if !self.tagged(rest) => {}
             [b"133", mark, rest @ ..] => match mark.first() {
                 Some(b'C') => {
                     self.run = Some(Run {
@@ -216,6 +230,11 @@ impl Perform for Collector {
                 // vte splits on ';', and plain commands may contain it.
                 debug_assert!(PRIVATE_PREFIX.ends_with(b"llmsh;"));
                 let payload = payload.join(&b';');
+                if let Some(p) = payload.strip_prefix(b"path=") {
+                    self.path = Some(percent_decode(&String::from_utf8_lossy(p)));
+                    self.path_version += 1;
+                    return;
+                }
                 let cmd = match payload.split_at_checked(2) {
                     Some((b"p=", p)) => Some(percent_decode(&String::from_utf8_lossy(p))),
                     _ => None,
@@ -266,6 +285,19 @@ impl BlockTracker {
 
     pub fn cwd(&self) -> &str {
         &self.state.cwd
+    }
+
+    /// PATH of the shell (reported by the integration whenever it changes)
+    /// and a counter that increases with every report.
+    pub fn path(&self) -> (Option<&str>, u64) {
+        (self.state.path.as_deref(), self.state.path_version)
+    }
+
+    /// Only accept OSC 133 marks tagged with this session nonce.
+    pub fn with_nonce(nonce: String) -> Self {
+        let mut t = BlockTracker::default();
+        t.state.nonce = Some(nonce);
+        t
     }
 }
 
@@ -351,5 +383,19 @@ mod tests {
             t.feed(b"\x1b]133;C\x07a\x1b]133;D;0\x07");
         }
         assert_eq!(t.blocks().len(), MAX_BLOCKS);
+    }
+
+    #[test]
+    fn nonce_filters_foreign_marks_and_path_is_tracked() {
+        let mut t = BlockTracker::with_nonce("n1".into());
+        // a foreign shell (ssh) inside the command: no block, no confusion
+        t.feed(
+            b"\x1b]133;C;llmsh=n1\x07out\x1b]133;A\x07$ \x1b]133;D;5\x07\x1b]133;D;0;llmsh=n1\x07",
+        );
+        let b: Vec<_> = t.blocks().last(10).collect();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].exit_code, Some(0));
+        t.feed(b"\x1b]1337;llmsh;path=/a:/b%20c\x07");
+        assert_eq!(t.path(), (Some("/a:/b c"), 1));
     }
 }

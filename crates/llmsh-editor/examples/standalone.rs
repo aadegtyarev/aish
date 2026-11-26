@@ -72,7 +72,7 @@ fn main() -> std::io::Result<()> {
             }
             Signal::Interrupt => println!("^C"),
             Signal::Eof => break,
-            Signal::Intercepted(_) => {}
+            _ => {}
         }
     }
     Ok(())

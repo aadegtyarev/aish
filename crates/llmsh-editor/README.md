@@ -46,4 +46,4 @@ See `examples/standalone.rs` for history file, Tab completion and a right prompt
   `decorate`, `on_submit`, `on_buffer_change`, `on_delivery`; `Intercept` plugin
   lets the host claim lines instead of submitting them.
 
-License: MIT OR Apache-2.0.
+License: MIT.

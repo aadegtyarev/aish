@@ -144,9 +144,9 @@ impl Resolver {
         {
             return true;
         }
-        if w.contains('/') || w.starts_with('~') {
-            return w.starts_with('~') || std::path::Path::new(w).is_file();
-        }
-        false
+        // Paths are not stat'ed: that would hit the file system on every key,
+        // against the wrong directory (ours, not the shell's) and possibly a
+        // frozen mount. Treat them as runnable.
+        w.contains('/') || w.starts_with('~')
     }
 }

@@ -3,7 +3,7 @@ name = "lineedit-wip" # placeholder, final name TBD
 version = "0.1.0"
 edition = "2021"
 description = "Small embeddable emacs-style line editor with a plugin architecture"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 publish = false
 readme = "README.md"
 

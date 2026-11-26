@@ -2,16 +2,21 @@
 //! to the editor, draws, and hands finished lines to bash.
 //!
 //! Lock discipline: one mutex around [`Controller`], taken by the input thread
-//! (per read), the output thread (per chunk), the resize thread and plugin
-//! wakers. Bulk passthrough writes happen outside the lock.
+//! (per read), the output thread (per chunk) and the resize thread. Bulk
+//! passthrough writes happen outside the lock, and the controller never writes
+//! to the PTY itself: bytes for bash are collected in an outbox that the caller
+//! writes after dropping the lock (a full PTY must not stall the other thread).
+//! Controller calls run under `catch_unwind` ([`with`]): a panic in the editor
+//! or a plugin disables prompt mode for the rest of the session.
 
 use std::fs::File;
 use std::io::Write;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use lineedit_wip::plugins::SharedHistory;
-use lineedit_wip::{strip_cursor_reports, Editor, Event, MemHistory, Theme};
+use lineedit_wip::{CursorReportFilter, Editor, Event, MemHistory, Theme};
 
 use super::resolve::Resolver;
 use super::scan::Scan;
@@ -30,12 +35,43 @@ const REDRAW_KEY: &[u8] = b"\x1b[1337~";
 pub type Shared = Arc<Mutex<Controller>>;
 
 pub fn lock(s: &Shared) -> MutexGuard<'_, Controller> {
-    s.lock().unwrap_or_else(|e| e.into_inner())
+    s.lock().unwrap_or_else(|e| {
+        tracing::error!("controller mutex poisoned: prompt mode disabled");
+        let mut g = e.into_inner();
+        g.disabled = true;
+        g
+    })
+}
+
+/// Run `f` on the controller under the lock, catching panics. Returns its
+/// result and the bytes to write to bash (write them after this returns, i.e.
+/// without the lock). On panic: log, disable prompt mode, return `default`.
+pub fn with<R>(c: &Shared, default: R, f: impl FnOnce(&mut Controller) -> R) -> (R, Vec<u8>) {
+    let mut g = lock(c);
+    crate::term::IN_GUARD.with(|x| x.set(true));
+    let r = catch_unwind(AssertUnwindSafe(|| f(&mut g)));
+    crate::term::IN_GUARD.with(|x| x.set(false));
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            tracing::error!("line editor panicked ({msg}); falling back to plain bash input");
+            let _ = catch_unwind(AssertUnwindSafe(|| g.disable()));
+            default
+        }
+    };
+    (r, g.take_outbox())
 }
 
 pub enum Input {
     /// Send the first N bytes of the buffer to bash untouched.
     Forward(usize),
+    /// Send these bytes (the input with cursor reports removed).
+    ForwardOwned(Vec<u8>),
     /// Consumed; the flag says a partial key is pending (wait `ESC_WAIT`).
     Handled(bool),
 }
@@ -47,8 +83,10 @@ pub struct Controller {
     /// Bytes went to bash while its prompt was waiting: its line is not empty.
     dirty: bool,
     dsr: Option<Instant>,
+    dsr_filter: CursorReportFilter,
     use_dsr: bool,
-    master: File,
+    disabled: bool,
+    outbox: Vec<u8>,
     stdout: File,
     modules: Vec<Box<dyn Module>>,
     events: Vec<Event>,
@@ -69,10 +107,11 @@ pub fn wanted() -> bool {
 impl Controller {
     /// Build the controller and its editor from the enabled modules.
     pub fn start(
-        master: File,
         stdout: File,
         tracker: Arc<Mutex<BlockTracker>>,
         enabled: Option<&[String]>,
+        nonce: String,
+        wake: File,
     ) -> Shared {
         let env = Env {
             tracker,
@@ -80,44 +119,32 @@ impl Controller {
             history: SharedHistory::new(Box::new(MemHistory::default())),
         };
         let mut modules = module::builtin(enabled);
-        // Late plugin results wake us through this slot (set once `ctl` exists).
-        let slot: Arc<OnceLock<Weak<Mutex<Controller>>>> = Arc::new(OnceLock::new());
-        let waker_slot = slot.clone();
+        // A late plugin result writes a byte to the wake pipe; the input thread
+        // polls it next to stdin and calls `poll_plugins` (no lock taken here).
         let mut b = Editor::builder().theme(Theme::from_env()).waker(move || {
-            let Some(c) = waker_slot.get().and_then(Weak::upgrade) else {
-                return;
-            };
-            // The thread that delivers is never the one holding the lock;
-            // if it is anyway (synchronous delivery), the next key polls.
-            for _ in 0..50 {
-                if let Ok(mut g) = c.try_lock() {
-                    g.poll_plugins();
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            let _ = (&wake).write(&[1]);
         });
         for m in &mut modules {
             for p in m.editor_plugins(&env) {
                 b = b.with_boxed(p);
             }
         }
-        let ctl = Arc::new(Mutex::new(Controller {
+        Arc::new(Mutex::new(Controller {
             ed: b.build(),
-            scan: Scan::default(),
+            scan: Scan::new(nonce),
             prompt: false,
             dirty: false,
             dsr: None,
+            dsr_filter: CursorReportFilter::default(),
             use_dsr: true,
-            master,
+            disabled: false,
+            outbox: Vec::new(),
             stdout,
             modules,
             events: Vec::with_capacity(8),
             notice: Vec::new(),
             seen_blocks: 0,
-        }));
-        let _ = slot.set(Arc::downgrade(&ctl));
-        ctl
+        }))
     }
 
     pub fn in_prompt(&self) -> bool {
@@ -126,7 +153,25 @@ impl Controller {
 
     /// Prompt printed, nothing typed into bash's line, not yet ours.
     pub fn armed(&self) -> bool {
-        self.scan.b_seen && !self.prompt && !self.dirty
+        self.scan.b_seen
+            && !self.prompt
+            && !self.dirty
+            && !self.disabled
+            && !self.scan.printed_after_b
+    }
+
+    /// Stop using prompt mode for the rest of the session (after a panic).
+    pub fn disable(&mut self) {
+        self.disabled = true;
+        if self.prompt {
+            self.erase();
+            self.leave(false);
+        }
+    }
+
+    /// Bytes to type into bash; write them after releasing the lock.
+    pub fn take_outbox(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.outbox)
     }
 
     /// A command block finished (called from the output thread).
@@ -156,6 +201,7 @@ impl Controller {
             self.dirty = false;
         }
         self.scan.saw_a = false;
+        self.scan.saw_b = false;
         self.armed()
     }
 
@@ -165,10 +211,12 @@ impl Controller {
         let _ = self.stdout.write_all(data);
         let w = width();
         self.scan.feed(data, w);
-        if self.scan.saw_a || self.scan.saw_cd {
-            // bash is redrawing its prompt (or running something): let go and
-            // pick the line up again at the next quiet B.
+        if self.scan.saw_a || self.scan.saw_b || self.scan.saw_cd {
+            // bash is redrawing its prompt (A..B, or B alone after a resize of a
+            // multi-line prompt) or running something: let go and pick the line
+            // up again at the next quiet B.
             self.scan.saw_a = false;
+            self.scan.saw_b = false;
             if std::mem::take(&mut self.scan.saw_cd) {
                 self.dirty = false;
             }
@@ -212,7 +260,8 @@ impl Controller {
     /// ^C, ^D, ^L was sent), so its prompt is no longer waiting.
     fn leave(&mut self, sent: bool) {
         self.prompt = false;
-        self.dsr = None;
+        // A pending cursor-position reply is still filtered from the input
+        // (it must not leak to bash or the next program); `dsr` expires by TTL.
         if sent {
             self.scan.b_seen = false;
             let _ = self.stdout.write_all(b"\x1b[?2004l");
@@ -222,18 +271,22 @@ impl Controller {
     /// Bytes from the keyboard. `buf[..n]` is valid; passthrough may rewrite it.
     pub fn on_input(&mut self, buf: &mut [u8], n: usize) -> Input {
         if !self.prompt {
-            let mut len = n;
             if let Some(t) = self.dsr {
-                let (l, found) = strip_cursor_reports(&mut buf[..n]);
-                len = l;
+                let mut out = Vec::with_capacity(n);
+                let found = self.dsr_filter.filter(&buf[..n], &mut out);
                 if found || t.elapsed() > DSR_TTL {
                     self.dsr = None;
+                    out.extend(self.dsr_filter.take_held());
                 }
+                if self.scan.b_seen && !out.is_empty() {
+                    self.dirty = out[out.len() - 1] != 0x03;
+                }
+                return Input::ForwardOwned(out);
             }
-            if self.scan.b_seen && len > 0 {
-                self.dirty = buf[len - 1] != 0x03;
+            if self.scan.b_seen && n > 0 {
+                self.dirty = buf[n - 1] != 0x03;
             }
-            return Input::Forward(len);
+            return Input::Forward(n);
         }
         let mut ev = std::mem::take(&mut self.events);
         self.ed.input(&buf[..n], &mut ev);
@@ -265,7 +318,7 @@ impl Controller {
     }
 
     fn send(&mut self, bytes: &[u8]) {
-        let _ = self.master.write_all(bytes);
+        self.outbox.extend_from_slice(bytes);
     }
 
     fn handle_events(&mut self, events: &mut Vec<Event>) {
@@ -273,7 +326,7 @@ impl Controller {
         for ev in events.drain(..) {
             match ev {
                 Event::CursorReport(_, c) => {
-                    if !left && self.dsr.take().is_some() && c >= 1 {
+                    if self.dsr.take().is_some() && !left && c >= 1 {
                         let col = (c - 1).min(width() - 1);
                         if col != self.ed.start_col() {
                             self.erase();
@@ -332,6 +385,7 @@ impl Controller {
                     }
                     self.send(&b);
                 }
+                _ => {}
             }
         }
         if !left && self.prompt {
@@ -339,15 +393,22 @@ impl Controller {
         }
     }
 
-    /// Type `line` into bash and press Enter.
+    /// Type `line` into bash and press Enter. With bracketed paste on in bash
+    /// the line goes in as one paste (newlines stay literal, so a multi-line
+    /// line is one history entry); otherwise control characters are ^V-quoted.
     fn send_line(&mut self, line: &str) {
-        let mut b = Vec::with_capacity(line.len() + 1);
-        for &c in line.as_bytes() {
-            // Quote controls so readline inserts them literally.
-            if (c < 0x20 && c != b'\n') || c == 0x7f {
-                b.push(0x16);
+        let mut b = Vec::with_capacity(line.len() + 16);
+        if self.scan.bracketed {
+            b.extend_from_slice(b"\x1b[200~");
+            b.extend(line.bytes().filter(|&c| c != 0x1b));
+            b.extend_from_slice(b"\x1b[201~");
+        } else {
+            for &c in line.as_bytes() {
+                if (c < 0x20 && c != b'\n') || c == 0x7f {
+                    b.push(0x16);
+                }
+                b.push(c);
             }
-            b.push(c);
         }
         b.push(b'\r');
         self.send(&b);
@@ -357,11 +418,107 @@ impl Controller {
     /// and redraw after so the region is consistent with what the terminal shows.
     pub fn resize(&mut self, apply: impl FnOnce()) {
         if self.prompt {
-            self.erase();
+            // The terminal already reflowed our rows: erase with the new width.
+            let _ = self.ed.erase_resized(&mut self.stdout, width());
         }
         apply();
         if self.prompt {
             self.draw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const B: &[u8] = b"\x1b]133;B;llmsh=n1\x07";
+
+    fn ctl() -> Shared {
+        let null = || File::create("/dev/null").unwrap();
+        Controller::start(
+            null(),
+            Arc::new(Mutex::new(BlockTracker::default())),
+            Some(&[]),
+            "n1".into(),
+            null(),
+        )
+    }
+
+    fn at_prompt(c: &Shared) {
+        let (armed, _) = with(c, false, |g| g.after_passthrough_output(B));
+        assert!(armed);
+        with(c, (), |g| g.on_quiet());
+        assert!(lock(c).in_prompt());
+    }
+
+    #[test]
+    fn foreign_osc133_does_not_start_prompt_mode() {
+        let c = ctl();
+        // ssh/docker/nested shell inside a running command: untagged marks
+        let (armed, _) = with(&c, true, |g| {
+            g.after_passthrough_output(b"\x1b]133;A\x07$ \x1b]133;B\x07")
+        });
+        assert!(!armed);
+        with(&c, (), |g| g.on_quiet());
+        assert!(!lock(&c).in_prompt());
+    }
+
+    #[test]
+    fn type_ahead_echo_keeps_prompt_native() {
+        let c = ctl();
+        // readline redisplays the type-ahead after B: its line is not empty
+        with(&c, (), |g| {
+            g.after_passthrough_output(B);
+            g.after_passthrough_output(b"ls");
+            g.on_quiet();
+        });
+        assert!(!lock(&c).in_prompt());
+    }
+
+    #[test]
+    fn big_submit_goes_to_outbox_not_the_pty_under_lock() {
+        let c = ctl();
+        at_prompt(&c);
+        let line = "x".repeat(300_000);
+        let mut buf = format!("{line}\r").into_bytes();
+        let n = buf.len();
+        let (r, out) = with(&c, Input::Forward(n), |g| g.on_input(&mut buf, n));
+        assert!(matches!(r, Input::Handled(_)));
+        // typed into bash in one piece, written by the caller after unlocking
+        assert!(out.len() > line.len() && out.ends_with(b"\r"));
+        assert!(!lock(&c).in_prompt());
+    }
+
+    #[test]
+    fn cursor_report_is_filtered_after_leaving_prompt_mode() {
+        let c = ctl();
+        at_prompt(&c);
+        // Enter before the terminal answered the DSR
+        let mut b = b"\r".to_vec();
+        with(&c, (), |g| {
+            g.on_input(&mut b, 1);
+        });
+        let mut reply = b"\x1b[3;7R".to_vec();
+        let n = reply.len();
+        let (r, _) = with(&c, Input::Forward(n), |g| g.on_input(&mut reply, n));
+        match r {
+            Input::ForwardOwned(v) => assert!(v.is_empty(), "{v:?}"),
+            _ => panic!("reply must not be forwarded"),
+        }
+    }
+
+    #[test]
+    fn panic_disables_prompt_mode_instead_of_killing_input() {
+        let c = ctl();
+        at_prompt(&c);
+        let (r, _) = with(&c, 7, |_| panic!("plugin bug"));
+        assert_eq!(r, 7);
+        assert!(!lock(&c).in_prompt());
+        let (armed, _) = with(&c, true, |g| g.after_passthrough_output(B));
+        assert!(!armed, "disabled for the rest of the session");
+        let mut k = b"a".to_vec();
+        let (r, _) = with(&c, Input::Handled(false), |g| g.on_input(&mut k, 1));
+        assert!(matches!(r, Input::Forward(_) | Input::ForwardOwned(_)));
     }
 }

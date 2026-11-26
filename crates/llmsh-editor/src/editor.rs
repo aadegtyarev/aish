@@ -12,13 +12,14 @@ use std::sync::{Arc, Mutex};
 use crate::buffer::Buffer;
 use crate::highlight::{Class, Span};
 use crate::keymap::{Binding, Command, Keymap};
-use crate::keys::{Decoder, Key};
-use crate::plugin::{Ctx, Decoration, Delivery, Handle, Handled, Plugin, SubmitAction};
+use crate::keys::{Decoder, Key, One};
+use crate::plugin::{Ctx, Decoration, Delivery, Handle, Handled, Plugin, RowStyle, SubmitAction};
 use crate::render::{Renderer, View};
 use crate::theme::Theme;
 
 /// What the host has to do after feeding input.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     /// A finished line.
     Submit(String),
@@ -101,13 +102,14 @@ impl EditorBuilder {
             waker: self.waker,
             rend: Renderer::default(),
             dec: Decoder::new(),
-            keys: Vec::with_capacity(16),
             scratch: Vec::with_capacity(4096),
             ghost_buf: String::with_capacity(128),
             spans: Vec::with_capacity(32),
             tmp_spans: Vec::with_capacity(32),
             cls: Vec::with_capacity(256),
             deco: Decoration::default(),
+            deco_rows: Vec::with_capacity(512),
+            deco_nrows: 0,
             last_rev: 0,
         }
     }
@@ -123,13 +125,14 @@ pub struct Editor {
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
     rend: Renderer,
     dec: Decoder,
-    keys: Vec<Key>,
     scratch: Vec<u8>,
     ghost_buf: String,
     spans: Vec<Span>,
     tmp_spans: Vec<Span>,
     cls: Vec<Option<Class>>,
     deco: Decoration,
+    deco_rows: Vec<u8>,
+    deco_nrows: u16,
     last_rev: u64,
 }
 
@@ -331,15 +334,39 @@ impl Editor {
     // ---- driving API ----
 
     /// Feed bytes read from the keyboard. Events for the host are appended to
-    /// `events`; after a terminal event (`Submit`, `Intercepted`, `PassKey`
-    /// from Ctrl-C/D/L) the rest of the chunk is returned as a trailing `PassKey`.
+    /// `events`. After a terminal event (`Submit`, `Intercepted`, `PassKey`
+    /// from Ctrl-C/D/L) the rest of the chunk is returned unchanged as a
+    /// trailing `PassKey` (including any partial key), so the host can hand it
+    /// to whatever comes next.
     pub fn input(&mut self, bytes: &[u8], events: &mut Vec<Event>) {
-        let mut keys = std::mem::take(&mut self.keys);
-        let mut dec = std::mem::replace(&mut self.dec, Decoder::new());
-        dec.feed(bytes, &mut |k| keys.push(k));
-        self.dec = dec;
-        self.run_keys(&mut keys, events);
-        self.keys = keys;
+        let carried;
+        let data: &[u8] = if self.dec.has_pending() {
+            let mut v = self.dec.take_pending();
+            v.extend_from_slice(bytes);
+            carried = v;
+            &carried
+        } else {
+            bytes
+        };
+        let mut i = 0;
+        while i < data.len() {
+            match self.dec.parse_one(&data[i..]) {
+                One::Skip(n) => i += n,
+                One::Incomplete => {
+                    self.dec.set_pending(&data[i..]);
+                    return;
+                }
+                One::Key(k, n) => {
+                    i += n;
+                    if self.on_key_event(k, events) {
+                        if i < data.len() {
+                            events.push(Event::PassKey(data[i..].to_vec()));
+                        }
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// True when a partial key (typically a lone ESC) is waiting: call
@@ -350,36 +377,26 @@ impl Editor {
 
     /// The pending partial key was a real key press (Escape).
     pub fn flush_input(&mut self, events: &mut Vec<Event>) {
-        let mut keys = std::mem::take(&mut self.keys);
-        let mut dec = std::mem::replace(&mut self.dec, Decoder::new());
-        dec.flush(&mut |k| keys.push(k));
-        self.dec = dec;
-        self.run_keys(&mut keys, events);
-        self.keys = keys;
+        if let Some(k) = self.dec.flush() {
+            self.on_key_event(k, events);
+        }
     }
 
-    fn run_keys(&mut self, keys: &mut Vec<Key>, events: &mut Vec<Event>) {
-        let mut it = keys.drain(..);
-        while let Some(k) = it.next() {
-            if let Key::CursorPos(r, c) = k {
-                events.push(Event::CursorReport(r, c));
-                continue;
-            }
-            let ev = match self.handle_key(k) {
-                Action::None => continue,
-                Action::Submit => self.finish_line(),
-                Action::Interrupt => Event::PassKey(vec![0x03]),
-                Action::Eof => Event::PassKey(vec![0x04]),
-                Action::ClearScreen => Event::PassKey(vec![0x0c]),
-            };
-            events.push(ev);
-            let rest: Vec<Key> = it.collect();
-            let b = encode_keys(&rest);
-            if !b.is_empty() {
-                events.push(Event::PassKey(b));
-            }
-            return;
+    /// Handle one key; true if it produced a terminal event.
+    fn on_key_event(&mut self, k: Key, events: &mut Vec<Event>) -> bool {
+        if let Key::CursorPos(r, c) = k {
+            events.push(Event::CursorReport(r, c));
+            return false;
         }
+        let ev = match self.handle_key(k) {
+            Action::None => return false,
+            Action::Submit => self.finish_line(),
+            Action::Interrupt => Event::PassKey(vec![0x03]),
+            Action::Eof => Event::PassKey(vec![0x04]),
+            Action::ClearScreen => Event::PassKey(vec![0x0c]),
+        };
+        events.push(ev);
+        true
     }
 
     /// Process results plugins delivered through their handles. Appends
@@ -497,10 +514,49 @@ impl Editor {
             false
         });
         self.deco = deco;
+        self.render_rows(width);
         if self.deco.hide_ghost {
             self.ghost_buf.clear();
         } else {
             self.compute_ghost();
+        }
+    }
+
+    /// Turn decoration rows into bytes: theme styles, control characters
+    /// replaced, truncated to the terminal width.
+    fn render_rows(&mut self, width: u16) {
+        use unicode_width::UnicodeWidthChar;
+        self.deco_rows.clear();
+        self.deco_nrows = 0;
+        let th = &self.theme;
+        for (n, row) in self.deco.lines.iter().enumerate() {
+            if n > 0 {
+                self.deco_rows.push(b'\n');
+            }
+            let mut budget = usize::from(width).saturating_sub(1);
+            'row: for (style, text) in &row.segs {
+                let sgr = match style {
+                    RowStyle::Normal => String::new(),
+                    RowStyle::Selected => th.selection.clone(),
+                    RowStyle::Matched => th.matched.clone(),
+                    RowStyle::MatchedSelected => format!("{};{}", th.selection, th.matched),
+                    RowStyle::Dim => th.dim.clone(),
+                };
+                let _ = write!(self.deco_rows, "\x1b[0;{sgr}m");
+                for c in text.chars() {
+                    let c = if c.is_control() { ' ' } else { c };
+                    let w = c.width().unwrap_or(0);
+                    if w > budget {
+                        break 'row;
+                    }
+                    budget -= w;
+                    let mut tmp = [0u8; 4];
+                    self.deco_rows
+                        .extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
+                }
+            }
+            self.deco_rows.extend_from_slice(b"\x1b[0m\x1b[K");
+            self.deco_nrows += 1;
         }
     }
 
@@ -518,8 +574,8 @@ impl Editor {
                 &self.spans
             },
             ghost: &self.ghost_buf,
-            extra: &self.deco.rows,
-            extra_rows: self.deco.nrows,
+            extra: &self.deco_rows,
+            extra_rows: self.deco_nrows,
             theme: &self.theme,
         }
     }
@@ -548,6 +604,24 @@ impl Editor {
         r
     }
 
+    /// Erase after the terminal was resized to `width` columns (assumes the
+    /// terminal reflowed what we had drawn).
+    pub fn erase_resized(&mut self, out: &mut dyn Write, width: u16) -> std::io::Result<()> {
+        let mut buf = std::mem::take(&mut self.scratch);
+        buf.clear();
+        self.rend.erase_resized(&mut buf, width);
+        let r = out.write_all(&buf);
+        self.scratch = buf;
+        r
+    }
+
+    /// After a [`draw`](Editor::draw): the column where the input (with
+    /// suggestion) ends if it all fits on the first row and no popup is shown;
+    /// standalone prompts use it to keep a right prompt visible.
+    pub fn first_row_end(&self) -> Option<u16> {
+        self.rend.first_row_end
+    }
+
     /// Draw `line` as final text (no suggestion or popup) with the cursor at
     /// its end; used to leave an intercepted line on screen.
     pub fn draw_final(
@@ -558,6 +632,8 @@ impl Editor {
     ) -> std::io::Result<()> {
         self.ghost_buf.clear();
         self.deco = Decoration::default();
+        self.deco_rows.clear();
+        self.deco_nrows = 0;
         self.spans.clear();
         let mut rend = std::mem::take(&mut self.rend);
         let mut buf = std::mem::take(&mut self.scratch);
@@ -565,27 +641,12 @@ impl Editor {
         let mut v = self.view();
         v.text = line;
         v.cursor = line.len();
+        v.extra = b"";
+        v.extra_rows = 0;
         rend.draw(&mut buf, &v, width);
         let r = out.write_all(&buf);
         self.rend = rend;
         self.scratch = buf;
         r
     }
-}
-
-/// Re-encode keys as bytes for pass-through (best effort).
-fn encode_keys(keys: &[Key]) -> Vec<u8> {
-    let mut b = Vec::new();
-    for k in keys {
-        match k {
-            Key::Char(c) => b.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
-            Key::Enter => b.push(b'\r'),
-            Key::Tab => b.push(b'\t'),
-            Key::Backspace => b.push(0x7f),
-            Key::Paste(s) => b.extend_from_slice(s.as_bytes()),
-            Key::Ctrl(c) if c.is_ascii_lowercase() => b.push(c - b'a' + 1),
-            _ => {}
-        }
-    }
-    b
 }

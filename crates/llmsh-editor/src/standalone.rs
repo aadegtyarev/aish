@@ -12,8 +12,8 @@ pub struct Prompt {
     /// Printed before the input; may contain newlines (only the last line
     /// shares a row with the input).
     pub left: String,
-    /// Optional text at the right edge of the first row, shown until the line
-    /// grows into it.
+    /// Optional text at the right edge of the first row, redrawn after every
+    /// edit while the line leaves room for it.
     pub right: String,
 }
 
@@ -29,6 +29,7 @@ impl Prompt {
 
 /// How a [`LineReader::read_line`] call ended.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Signal {
     /// A finished line.
     Line(String),
@@ -167,12 +168,21 @@ impl LineReader {
         out.write_all(b"\r")?;
         out.write_all(crlf(&prompt.left).as_bytes())?;
         let col = visible_last_line_width(&prompt.left);
-        let rw = visible_last_line_width(&prompt.right);
-        if rw > 0 && col + rw + 2 < width {
-            write!(out, "\x1b7\x1b[{}G{}\x1b8", width - rw + 1, prompt.right)?;
-        }
         self.editor.reset_screen(col % width);
         Ok(())
+    }
+
+    /// Draw the input, then the right prompt if the line leaves room for it.
+    fn draw(&mut self, prompt: &Prompt, out: &mut impl Write) -> io::Result<()> {
+        let width = term_width();
+        self.editor.draw(out, width)?;
+        let rw = visible_last_line_width(&prompt.right);
+        if let (true, Some(end)) = (rw > 0, self.editor.first_row_end()) {
+            if end + rw + 1 < width {
+                write!(out, "\x1b7\x1b[{}G{}\x1b8", width - rw + 1, prompt.right)?;
+            }
+        }
+        out.flush()
     }
 
     fn run(&mut self, prompt: &Prompt, out: &mut impl Write) -> io::Result<Signal> {
@@ -180,8 +190,7 @@ impl LineReader {
         let mut stdin = io::stdin().lock();
         let mut buf = [0u8; 4096];
         let mut events = Vec::new();
-        self.editor.draw(out, term_width())?;
-        out.flush()?;
+        self.draw(prompt, out)?;
         loop {
             events.clear();
             let changed;
@@ -229,8 +238,7 @@ impl LineReader {
                 }
             }
             if changed {
-                self.editor.draw(out, term_width())?;
-                out.flush()?;
+                self.draw(prompt, out)?;
             }
         }
     }

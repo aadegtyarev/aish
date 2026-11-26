@@ -25,6 +25,15 @@ pub(crate) struct Buffer {
     rev: u64,
 }
 
+/// Largest char boundary of `s` that is <= `i` (and <= len).
+pub(crate) fn floor_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -79,6 +88,7 @@ impl Buffer {
 
     /// Navigation breaks the typing run so the next insert starts a new undo step.
     fn nav(&mut self) {
+        self.rev += 1; // cursor moves invalidate late results computed for the old position
         self.last = Some(Kind::None);
     }
 
@@ -106,7 +116,7 @@ impl Buffer {
     }
 
     pub(crate) fn set_cursor(&mut self, c: usize) {
-        self.cursor = c.min(self.text.len());
+        self.cursor = floor_boundary(&self.text, c);
         self.nav();
     }
 

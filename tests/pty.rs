@@ -149,7 +149,11 @@ fn args_and_non_tty_exec_plain_bash() {
 
 /// Colors on (ghost text needs them), seeded history, no DSR answers.
 fn editor_session(home: &TempDir, history: &str) -> Session {
-    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
+    editor_session_rc(home, history, "PS1='E> '\n")
+}
+
+fn editor_session_rc(home: &TempDir, history: &str, bashrc: &str) -> Session {
+    std::fs::write(home.path().join(".bashrc"), bashrc).unwrap();
     std::fs::write(home.path().join("hist"), history).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
     cmd.env_clear()
@@ -253,6 +257,43 @@ fn tab_completes_path() {
     p.send("\r").unwrap(); // runs `ls /usr/`
     p.expect("bin").unwrap();
     p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn type_ahead_during_command_runs_natively_once() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("sleep 0.6\r").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    p.send("echo ahead-ok\r").unwrap(); // typed while sleep runs, echoed by readline later
+    p.expect("\x07ahead-ok\r\n").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn completion_function_reading_stdin_does_not_desync_sidecar() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session_rc(
+        &home,
+        "",
+        "PS1='E> '\n_f() { read -r junk; COMPREPLY=(alpha beta); }\ncomplete -F _f foo\n",
+    );
+    p.expect("E> ").unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    for _ in 0..2 {
+        p.send("foo \t").unwrap();
+        p.expect("alpha").unwrap();
+        p.send("\x1b").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        p.send("\x15").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
