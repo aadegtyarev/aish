@@ -100,8 +100,12 @@ impl Decoration {
     /// Transient dim text at the right edge of the input row (like a right
     /// prompt). It is drawn only when the whole input, ghost included, stays
     /// on the first row and ends at least 3 columns before it, and never with
-    /// colors off; it is erased when the line is submitted.
+    /// colors off; it is erased when the line is submitted. Plugins run in
+    /// priority order and the first hint wins.
     pub fn right_hint(&mut self, text: &str) {
+        if self.right.is_some() {
+            return;
+        }
         self.right = Some(text.chars().filter(|c| !c.is_control()).collect());
     }
 

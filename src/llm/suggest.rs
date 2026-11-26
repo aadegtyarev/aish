@@ -152,6 +152,7 @@ impl ModelSuggest {
             && ctx.cursor() == t.len()
             && !is_model_line(t)
             && !is_llmsh_line(t)
+            && !self.llm.is_own_line(t)
             && self.llm.suggest_on.load(Ordering::Relaxed)
     }
 

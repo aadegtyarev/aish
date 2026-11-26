@@ -83,6 +83,7 @@ impl Module for ModelModule {
             Box::new(Intercept::new(move |l| claims(l, &llm))),
             Box::new(RightHint::new(hint)),
             Box::new(Accent),
+            Box::new(crate::llm::cmdsuggest::CmdSuggest::new(env.llm.clone())),
             Box::new(ModelSuggest::new(
                 env.llm.clone(),
                 env.history.clone(),

@@ -6,6 +6,7 @@ pub mod agent;
 pub mod allow;
 pub mod ask;
 pub mod cmd;
+pub mod cmdsuggest;
 pub mod context;
 pub mod firstrun;
 pub mod jobs;
@@ -117,6 +118,13 @@ impl Llm {
             Some(Setting::Value(v)) if !v.trim().is_empty() => Some(v.trim().to_owned()),
             _ => Some("ai".to_owned()),
         }
+    }
+
+    /// The line starts with one of our command names (`llmsh`, the configured
+    /// one) and a space: arguments are ours, not for the model to complete.
+    pub fn is_own_line(&self, t: &str) -> bool {
+        let first = t.split(' ').next().unwrap_or("");
+        t.contains(' ') && (first == "llmsh" || self.command().as_deref() == Some(first))
     }
 
     /// What to call the command in messages.

@@ -802,3 +802,44 @@ fn failed_background_job_shows_exit_code() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- ghost text for our own command --------------------------------------
+
+#[test]
+fn ai_arguments_get_instant_local_ghost_text() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ai ").unwrap();
+    p.expect("status").unwrap(); // ghost, dim
+    p.expect("статус моделей").unwrap(); // transient description
+    p.send("c").unwrap(); // `ai c` -> `hat`
+    p.expect("hat").unwrap();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ai chat ").unwrap(); // only one model: the current one, nothing to suggest
+    settle();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // typing `ai o` while suggestions are on: the toggle that does something
+    p.send("ai o").unwrap();
+    p.expect("ff").unwrap();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // no model request was made for any of those lines
+    assert!(
+        m.requests().iter().all(|r| !r.body.contains("\"ai ")),
+        "{:?}",
+        m.requests()
+            .iter()
+            .map(|r| r.body.clone())
+            .collect::<Vec<_>>()
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
