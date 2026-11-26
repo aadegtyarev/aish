@@ -8,8 +8,7 @@ highlighting are ordinary plugins you register. Dependencies: `unicode-segmentat
 No async runtime: slow sources answer later through a `Handle` and stale
 answers are dropped.
 
-Two modes: **standalone** (`LineReader` prints a prompt and reads the tty, like
-rustyline/reedline) and **embedded** (the host owns the terminal and the
+Two modes: **standalone** (`LineReader` prints a prompt and reads the tty itself) and **embedded** (the host owns the terminal and the
 prompt; feed bytes to `Editor::input`, draw with `Editor::draw`, react to `Event`s).
 
 ```rust
