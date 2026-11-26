@@ -47,6 +47,7 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 toggle,
                 other,
                 ("config", "открыть конфиг"),
+                ("init", "настроить запуск и модели"),
             ];
             // `o` suggests the toggle that does something, whichever it is
             let mut cands: Vec<(&str, &str)> = subs.to_vec();

@@ -115,8 +115,21 @@ fn aliases(models: &[&String]) -> Vec<String> {
     seen
 }
 
+const DEEPSEEK_URL: &str = "https://api.deepseek.com/v1";
+
 /// Pick roles and render the config. Returns `(yaml, chat, complete)` labels.
 pub fn build(found: &[Found], key: bool, cloud_url: &str) -> Option<(String, String, String)> {
+    build_with(found, key, cloud_url, None)
+}
+
+/// [`build`] with a DeepSeek provider (`$DEEPSEEK_API_KEY`) whose model ids
+/// were listed from `/models`.
+pub fn build_with(
+    found: &[Found],
+    key: bool,
+    cloud_url: &str,
+    deepseek: Option<(&str, &[String])>,
+) -> Option<(String, String, String)> {
     // (provider, model id, alias)
     let mut locals: Vec<(&Found, &String, String)> = Vec::new();
     let mut providers = Vec::new();
@@ -150,7 +163,10 @@ pub fn build(found: &[Found], key: bool, cloud_url: &str) -> Option<(String, Str
             models,
         });
     }
-    if locals.is_empty() && !key {
+    let ds_models: Vec<&String> = deepseek
+        .map(|(_, m)| m.iter().filter(|m| !is_embedding(m)).take(10).collect())
+        .unwrap_or_default();
+    if locals.is_empty() && !key && ds_models.is_empty() {
         return None;
     }
     let size_key = |m: &String| {
@@ -185,6 +201,36 @@ pub fn build(found: &[Found], key: bool, cloud_url: &str) -> Option<(String, Str
             )]),
         });
     }
+    // (alias, model id) of the DeepSeek chat model: `flash`, else `chat`, else the first
+    let mut ds_pick: Option<(String, String)> = None;
+    if let (Some((url, _)), false) = (deepseek, ds_models.is_empty()) {
+        let al = aliases(&ds_models);
+        let pick = ds_models
+            .iter()
+            .position(|m| m.contains("flash"))
+            .or_else(|| ds_models.iter().position(|m| m.contains("chat")))
+            .unwrap_or(0);
+        ds_pick = Some((al[pick].clone(), ds_models[pick].clone()));
+        providers.push(CfgProvider {
+            id: "deepseek".into(),
+            url: url.to_owned(),
+            kind: "chat",
+            key: Some("$DEEPSEEK_API_KEY".into()),
+            models: ds_models
+                .iter()
+                .zip(&al)
+                .map(|(m, a)| {
+                    (
+                        a.clone(),
+                        CfgModel {
+                            id: (*m).clone(),
+                            effort: None,
+                        },
+                    )
+                })
+                .collect(),
+        });
+    }
     let mut roles = BTreeMap::new();
     let mut chat = "—".to_owned();
     let mut comp = "—".to_owned();
@@ -207,6 +253,15 @@ pub fn build(found: &[Found], key: bool, cloud_url: &str) -> Option<(String, Str
             },
         );
         chat = format!("cloud/{DEFAULT_CLOUD_MODEL}");
+    } else if let Some((a, m)) = ds_pick {
+        roles.insert(
+            "chat",
+            CfgRole {
+                id: format!("deepseek/{a}"),
+                effort: None,
+            },
+        );
+        chat = format!("deepseek/{m}");
     } else if let Some((f, m, a)) = big {
         roles.insert(
             "chat",
@@ -259,7 +314,41 @@ pub fn spawn(llm: Arc<Llm>) {
     });
 }
 
-fn run(llm: &Llm) -> std::io::Result<()> {
+/// What the machine offers: local servers, `$OPENAI_API_KEY`, `$DEEPSEEK_API_KEY`.
+pub struct Detected {
+    pub found: Vec<Found>,
+    pub openai: bool,
+    /// DeepSeek endpoint and its model ids (key present and `/models` answered).
+    pub deepseek: Option<(String, Vec<String>)>,
+}
+
+impl Detected {
+    /// The config these findings make: `(yaml, chat, complete)`.
+    pub fn config(&self) -> Option<(String, String, String)> {
+        build_with(
+            &self.found,
+            self.openai,
+            &env_or("LLMSH_OPENAI_URL", OPENAI_URL),
+            self.deepseek
+                .as_ref()
+                .map(|(u, m)| (u.as_str(), m.as_slice())),
+        )
+    }
+
+    /// One-line list for messages: `ollama, deepseek`.
+    pub fn names(&self) -> String {
+        let mut v: Vec<&str> = self.found.iter().map(|f| f.id).collect();
+        if self.openai {
+            v.push("openai");
+        }
+        if self.deepseek.is_some() {
+            v.push("deepseek");
+        }
+        v.join(", ")
+    }
+}
+
+pub fn detect() -> Detected {
     let urls = [
         (
             "ollama",
@@ -288,9 +377,24 @@ fn run(llm: &Llm) -> std::io::Result<()> {
         .into_iter()
         .filter_map(|h| h.join().ok().flatten())
         .collect();
-    let key = std::env::var("OPENAI_API_KEY").is_ok_and(|k| !k.is_empty());
-    let cloud = env_or("LLMSH_OPENAI_URL", OPENAI_URL);
-    let Some((yaml, chat, comp)) = build(&found, key, &cloud) else {
+    let openai = std::env::var("OPENAI_API_KEY").is_ok_and(|k| !k.is_empty());
+    let deepseek = std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .and_then(|k| {
+            let url = env_or("LLMSH_DEEPSEEK_URL", DEEPSEEK_URL);
+            let models = llmsh_llm::list_models(&url, &Some(k), Duration::from_secs(3)).ok()?;
+            Some((url, models))
+        });
+    Detected {
+        found,
+        openai,
+        deepseek,
+    }
+}
+
+fn run(llm: &Llm) -> std::io::Result<()> {
+    let Some((yaml, chat, comp)) = detect().config() else {
         return Ok(());
     };
     let path = llm.path().expect("checked");

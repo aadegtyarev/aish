@@ -886,3 +886,221 @@ fn a_different_command_with_the_same_program_does_not_continue_the_turn() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- llmsh init ----------------------------------------------------------
+
+fn init_cmd(home: &TempDir, args: &[&str], env: &[(&str, &str)]) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    c.arg("init")
+        .args(args)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", home.path())
+        // hermetic detection: nothing listens there
+        .env("LLMSH_PROBE_OLLAMA", "http://127.0.0.1:9/v1")
+        .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:9/v1")
+        .env("LLMSH_PROBE_LLAMACPP", "http://127.0.0.1:9/v1")
+        .stdin(std::process::Stdio::null());
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c
+}
+
+fn run_init(mut c: Command) -> (i32, String, String) {
+    let o = c.output().unwrap();
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
+}
+
+fn deepseek_mock() -> Mock {
+    Mock::start(|_, c| {
+        mock::json(
+            c,
+            200,
+            r#"{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}"#,
+        )
+    })
+}
+
+#[test]
+fn init_without_a_terminal_changes_nothing_and_fails() {
+    let home = TempDir::new().unwrap();
+    let m = deepseek_mock();
+    std::fs::write(home.path().join(".bashrc"), "export A=1\n").unwrap();
+    let (code, out, err) = run_init(init_cmd(
+        &home,
+        &[],
+        &[
+            ("DEEPSEEK_API_KEY", "sk-x"),
+            ("LLMSH_DEEPSEEK_URL", &m.url()),
+        ],
+    ));
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(
+        out.contains(".bashrc") && out.contains("+"),
+        "shows what it would do: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".bashrc")).unwrap(),
+        "export A=1\n"
+    );
+    assert!(!home.path().join(".config/llmsh/config.yaml").exists());
+}
+
+#[test]
+fn init_is_idempotent_backs_up_once_and_removes_cleanly() {
+    let home = TempDir::new().unwrap();
+    let bashrc = home.path().join(".bashrc");
+    std::fs::write(&bashrc, "export A=1\nalias x=y\n").unwrap();
+    let (code, out, err) = run_init(init_cmd(&home, &["--yes"], &[]));
+    assert_eq!(code, 0, "{out}{err}");
+    let once = std::fs::read_to_string(&bashrc).unwrap();
+    assert_eq!(once.matches("# >>> llmsh >>>").count(), 1);
+    assert!(once.contains("exec llmsh") && once.contains("-z ${LLMSH-}"));
+    let bak = home.path().join(".bashrc.llmsh-bak");
+    assert_eq!(
+        std::fs::read_to_string(&bak).unwrap(),
+        "export A=1\nalias x=y\n"
+    );
+    let (code, out, _) = run_init(init_cmd(&home, &["--yes"], &[]));
+    assert_eq!(code, 0);
+    assert!(out.contains("уже настроено"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&bashrc).unwrap(),
+        once,
+        "second run changes nothing"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bak).unwrap(),
+        "export A=1\nalias x=y\n",
+        "backup is the original"
+    );
+    let (code, out, _) = run_init(init_cmd(&home, &["--remove"], &[]));
+    assert_eq!(code, 0);
+    assert!(out.contains(".bashrc") && out.contains("удалён"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&bashrc).unwrap(),
+        "export A=1\nalias x=y\n"
+    );
+    assert!(bak.exists(), "backups are kept");
+    let (_, out, _) = run_init(init_cmd(&home, &["--remove"], &[]));
+    assert!(out.contains("блока нет"), "{out}");
+}
+
+#[test]
+fn init_keeps_an_existing_config() {
+    let home = TempDir::new().unwrap();
+    let m = deepseek_mock();
+    let cfg = home.path().join(".config/llmsh/config.yaml");
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    std::fs::write(&cfg, "providers: []\n").unwrap();
+    let (code, out, _) = run_init(init_cmd(
+        &home,
+        &["--yes"],
+        &[
+            ("DEEPSEEK_API_KEY", "sk-x"),
+            ("LLMSH_DEEPSEEK_URL", &m.url()),
+        ],
+    ));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("конфиг уже есть"), "{out}");
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "providers: []\n");
+}
+
+#[test]
+fn init_writes_env_keys_as_references_never_literally() {
+    let home = TempDir::new().unwrap();
+    let m = deepseek_mock();
+    let (code, out, _) = run_init(init_cmd(
+        &home,
+        &["--yes"],
+        &[
+            ("DEEPSEEK_API_KEY", "sk-very-secret-value"),
+            ("LLMSH_DEEPSEEK_URL", &m.url()),
+        ],
+    ));
+    assert_eq!(code, 0, "{out}");
+    let cfg = std::fs::read_to_string(home.path().join(".config/llmsh/config.yaml")).unwrap();
+    assert!(cfg.contains("$DEEPSEEK_API_KEY"), "{cfg}");
+    assert!(!cfg.contains("sk-very-secret-value"), "{cfg}");
+    assert!(
+        cfg.contains("deepseek-flash") && cfg.contains("deepseek/"),
+        "{cfg}"
+    );
+    assert!(!out.contains("sk-very-secret-value"));
+    // the request carried the key, the file does not
+    assert!(m.requests()[0]
+        .header("authorization")
+        .is_some_and(|h| h.contains("sk-very")));
+}
+
+#[test]
+fn bashrc_block_starts_llmsh_without_a_loop_and_has_an_escape_hatch() {
+    let home = TempDir::new().unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_llmsh"), bin.join("llmsh")).unwrap();
+    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
+    let (code, out, err) = run_init(init_cmd(&home, &["--yes"], &[]));
+    assert_eq!(code, 0, "{out}{err}");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let shell = |disable: bool| {
+        let mut c = Command::new("bash");
+        c.arg("-i")
+            .env_clear()
+            .env("PATH", &path)
+            .env("HOME", home.path())
+            .env("HISTFILE", home.path().join("hist"))
+            .env("XDG_STATE_HOME", home.path().join("state"))
+            .env("TERM", "xterm");
+        if disable {
+            c.env("LLMSH_DISABLE", "1");
+        }
+        spawn(c)
+    };
+    // exec'd into llmsh (its OSC marks appear), once: no loop, exit ends it
+    let mut p = shell(false);
+    let f = p.expect("E> ").unwrap();
+    assert!(
+        String::from_utf8_lossy(f.before()).contains("133;A"),
+        "llmsh is running"
+    );
+    settle();
+    p.send("echo ok-$((6*7))\r").unwrap();
+    p.expect("ok-42").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+    // the escape hatch: plain bash
+    let mut p = shell(true);
+    let f = p.expect("E> ").unwrap();
+    assert!(
+        !String::from_utf8_lossy(f.before()).contains("133;"),
+        "plain bash"
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn the_completion_sidecar_sourcing_bashrc_is_not_replaced_by_llmsh() {
+    let home = TempDir::new().unwrap();
+    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
+    let (code, _, _) = run_init(init_cmd(&home, &["--yes"], &[]));
+    assert_eq!(code, 0);
+    // like the sidecar: stdin is not a terminal, `exec` is a no-op function, LLMSH unset
+    let out = Command::new("bash")
+        .args([
+            "-c",
+            "exec() { return 0; }; set -i; . ~/.bashrc </dev/null; echo survived",
+        ])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "survived");
+}

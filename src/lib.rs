@@ -4,6 +4,7 @@ pub mod blocks;
 pub mod complete;
 pub mod config;
 pub mod editor;
+pub mod init;
 pub mod llm;
 pub mod module;
 pub mod modules;

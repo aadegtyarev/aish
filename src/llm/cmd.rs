@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::{Llm, Target};
 use crate::config::Setting;
 
-pub const SUBS: &[&str] = &["status", "chat", "complete", "on", "off", "config"];
+pub const SUBS: &[&str] = &["status", "chat", "complete", "on", "off", "config", "init"];
 
 fn is_cmd_line(s: &str, name: &str) -> bool {
     let mut w = s.split_whitespace();
@@ -32,6 +32,7 @@ pub enum Cmd {
     Set(&'static str, String),
     Suggest(bool),
     Config,
+    Init,
     Usage,
 }
 
@@ -42,6 +43,7 @@ pub fn parse(line: &str) -> Cmd {
         Some("on") => Cmd::Suggest(true),
         Some("off") => Cmd::Suggest(false),
         Some("config") => Cmd::Config,
+        Some("init") => Cmd::Init,
         Some("chat") => w
             .get(2)
             .map_or(Cmd::Usage, |r| Cmd::Set("chat", (*r).into())),
@@ -85,10 +87,10 @@ pub fn apply(llm: &Llm, cmd: &Cmd) -> String {
             }
         }
         Cmd::Usage => {
-            "ai | llmsh [status | chat <провайдер/модель> | complete <…> | on | off | config]"
+            "ai | llmsh [status | chat <провайдер/модель> | complete <…> | on | off | config | init]"
                 .into()
         }
-        Cmd::Status | Cmd::Config => String::new(),
+        Cmd::Status | Cmd::Config | Cmd::Init => String::new(),
     }
 }
 
@@ -140,13 +142,14 @@ pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
         }
         "--help" if args.len() == 1 => {
             println!(
-                "llmsh {}: bash with a line editor and LLM help\n\n  llmsh            start the shell\n  llmsh status     show models and whether they answer\n  llmsh config     edit the config (prints the path if not a terminal)\n\nOther arguments go to bash.",
+                "llmsh {}: bash with a line editor and LLM help\n\n  llmsh            start the shell\n  llmsh status     show models and whether they answer\n  llmsh config     edit the config (prints the path if not a terminal)\n  llmsh init       set up: start llmsh from ~/.bashrc, detect models (--remove undoes)\n\nOther arguments go to bash.",
                 env!("CARGO_PKG_VERSION")
             );
             Some(0)
         }
         // A file of that name in the cwd means bash semantics (`bash status`).
-        "status" | "config" if std::path::Path::new(a).exists() => None,
+        "status" | "config" | "init" if std::path::Path::new(a).exists() => None,
+        "init" => Some(crate::init::run(&args[1..])),
         "status" if args.len() == 1 => {
             let llm = Llm::new();
             if llm.config().is_none() {

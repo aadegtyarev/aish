@@ -164,6 +164,10 @@ fn llmsh_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Optio
                 t.finish(None);
             });
         }
+        Cmd::Init => match task.take() {
+            Some(t) => t.finish(Some("llmsh init".into())),
+            None => return false,
+        },
         Cmd::Config => match task.take() {
             Some(t) => t.finish(Some(cmd::config_command(llm))),
             None => return false,

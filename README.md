@@ -3,6 +3,22 @@
 bash wrapper with LLM assistance. With no LLM use it behaves like plain bash.
 Spec: [docs/UX.md](docs/UX.md), [docs/config.example.yaml](docs/config.example.yaml).
 
+## Install
+
+```
+./install.sh              # builds (cargo, or ./dev.sh in docker), copies to ~/.local/bin/llmsh, runs `llmsh init`
+./install.sh --no-init    # skip the setup;  --bin PATH takes a prebuilt binary
+```
+
+`llmsh init` (also `ai init` in a session) asks up to three questions: where to start llmsh (every
+interactive bash via a guarded block in `~/.bashrc`; also as tmux default shell; or only manually),
+which models to use (autodetect: llama.cpp, ollama, LM Studio, `$OPENAI_API_KEY`, `$DEEPSEEK_API_KEY`;
+keys are written as `$VAR` references, an existing config is kept unless you regenerate it), and
+whether to apply the summary. Blocks are marked `# >>> llmsh >>>` / `# <<< llmsh <<<`, re-running
+replaces them, the first change to a file leaves `<file>.llmsh-bak`. `llmsh init --remove` removes the
+blocks; `--yes` applies the defaults without questions. Escape hatch: `LLMSH_DISABLE=1 bash` starts plain bash.
+No `chsh`: for a login shell add llmsh's path to `/etc/shells` and run `chsh -s` yourself.
+
 ## Run
 
 ```
