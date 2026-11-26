@@ -331,3 +331,49 @@ fn llmsh_off_silences_suggestions() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+#[test]
+fn enter_pressed_while_streaming_never_runs_the_model_command() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|_, c| {
+        mock::chat_stream(
+            c,
+            &["Hello\n", "there\n", "```bash\necho llm-ran\n```\n"],
+            Duration::from_millis(300),
+        )
+    });
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? hi\r").unwrap();
+    p.expect("Hello").unwrap();
+    p.send("\r").unwrap(); // Enter mid-stream, "to confirm" something not yet seen
+    p.expect("E> ").unwrap();
+    p.expect("echo llm-ran").unwrap(); // pre-filled...
+    p.set_expect_timeout(Some(Duration::from_millis(1200)));
+    assert!(
+        p.expect("\x07llm-ran").is_err(),
+        "the command ran unreviewed"
+    );
+    p.set_expect_timeout(Some(Duration::from_secs(10)));
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn first_run_finds_llama_server() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"gguf-model-7b"}]}"#));
+    let mut cmd = base(&home);
+    cmd.env("LLMSH_PROBE_OLLAMA", "http://127.0.0.1:1/v1")
+        .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1")
+        .env("LLMSH_PROBE_LLAMACPP", m.url());
+    let mut p = spawn(cmd);
+    p.expect("chat: llamacpp/gguf-model-7b").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

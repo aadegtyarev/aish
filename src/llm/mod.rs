@@ -119,8 +119,9 @@ impl Llm {
     }
 
     pub fn set_notice(&self, s: String) {
+        // model ids come from a server: never let them carry escapes
         if let Ok(mut n) = self.notice.lock() {
-            *n = Some(s);
+            *n = Some(render::sanitize(&s));
         }
     }
 
@@ -132,7 +133,7 @@ impl Llm {
 /// localhost / loopback / private LAN host in a URL.
 pub fn is_local(url: &str) -> bool {
     let rest = url.split_once("://").map_or(url, |x| x.1);
-    let auth = rest.split(['/', '?']).next().unwrap_or("");
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
     let auth = auth.rsplit_once('@').map_or(auth, |x| x.1);
     let host = if let Some(h) = auth.strip_prefix('[') {
         h.split(']').next().unwrap_or("")
@@ -140,14 +141,17 @@ pub fn is_local(url: &str) -> bool {
         auth.split(':').next().unwrap_or("")
     };
     let h = host.to_ascii_lowercase();
+    let h = h.trim_end_matches('.');
     if h == "localhost" || h == "::1" || h.ends_with(".local") || h.ends_with(".localhost") {
         return true;
     }
     let o: Vec<u8> = h.split('.').filter_map(|p| p.parse().ok()).collect();
     if o.len() != 4 || h.split('.').count() != 4 {
-        return h.starts_with("fe80:") || h.starts_with("fc") && h.contains(':');
+        return h.contains(':')
+            && (h.starts_with("fe80:") || h.starts_with("fc") || h.starts_with("fd"));
     }
     o[0] == 127
+        || o[0] == 0
         || o[0] == 10
         || (o[0] == 192 && o[1] == 168)
         || (o[0] == 172 && (16..32).contains(&o[1]))
@@ -168,6 +172,11 @@ mod tests {
             "http://10.0.0.2:1234/v1",
             "http://172.20.0.1/v1",
             "http://box.local/v1",
+            "http://0.0.0.0:8080/v1",
+            "http://localhost./v1",
+            "http://[fd12:3456::1]/v1",
+            "http://localhost:1#@evil.com/",
+            "http://localhost?x=@evil.com",
         ] {
             assert!(is_local(u), "{u}");
         }
@@ -176,6 +185,8 @@ mod tests {
             "http://172.32.0.1/v1",
             "http://8.8.8.8/v1",
             "https://localhost.evil.com/v1",
+            "https://evil.com#@localhost/v1",
+            "https://localhost@evil.com/v1",
         ] {
             assert!(!is_local(u), "{u}");
         }

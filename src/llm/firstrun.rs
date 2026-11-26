@@ -1,7 +1,10 @@
 //! First start without a config: look for local servers and an OpenAI key,
 //! write a config and tell the user once. Runs on a worker thread.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
+
+use serde::Serialize;
 use std::time::Duration;
 
 use super::Llm;
@@ -65,69 +68,183 @@ fn alias(id: &str) -> String {
         .collect()
 }
 
+#[derive(Serialize)]
+struct CfgModel {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CfgProvider {
+    id: String,
+    url: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    models: BTreeMap<String, CfgModel>,
+}
+
+#[derive(Serialize)]
+struct CfgRole {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Cfg {
+    providers: Vec<CfgProvider>,
+    roles: BTreeMap<&'static str, CfgRole>,
+}
+
+/// Unique config alias for each model id of one provider (`a:b` -> `a-b`, `a-b-2`...).
+fn aliases(models: &[&String]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for m in models {
+        let base = alias(m);
+        let mut a = base.clone();
+        let mut n = 2;
+        while seen.contains(&a) {
+            a = format!("{base}-{n}");
+            n += 1;
+        }
+        seen.push(a);
+    }
+    seen
+}
+
 /// Pick roles and render the config. Returns `(yaml, chat, complete)` labels.
 pub fn build(found: &[Found], key: bool, cloud_url: &str) -> Option<(String, String, String)> {
-    let locals: Vec<(&Found, &String)> = found
-        .iter()
-        .flat_map(|f| f.models.iter().map(move |m| (f, m)))
-        .filter(|(_, m)| !is_embedding(m))
-        .collect();
-    let complete = locals
-        .iter()
-        .min_by(|a, b| {
-            let k = |m: &String| {
-                (
-                    !m.to_ascii_lowercase().contains("coder"),
-                    size_b(m).unwrap_or(1e9),
-                )
-            };
-            let (ka, kb) = (k(a.1), k(b.1));
-            ka.0.cmp(&kb.0)
-                .then(ka.1.partial_cmp(&kb.1).unwrap_or(std::cmp::Ordering::Equal))
-        })
-        .copied();
-    let big = locals
-        .iter()
-        .max_by(|a, b| {
-            let k = |m: &String| size_b(m).unwrap_or(-1.0);
-            k(a.1)
-                .partial_cmp(&k(b.1))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .copied();
+    // (provider, model id, alias)
+    let mut locals: Vec<(&Found, &String, String)> = Vec::new();
+    let mut providers = Vec::new();
+    for f in found {
+        let ms: Vec<&String> = f
+            .models
+            .iter()
+            .filter(|m| !is_embedding(m))
+            .take(30)
+            .collect();
+        if ms.is_empty() {
+            continue;
+        }
+        let al = aliases(&ms);
+        let mut models = BTreeMap::new();
+        for (m, a) in ms.iter().zip(&al) {
+            models.insert(
+                a.clone(),
+                CfgModel {
+                    id: (*m).clone(),
+                    effort: None,
+                },
+            );
+            locals.push((f, m, a.clone()));
+        }
+        providers.push(CfgProvider {
+            id: f.id.to_owned(),
+            url: f.url.clone(),
+            kind: "chat",
+            key: None,
+            models,
+        });
+    }
     if locals.is_empty() && !key {
         return None;
     }
-    let mut y = String::from("providers:\n");
-    for f in found.iter().filter(|f| !f.models.is_empty()) {
-        y.push_str(&format!(
-            "  - id: {}\n    url: {}\n    type: chat\n    models:\n",
-            f.id, f.url
-        ));
-        for m in f.models.iter().filter(|m| !is_embedding(m)).take(30) {
-            y.push_str(&format!("      {}: {{id: \"{m}\"}}\n", alias(m)));
-        }
-    }
+    let size_key = |m: &String| {
+        (
+            !m.to_ascii_lowercase().contains("coder"),
+            size_b(m).unwrap_or(1e9),
+        )
+    };
+    let complete = locals.iter().min_by(|a, b| {
+        let (ka, kb) = (size_key(a.1), size_key(b.1));
+        ka.0.cmp(&kb.0)
+            .then(ka.1.partial_cmp(&kb.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let big = locals.iter().max_by(|a, b| {
+        let k = |m: &String| size_b(m).unwrap_or(-1.0);
+        k(a.1)
+            .partial_cmp(&k(b.1))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if key {
-        y.push_str(&format!(
-            "  - id: cloud\n    url: {cloud_url}\n    type: responses\n    key: $OPENAI_API_KEY\n    models:\n      main:\n        id: {DEFAULT_CLOUD_MODEL}\n        effort: medium\n"
-        ));
+        providers.push(CfgProvider {
+            id: "cloud".into(),
+            url: cloud_url.to_owned(),
+            kind: "responses",
+            key: Some("$OPENAI_API_KEY".into()),
+            models: BTreeMap::from([(
+                "main".to_owned(),
+                CfgModel {
+                    id: DEFAULT_CLOUD_MODEL.into(),
+                    effort: Some("medium".into()),
+                },
+            )]),
+        });
     }
-    y.push_str("\nroles:\n");
+    let mut roles = BTreeMap::new();
     let mut chat = "—".to_owned();
     let mut comp = "—".to_owned();
-    if let Some((f, m)) = complete {
-        y.push_str(&format!("  complete:\n    id: {}/{}\n", f.id, alias(m)));
+    if let Some((f, m, a)) = complete {
+        roles.insert(
+            "complete",
+            CfgRole {
+                id: format!("{}/{a}", f.id),
+                effort: None,
+            },
+        );
         comp = format!("{}/{m}", f.id);
     }
     if key {
-        y.push_str("  chat:\n    id: cloud/main\n    effort: low\n");
+        roles.insert(
+            "chat",
+            CfgRole {
+                id: "cloud/main".into(),
+                effort: Some("low".into()),
+            },
+        );
         chat = format!("cloud/{DEFAULT_CLOUD_MODEL}");
-    } else if let Some((f, m)) = big {
-        y.push_str(&format!("  chat:\n    id: {}/{}\n", f.id, alias(m)));
+    } else if let Some((f, m, a)) = big {
+        roles.insert(
+            "chat",
+            CfgRole {
+                id: format!("{}/{a}", f.id),
+                effort: None,
+            },
+        );
         chat = format!("{}/{m}", f.id);
     }
-    Some((y, chat, comp))
+    let yaml = serde_yaml::to_string(&Cfg { providers, roles }).ok()?;
+    Some((yaml, chat, comp))
+}
+
+/// Create `path` with `content` unless it exists (never overwrites, even in a
+/// race with the user or another llmsh). Returns whether it was written.
+pub fn write_new(path: &std::path::Path, content: &str) -> std::io::Result<bool> {
+    use std::io::Write;
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let r = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+        // hard_link fails if `path` exists: the complete file appears atomically.
+        match std::fs::hard_link(&tmp, path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e),
+        }
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    r
 }
 
 /// Start the detection in the background if there is no config yet.
@@ -152,6 +269,10 @@ fn run(llm: &Llm) -> std::io::Result<()> {
             "lmstudio",
             env_or("LLMSH_PROBE_LMSTUDIO", "http://localhost:1234/v1"),
         ),
+        (
+            "llamacpp",
+            env_or("LLMSH_PROBE_LLAMACPP", "http://localhost:8080/v1"),
+        ),
     ];
     let hs: Vec<_> = urls
         .into_iter()
@@ -173,15 +294,9 @@ fn run(llm: &Llm) -> std::io::Result<()> {
         return Ok(());
     };
     let path = llm.path().expect("checked");
-    if path.exists() {
-        return Ok(());
+    if !write_new(path, &yaml)? {
+        return Ok(()); // someone else created it first
     }
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&tmp, yaml)?;
-    std::fs::rename(&tmp, path)?;
     llm.set_notice(format!(
         "llmsh · chat: {chat} · complete: {comp} · llmsh config — изменить"
     ));
@@ -230,6 +345,25 @@ mod tests {
             "qwen2.5-coder:1.5b"
         );
         assert_eq!(c.resolve("chat").unwrap().model.id, "qwen3:32b");
+    }
+
+    #[test]
+    fn colliding_aliases_are_made_unique() {
+        let found = [f("ollama", &["a:b", "a-b", "a/b"])];
+        let (y, _, _) = build(&found, false, "u").unwrap();
+        let c = Config::parse(&y).unwrap();
+        assert_eq!(c.providers[0].models.len(), 3, "{y}");
+    }
+
+    #[test]
+    fn write_new_never_overwrites() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("sub/config.yaml");
+        assert!(write_new(&p, "one").unwrap());
+        assert!(!write_new(&p, "two").unwrap());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one");
+        // no temp files left behind
+        assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);
     }
 
     #[test]

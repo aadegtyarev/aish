@@ -285,8 +285,11 @@ impl Controller {
         self.prompt = true;
         let w = width();
         self.ed.reset_screen(self.scan.column(w));
+        // A command from the model must wait for a fresh Enter: keys typed
+        // while the answer streamed are dropped when there is one.
         if let Some(p) = self.pending_prefill.take() {
             self.ed.set_text(&p);
+            self.typeahead.clear();
         }
         let _ = self.stdout.write_all(b"\x1b[?2004h");
         if self.use_dsr {

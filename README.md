@@ -83,8 +83,8 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   `llmsh complete <..>` switch a role for this session, `llmsh on|off` toggles model suggestions,
   `llmsh config` puts `${EDITOR:-vi} ~/.config/llmsh/config.yaml` in the line. `llmsh status` and
   `llmsh config` also work as CLI commands; any other arguments go to bash. Tab completes them.
-- First start without a config probes ollama (`:11434`), LM Studio (`:1234`) and `$OPENAI_API_KEY`
-  (override URLs for tests with `LLMSH_PROBE_OLLAMA`, `LLMSH_PROBE_LMSTUDIO`, `LLMSH_OPENAI_URL`),
+- First start without a config probes ollama (`:11434`), LM Studio (`:1234`), llama.cpp `llama-server` (`:8080`) and `$OPENAI_API_KEY`
+  (override URLs for tests with `LLMSH_PROBE_OLLAMA`, `LLMSH_PROBE_LMSTUDIO`, `LLMSH_PROBE_LLAMACPP`, `LLMSH_OPENAI_URL`),
   writes a config and prints one line. The config is re-read when its mtime changes.
 - Model suggestions (role `complete`): a ghost plugin below history; 150 ms after the last key (Ctrl-Space: now)
   a worker asks for the continuation (cwd, last 5 commands, `ls` names; `max_tokens` 48, stop `\n`). Stale answers are

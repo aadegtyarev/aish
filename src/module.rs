@@ -28,6 +28,7 @@ pub struct TaskShared {
     pub cancel: AtomicBool,
     /// `Some(prefill)` once the task is finished.
     done: Mutex<Option<Option<String>>>,
+    finished: AtomicBool,
     wake: Arc<File>,
 }
 
@@ -61,10 +62,31 @@ impl Task {
 
     /// Done: show the prompt again, with `prefill` typed into the line.
     pub fn finish(self, prefill: Option<String>) {
+        self.complete(prefill);
+    }
+
+    fn complete(&self, prefill: Option<String>) {
+        self.shared
+            .finished
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut d) = self.shared.done.lock() {
             *d = Some(prefill);
         }
         let _ = (&*self.shared.wake).write(&[1]);
+    }
+}
+
+/// A task dropped without `finish` (panic, early return) still hands the
+/// prompt back, so the terminal never stays captured.
+impl Drop for Task {
+    fn drop(&mut self) {
+        if !self
+            .shared
+            .finished
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.complete(None);
+        }
     }
 }
 
@@ -84,6 +106,7 @@ impl TaskMaker {
             shared: Arc::new(TaskShared {
                 cancel: AtomicBool::new(false),
                 done: Mutex::new(None),
+                finished: AtomicBool::new(false),
                 wake: self.wake.clone(),
             }),
         }
@@ -127,4 +150,35 @@ pub fn builtin(enabled: Option<&[String]>) -> Vec<Box<dyn Module>> {
     all.into_iter()
         .filter(|m| enabled.is_none_or(|e| e.iter().any(|n| n == m.name())))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn maker() -> TaskMaker {
+        let null = || Arc::new(File::options().write(true).open("/dev/null").unwrap());
+        TaskMaker {
+            stdout: null(),
+            wake: null(),
+        }
+    }
+
+    #[test]
+    fn dropped_task_hands_the_prompt_back() {
+        let t = maker().make(&Theme::plain(), 80);
+        let shared = t.shared.clone();
+        assert!(shared.take_done().is_none());
+        drop(t);
+        assert_eq!(shared.take_done(), Some(None));
+    }
+
+    #[test]
+    fn finished_task_keeps_its_prefill() {
+        let t = maker().make(&Theme::plain(), 80);
+        let shared = t.shared.clone();
+        t.finish(Some("ls".into()));
+        assert_eq!(shared.take_done(), Some(Some("ls".into())));
+        assert!(shared.take_done().is_none()); // drop did not finish a second time
+    }
 }

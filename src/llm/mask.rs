@@ -1,12 +1,18 @@
 //! Secret masking for text that leaves the machine.
 
-const SECRET_WORDS: &[&str] = &["TOKEN", "SECRET", "PASSWORD", "PASSWD"];
+const SECRET_WORDS: &[&str] = &["TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"];
+/// Headers whose whole value is a secret.
+const SECRET_HEADERS: &[&str] = &["authorization:", "cookie:", "proxy-authorization:"];
 
 fn secret_name(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
-    n.ends_with("_KEY")
+    matches!(
+        n.as_str(),
+        "KEY" | "APIKEY" | "PASS" | "SIG" | "SIGNATURE" | "AUTH"
+    ) || n.ends_with("_KEY")
         || n.ends_with("-KEY")
-        || n == "APIKEY"
+        || n.ends_with(".KEY")
+        || n.ends_with("_SIG")
         || SECRET_WORDS.iter().any(|w| n.contains(w))
 }
 
@@ -54,32 +60,55 @@ fn mask_private_keys(text: &str) -> String {
 }
 
 fn mask_line(line: &str, out: &mut String) {
-    // Authorization header: mask everything after the colon.
-    if let Some(p) = find_ci(line, "authorization:") {
-        out.push_str(&mask_urls(&line[..p + 14]));
-        out.push_str(" ***");
-        return;
+    let lower = line.to_ascii_lowercase();
+    for h in SECRET_HEADERS {
+        if let Some(p) = lower.find(h) {
+            out.push_str(&mask_line_inner(&line[..p + h.len()]));
+            out.push_str(" ***");
+            return;
+        }
     }
-    let line = mask_urls(line);
-    // NAME=value with a secret-looking name.
+    out.push_str(&mask_line_inner(line));
+}
+
+fn mask_line_inner(line: &str) -> String {
+    let l = mask_urls(line);
+    let l = mask_flags(&l);
+    let l = mask_assign(&l);
+    mask_shapes(&l)
+}
+
+/// `name = value`, `name: value`, `"name": "value"` with a secret-looking name.
+fn mask_assign(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
     let mut last = 0;
-    let bytes = line.as_bytes();
+    let b = line.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'=' {
+    while i < b.len() {
+        if b[i] != b'=' && b[i] != b':' {
             i += 1;
             continue;
         }
-        let ns = line[..i]
+        let mut j = i;
+        while j > 0 && b[j - 1] == b' ' {
+            j -= 1;
+        }
+        if j > 0 && matches!(b[j - 1], b'"' | b'\'') {
+            j -= 1;
+        }
+        let ns = line[..j]
             .char_indices()
             .rev()
             .take_while(|&(_, c)| is_name_char(c))
             .last()
-            .map_or(i, |(p, _)| p);
-        let name = &line[ns..i];
+            .map_or(j, |(p, _)| p);
+        let name = &line[ns..j];
         if ns >= last && !name.is_empty() && secret_name(name) {
-            let vs = i + 1;
-            let ve = value_end(&line[vs..]) + vs;
+            let mut vs = i + 1;
+            while vs < b.len() && b[vs] == b' ' {
+                vs += 1;
+            }
+            let ve = vs + value_end(&line[vs..], b[i] == b':');
             if ve > vs {
                 out.push_str(&line[last..vs]);
                 out.push_str("***");
@@ -91,17 +120,123 @@ fn mask_line(line: &str, out: &mut String) {
         i += 1;
     }
     out.push_str(&line[last..]);
+    out
 }
 
-fn value_end(v: &str) -> usize {
+fn value_end(v: &str, colon: bool) -> usize {
     match v.chars().next() {
         Some(q @ ('"' | '\'')) => v[1..].find(q).map_or(v.len(), |e| e + 2),
-        _ => v.find(char::is_whitespace).unwrap_or(v.len()),
+        _ => v
+            .find(|c: char| {
+                c.is_whitespace() || c == '&' || c == '"' || (colon && matches!(c, ',' | '}' | ';'))
+            })
+            .unwrap_or(v.len()),
     }
 }
 
-fn find_ci(h: &str, needle: &str) -> Option<usize> {
-    h.to_ascii_lowercase().find(needle)
+/// `--password x`, `-u user:pass` (curl), `-p x` / `-pX` (mysql, sshpass).
+fn mask_flags(line: &str) -> String {
+    let words: Vec<&str> = line.split(' ').collect();
+    let first = words.iter().find(|w| !w.is_empty()).copied().unwrap_or("");
+    let first = first.rsplit('/').next().unwrap_or(first);
+    let pass_cmd = matches!(first, "mysql" | "mysqldump" | "mariadb" | "sshpass");
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut mask_next: Option<bool> = None; // Some(true): whole word, Some(false): after ':'
+    for w in words {
+        if let Some(whole) = mask_next.take() {
+            if !w.is_empty() {
+                out.push(match (whole, w.split_once(':')) {
+                    (false, Some((u, _))) => format!("{u}:***"),
+                    (false, None) => w.to_owned(),
+                    _ => "***".into(),
+                });
+                continue;
+            }
+            mask_next = Some(whole);
+        }
+        let name = w.trim_start_matches('-');
+        let long = w.starts_with("--");
+        if long && !w.contains('=') && secret_name(name) {
+            mask_next = Some(true);
+        } else if first == "curl" && matches!(w, "-u" | "--user" | "--proxy-user") {
+            mask_next = Some(false);
+        } else if pass_cmd && w == "-p" {
+            mask_next = Some(true);
+        } else if pass_cmd && w.starts_with("-p") && w.len() > 2 && !long {
+            out.push("-p***".into());
+            continue;
+        }
+        out.push(w.to_owned());
+    }
+    out.join(" ")
+}
+
+fn token_shape(w: &str) -> bool {
+    let n = w.len();
+    let alnum = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    if w.starts_with("sk-") && n >= 20 && alnum(w) {
+        return true;
+    }
+    for p in ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"] {
+        if w.starts_with(p) && n >= 30 && alnum(w) {
+            return true;
+        }
+    }
+    if w.starts_with("github_pat_") && n >= 30 && alnum(w) {
+        return true;
+    }
+    if (w.starts_with("AKIA") || w.starts_with("ASIA"))
+        && n == 20
+        && w.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return true;
+    }
+    if w.starts_with("glpat-") && n >= 20 && alnum(w) {
+        return true;
+    }
+    if w.len() > 10
+        && w.starts_with("xox")
+        && matches!(w.as_bytes()[3], b'a' | b'b' | b'p' | b'r')
+        && w.as_bytes()[4] == b'-'
+    {
+        return true;
+    }
+    let parts: Vec<&str> = w.split('.').collect();
+    parts.len() == 3
+        && w.starts_with("eyJ")
+        && parts[1].starts_with("eyJ")
+        && parts.iter().all(|p| !p.is_empty() && alnum(p))
+}
+
+/// Replace bare tokens by their shape (`sk-...`, GitHub, AWS, Slack, GitLab, JWT).
+fn mask_shapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut start = None;
+    let flush = |out: &mut String, s: &str| {
+        if token_shape(s) {
+            out.push_str("***");
+        } else {
+            out.push_str(s);
+        }
+    };
+    for (i, c) in line.char_indices() {
+        if is_name_char(c) {
+            start.get_or_insert(i);
+        } else {
+            if let Some(s) = start.take() {
+                flush(&mut out, &line[s..i]);
+            }
+            out.push(c);
+        }
+    }
+    if let Some(s) = start {
+        flush(&mut out, &line[s..]);
+    }
+    out
 }
 
 /// `scheme://user:pass@host` -> `scheme://user:***@host`.
@@ -184,5 +319,61 @@ mod tests {
         );
         assert_eq!(mask("https://github.com/x@y"), "https://github.com/x@y");
         assert_eq!(mask("ssh://user@host/p"), "ssh://user@host/p");
+    }
+
+    #[test]
+    fn config_file_and_json_forms() {
+        assert_eq!(mask("api_key = abc123"), "api_key = ***");
+        assert_eq!(mask("password: hunter2"), "password: ***");
+        assert_eq!(
+            mask(r#"{"api_key": "abc", "x": 1}"#),
+            r#"{"api_key": ***, "x": 1}"#
+        );
+        assert_eq!(mask("secret: 'a b'"), "secret: ***");
+        assert_eq!(mask("name: bob"), "name: bob");
+    }
+
+    #[test]
+    fn flags() {
+        assert_eq!(
+            mask("mysql -u root -p hunter2 db"),
+            "mysql -u root -p *** db"
+        );
+        assert_eq!(mask("mysql -phunter2 db"), "mysql -p*** db");
+        assert_eq!(mask("sshpass -p pw ssh x"), "sshpass -p *** ssh x");
+        assert_eq!(
+            mask("tool --password hunter2 run"),
+            "tool --password *** run"
+        );
+        assert_eq!(
+            mask("curl -u bob:pw https://x/y"),
+            "curl -u bob:*** https://x/y"
+        );
+        assert_eq!(mask("mkdir -p a/b"), "mkdir -p a/b");
+    }
+
+    #[test]
+    fn bare_tokens() {
+        let sk = "sk-proj-abcdefghijklmnopqrstuvwx";
+        assert_eq!(mask(&format!("echo {sk} done")), "echo *** done");
+        assert_eq!(mask("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "***");
+        assert_eq!(mask("github_pat_11ABCDEFG0123456789_abcdefghij"), "***");
+        assert_eq!(mask("id AKIAIOSFODNN7EXAMPLE x"), "id *** x");
+        assert_eq!(mask("glpat-abcdefghijklmnopqrstu"), "***");
+        assert_eq!(mask("xoxb-123456789-abcdef"), "***");
+        assert_eq!(
+            mask("t=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"),
+            "t=***"
+        );
+        assert_eq!(mask("ls -la /usr/lib/skeleton"), "ls -la /usr/lib/skeleton");
+    }
+
+    #[test]
+    fn url_query_secrets() {
+        assert_eq!(
+            mask("curl 'https://h/p?id=1&token=abc&sig=zz&x=2'"),
+            "curl 'https://h/p?id=1&token=***&sig=***&x=2'"
+        );
+        assert_eq!(mask("https://h/?key=abc"), "https://h/?key=***");
     }
 }

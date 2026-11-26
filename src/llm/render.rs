@@ -40,6 +40,22 @@ fn is_cmd_lang(l: &str) -> bool {
     )
 }
 
+/// Control (C0/C1), bidi and zero-width characters: never shown or typed
+/// for text that comes from a server.
+fn is_bad(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}'..='\u{200F}' | '\u{2060}' | '\u{FEFF}')
+}
+
+/// Strip everything that could act as a terminal escape or hide text.
+pub fn sanitize(s: &str) -> String {
+    s.chars().filter(|&c| !is_bad(c)).collect()
+}
+
+fn unsafe_cmd(cmd: &str) -> bool {
+    cmd.chars().any(|c| is_bad(c) && c != '\n' && c != '\t')
+}
+
 fn width(c: char) -> usize {
     c.width().unwrap_or(0)
 }
@@ -73,18 +89,37 @@ impl Renderer {
     }
 
     /// The stream ended: flush what is pending; returns the command to put
-    /// in the input line, if the answer ended with a bash block.
-    pub fn finish(&mut self, out: &mut Vec<u8>) -> Option<String> {
+    /// in the input line, if the answer ended with a complete bash block.
+    /// `allow_cmd` is false for cut-off answers. An unterminated fence, and a
+    /// command with control/bidi/zero-width characters, are printed instead.
+    pub fn finish(&mut self, out: &mut Vec<u8>, allow_cmd: bool) -> Option<String> {
         if !self.line.is_empty() {
             let l = std::mem::take(&mut self.line);
             self.line_done(&l, out);
         }
-        if let Some(f) = self.fence.take() {
+        if let Some(mut f) = self.fence.take() {
+            f.cmd = false;
             self.close_fence(f, out);
         }
-        let cmd = self.held.take().map(|l| join_cmd(&l));
-        out.append(&mut self.deferred);
-        cmd.filter(|c| !c.is_empty())
+        let cmd = self
+            .held
+            .as_ref()
+            .map(|l| join_cmd(l))
+            .filter(|c| !c.is_empty());
+        match cmd {
+            Some(c) if allow_cmd && !unsafe_cmd(&c) => {
+                self.held = None;
+                out.append(&mut self.deferred);
+                Some(c)
+            }
+            c => {
+                self.release_held(out);
+                if c.is_some_and(|c| allow_cmd && unsafe_cmd(&c)) {
+                    self.note("команда с управляющими символами не вставлена", out);
+                }
+                None
+            }
+        }
     }
 
     /// A dim one-line message (errors, `⏹`).
@@ -92,7 +127,7 @@ impl Renderer {
         out.extend_from_slice(b"\r\n");
         self.bar(out);
         self.sgr(out, &self.dim.clone());
-        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(sanitize(text).as_bytes());
         self.reset(out);
     }
 
@@ -100,7 +135,7 @@ impl Renderer {
     pub fn plain_row(&self, text: &str, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\r\n");
         self.bar(out);
-        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(sanitize(text).as_bytes());
     }
 
     fn sgr(&self, out: &mut Vec<u8>, code: &str) {
@@ -206,7 +241,7 @@ impl Renderer {
             let l = l.replace('\t', "    ");
             let mut chunks: Vec<String> = vec![String::new()];
             let mut cw = 0;
-            for c in l.chars().filter(|c| !c.is_control()) {
+            for c in l.chars().filter(|&c| !is_bad(c)) {
                 if cw + width(c) > w {
                     chunks.push(String::new());
                     cw = 0;
@@ -327,7 +362,7 @@ impl Renderer {
                 }
                 cur = s;
             }
-            if !c.is_control() {
+            if !is_bad(c) {
                 b.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
             }
         }
@@ -415,7 +450,7 @@ mod tests {
         for p in parts {
             r.push(p, &mut out);
         }
-        let cmd = r.finish(&mut out);
+        let cmd = r.finish(&mut out, true);
         (String::from_utf8(out).unwrap(), cmd)
     }
 
@@ -465,9 +500,60 @@ mod tests {
     }
 
     #[test]
-    fn multiline_command_and_unclosed_fence() {
-        let (_, c) = run(&["```bash\ncd /tmp \\\n  && ls\n"], false, 80);
+    fn multiline_command() {
+        let (_, c) = run(&["```bash\ncd /tmp \\\n  && ls\n```\n"], false, 80);
         assert_eq!(c.as_deref(), Some("cd /tmp \\\n  && ls"));
+    }
+
+    #[test]
+    fn unterminated_fence_is_never_a_command() {
+        let (o, c) = run(&["```bash\nrm -rf /tm"], false, 80);
+        assert_eq!(c, None);
+        assert!(o.contains("rm -rf /tm"), "{o:?}");
+    }
+
+    #[test]
+    fn truncated_answer_prints_block_instead_of_command() {
+        let mut r = Renderer::new(&Theme::plain(), 80);
+        let mut out = Vec::new();
+        r.push("```bash\nls\n```\n", &mut out);
+        assert_eq!(r.finish(&mut out, false), None);
+        assert!(String::from_utf8(out).unwrap().contains("ls"));
+    }
+
+    #[test]
+    fn hostile_commands_are_not_prefilled() {
+        for bad in [
+            "echo \u{1b}[2J",
+            "ls \u{202E}gpj.exe",
+            "ls\u{200B}x",
+            "a\rb",
+            "a\u{9b}b",
+        ] {
+            let (o, c) = run(&[&format!("```bash\n{bad}\n```\n")], false, 80);
+            assert_eq!(c, None, "{bad:?}");
+            assert!(o.contains("не вставлена"), "{o:?}");
+            assert!(
+                !o.contains('\u{1b}') && !o.contains('\u{202E}') && !o.contains('\u{200B}'),
+                "{o:?}"
+            );
+        }
+        let (_, c) = run(&["```bash\nls\n\techo a\n```\n"], false, 80);
+        assert!(c.is_some());
+    }
+
+    #[test]
+    fn notes_strip_terminal_escapes() {
+        let r = Renderer::new(&Theme::plain(), 80);
+        let mut o = Vec::new();
+        r.note("bad \u{1b}]0;x\u{7} \u{9b}31m\u{202E}end", &mut o);
+        r.plain_row("\u{1b}[2Jhi", &mut o);
+        let s = String::from_utf8(o).unwrap();
+        assert!(
+            !s.contains('\u{1b}') && !s.contains('\u{7}') && !s.contains('\u{9b}'),
+            "{s:?}"
+        );
+        assert!(s.contains("end") && s.contains("hi"));
     }
 
     #[test]

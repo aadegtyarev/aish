@@ -267,6 +267,8 @@ fn worker(
                 );
             }
             Err(llmsh_llm::Error::Cancelled) => {}
+            // Stale (cancelled) jobs say nothing about the server's health.
+            Err(_) if job.cancel.load(Ordering::Relaxed) => {}
             Err(e) => {
                 tracing::debug!("suggest: {e}");
                 fails += 1;
@@ -323,7 +325,21 @@ fn ask(
         first_token_timeout: llmsh_llm::FIRST_TOKEN_COMPLETE,
         ..Request::chat(SYSTEM, vec![Message::user(ctx)])
     };
-    let reply = llmsh_llm::complete(&t.ep, &req, &job.cancel)?;
+    // Only the first line matters: stop (and close the connection) at "\n".
+    let mut reply = String::new();
+    let mut seen_nl = false;
+    let r = llmsh_llm::stream(&t.ep, &req, &job.cancel, |llmsh_llm::Event::Delta(d)| {
+        reply.push_str(&d);
+        if reply.contains('\n') && !seen_nl {
+            seen_nl = true;
+            job.cancel.store(true, Ordering::Relaxed); // this job is done: close it
+        }
+    });
+    match r {
+        Err(llmsh_llm::Error::Cancelled) if seen_nl => {}
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
     Ok(clean(&job.line, &reply).map(|c| format!("{}{c}", job.line)))
 }
 

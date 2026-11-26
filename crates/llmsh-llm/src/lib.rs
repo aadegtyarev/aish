@@ -21,6 +21,8 @@ pub const FIRST_TOKEN_CHAT: Duration = Duration::from_secs(30);
 pub const FIRST_TOKEN_COMPLETE: Duration = Duration::from_millis(1500);
 /// Silence after the first token before the stream is considered dead.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Output-token floor when reasoning effort is set (thinking uses the budget too).
+pub(crate) const REASONING_MIN_TOKENS: u32 = 8192;
 const TICK: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +127,8 @@ impl Request {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// The answer was cut short (token limit / incomplete response).
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +176,14 @@ enum Msg {
     Err(Error),
 }
 
+/// Stream bookkeeping shared by the parsers.
+#[derive(Default)]
+pub(crate) struct State {
+    pub usage: Usage,
+    /// A finish reason was seen (chat); `[DONE]`/completed end the stream anyway.
+    pub finished: bool,
+}
+
 /// One parsed SSE payload, API independent.
 pub(crate) enum Item {
     Alive,
@@ -181,10 +193,13 @@ pub(crate) enum Item {
     Skip,
 }
 
-fn agent() -> ureq::Agent {
+/// `read` is the socket read timeout: it bounds the wait for response headers
+/// (the first token) and doubles as the poll interval of the body reader,
+/// which re-checks the cancel flag whenever a read times out.
+fn agent(read: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
-        .timeout_read(IDLE_TIMEOUT)
+        .timeout_read(read)
         .build()
 }
 
@@ -235,7 +250,8 @@ pub fn stream(
     let closed = Arc::new(AtomicBool::new(false));
     {
         let (key, kind, closed) = (ep.key.clone(), ep.kind, closed.clone());
-        std::thread::spawn(move || worker(&url, key, kind, body, tx, &closed));
+        let read = req.first_token_timeout;
+        std::thread::spawn(move || worker(&url, key, kind, body, read, tx, &closed));
     }
     let start = Instant::now();
     let mut last = start;
@@ -285,10 +301,11 @@ fn worker(
     key: Option<String>,
     kind: Kind,
     body: String,
+    read_timeout: Duration,
     tx: mpsc::Sender<Msg>,
     closed: &AtomicBool,
 ) {
-    let r = authorize(agent().post(url), &key)
+    let r = authorize(agent(read_timeout).post(url), &key)
         .set("Content-Type", "application/json")
         .set("Accept", "text/event-stream")
         .send_string(&body);
@@ -301,24 +318,38 @@ fn worker(
     };
     let mut rd = BufReader::new(resp.into_reader());
     let mut line = Vec::with_capacity(512);
-    let mut usage = Usage::default();
+    let mut st = State::default();
+    let mut partial = false;
     loop {
         if closed.load(Ordering::Relaxed) {
             return; // dropping `rd` closes the connection
         }
-        line.clear();
+        if !partial {
+            line.clear();
+        }
         match rd.read_until(b'\n', &mut line) {
             Ok(0) => {
-                let _ = tx.send(Msg::Done(usage));
+                // EOF: only a stream that announced its end is complete.
+                let _ = tx.send(if st.finished {
+                    Msg::Done(st.usage)
+                } else {
+                    Msg::Err(Error::Api("stream ended early".into()))
+                });
                 return;
             }
-            Ok(_) => {}
+            Ok(_) => partial = false,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                // Quiet server: keep what was read, look at `closed`, wait on.
+                partial = true;
+                continue;
+            }
             Err(e) => {
-                let _ = tx.send(Msg::Err(if e.kind() == std::io::ErrorKind::TimedOut {
-                    Error::Timeout
-                } else {
-                    Error::Connect(e.to_string())
-                }));
+                let _ = tx.send(Msg::Err(Error::Connect(e.to_string())));
                 return;
             }
         }
@@ -329,14 +360,14 @@ fn worker(
         };
         let data = data.trim_start();
         if data == "[DONE]" {
-            let _ = tx.send(Msg::Done(usage));
+            let _ = tx.send(Msg::Done(st.usage));
             return;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
             continue;
         };
         let item = match kind {
-            Kind::Chat => chat::parse(&v, &mut usage),
+            Kind::Chat => chat::parse(&v, &mut st),
             Kind::Responses => responses::parse(&v),
         };
         let m = match item {

@@ -60,6 +60,23 @@ pub fn short_reason(e: &Error, t: &Target) -> String {
     }
 }
 
+/// Earlier turns as sent: masked unless the provider is local. The stored
+/// conversation stays untouched.
+pub fn masked_history(c: &[Message], local: bool) -> Vec<Message> {
+    c.iter()
+        .map(|m| {
+            if local {
+                return m.clone();
+            }
+            let t = mask(&m.text());
+            match m.role {
+                llmsh_llm::Role::User => Message::user(t),
+                llmsh_llm::Role::Assistant => Message::assistant(t),
+            }
+        })
+        .collect()
+}
+
 fn convo_chars(c: &[Message]) -> usize {
     c.iter().map(|m| m.text().len()).sum()
 }
@@ -73,8 +90,23 @@ pub fn spawn(
     task: Task,
 ) {
     std::thread::spawn(move || {
-        let prefill = answer(&llm, &tracker, &target, &p, &task);
-        task.finish(prefill);
+        // A panic must not leave the terminal waiting: the task's drop guard
+        // (or this) hands the prompt back.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            answer(&llm, &tracker, &target, &p, &task)
+        }));
+        match r {
+            Ok(prefill) => task.finish(prefill),
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| e.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                tracing::error!("ask worker panicked: {msg}");
+                task.finish(None);
+            }
+        }
     });
 }
 
@@ -96,7 +128,8 @@ fn answer(
     } else {
         mask(&p.question)
     };
-    let mut messages: Vec<Message> = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
+    let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
+    let mut messages = masked_history(&history, t.local);
     messages.push(Message::user(format!("Context:\n{ctx}\nQuestion: {q}")));
     let req = Request {
         max_tokens: 2048,
@@ -114,8 +147,12 @@ fn answer(
     });
     let mut out = Vec::new();
     match res {
-        Ok(_) => {
-            let cmd = r.finish(&mut out);
+        Ok(u) => {
+            // A cut-off answer never yields a command to run.
+            let cmd = r.finish(&mut out, !u.truncated);
+            if u.truncated {
+                r.note("ответ оборван (лимит токенов)", &mut out);
+            }
             task.write(&out);
             remember(llm, &q, &full);
             cmd
@@ -127,7 +164,7 @@ fn answer(
         }
         Err(e) => {
             tracing::warn!("ask: {e}");
-            r.finish(&mut out);
+            r.finish(&mut out, false);
             r.note(&short_reason(&e, t), &mut out);
             task.write(&out);
             None
@@ -150,6 +187,19 @@ fn remember(llm: &Llm, q: &str, answer: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_is_masked_for_remote_only() {
+        let h = vec![
+            Message::user("export API_KEY=abc123 why"),
+            Message::assistant("use https://u:pw@h/x"),
+        ];
+        let m = masked_history(&h, false);
+        assert_eq!(m[0].text(), "export API_KEY=*** why");
+        assert_eq!(m[1].text(), "use https://u:***@h/x");
+        assert_eq!(masked_history(&h, true), h);
+        assert_eq!(h[0].text(), "export API_KEY=abc123 why"); // stored copy intact
+    }
 
     #[test]
     fn parsing() {

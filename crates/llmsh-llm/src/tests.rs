@@ -38,7 +38,8 @@ fn chat_streams_and_sends_expected_request() {
         r.unwrap(),
         Usage {
             input_tokens: 7,
-            output_tokens: 3
+            output_tokens: 3,
+            truncated: false
         }
     );
     let q = &m.requests()[0];
@@ -46,7 +47,9 @@ fn chat_streams_and_sends_expected_request() {
     assert_eq!(q.header("authorization"), Some("Bearer sk-test"));
     let b: serde_json::Value = serde_json::from_str(&q.body).unwrap();
     assert_eq!(b["stream"], true);
-    assert_eq!(b["max_tokens"], 99);
+    // effort set: reasoning style, with room for thinking, no temperature/stop
+    assert_eq!(b["max_completion_tokens"], 8192);
+    assert!(b.get("max_tokens").is_none() && b.get("temperature").is_none());
     assert_eq!(b["reasoning_effort"], "low");
     assert_eq!(b["messages"][0]["role"], "system");
     assert_eq!(b["messages"][1]["content"], "hi");
@@ -73,7 +76,7 @@ fn responses_streams_and_ignores_reasoning() {
     let q = &m.requests()[0];
     assert_eq!(q.path, "/v1/responses");
     let b: serde_json::Value = serde_json::from_str(&q.body).unwrap();
-    assert_eq!(b["max_output_tokens"], 99);
+    assert_eq!(b["max_output_tokens"], 8192);
     assert_eq!(b["reasoning"]["effort"], "low");
     assert_eq!(b["instructions"], "sys");
 }
@@ -145,4 +148,87 @@ fn list_models_parses_ids() {
     });
     let v = list_models(&m.url(), &None, Duration::from_secs(1)).unwrap();
     assert_eq!(v, ["a", "b:7b"]);
+}
+
+#[test]
+fn classic_chat_params_without_effort() {
+    let m = Mock::start(|_, c| chat_stream(c, &["x"], Duration::ZERO));
+    let e = Endpoint {
+        effort: None,
+        ..ep(Kind::Chat, &m)
+    };
+    let mut r = req();
+    r.temperature = Some(0.0);
+    r.stop = vec!["\n".into()];
+    run(&e, &r).0.unwrap();
+    let b: serde_json::Value = serde_json::from_str(&m.requests()[0].body).unwrap();
+    assert_eq!(b["max_tokens"], 99);
+    assert_eq!(b["temperature"], 0.0);
+    assert_eq!(b["stop"][0], "\n");
+    assert!(b.get("max_completion_tokens").is_none() && b.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn eof_without_terminal_event_is_an_error() {
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(c, &chat_chunk("```bash\nrm -rf /tm"));
+    });
+    let (r, s) = run(&ep(Kind::Chat, &m), &req());
+    assert!(matches!(r, Err(Error::Api(_))), "{r:?}");
+    assert!(s.contains("rm -rf"));
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(c, &resp_delta("x"));
+    });
+    assert!(run(&ep(Kind::Responses, &m), &req()).0.is_err());
+}
+
+#[test]
+fn finish_reason_ends_stream_and_length_is_truncated() {
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(c, &chat_chunk("a"));
+        sse_data(c, r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#);
+    });
+    let (r, s) = run(&ep(Kind::Chat, &m), &req());
+    assert_eq!(s, "a");
+    assert!(r.unwrap().truncated);
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(c, &chat_chunk("a"));
+        sse_data(c, r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#);
+    });
+    assert!(!run(&ep(Kind::Chat, &m), &req()).0.unwrap().truncated);
+}
+
+#[test]
+fn incomplete_responses_is_soft_end_and_refusal_is_text() {
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(c, r#"{"type":"response.refusal.delta","delta":"no"}"#);
+        sse_data(
+            c,
+            r#"{"type":"response.incomplete","response":{"usage":{"output_tokens":9}}}"#,
+        );
+    });
+    let (r, s) = run(&ep(Kind::Responses, &m), &req());
+    assert_eq!(s, "no");
+    assert!(r.unwrap().truncated);
+}
+
+#[test]
+fn quiet_server_longer_than_read_timeout_does_not_break_the_stream() {
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(c, &chat_chunk("one "));
+        std::thread::sleep(Duration::from_millis(700));
+        sse_data(c, &chat_chunk("two"));
+        sse_data(c, "[DONE]");
+    });
+    let mut r = req();
+    r.first_token_timeout = Duration::from_millis(250); // socket read timeout
+    let (res, s) = run(&ep(Kind::Chat, &m), &r);
+    assert_eq!(s, "one two");
+    res.unwrap();
 }

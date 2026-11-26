@@ -122,17 +122,21 @@ pub fn status_lines(llm: &Arc<Llm>) -> Vec<String> {
 pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
     let a = args.first()?.to_str()?;
     match a {
-        "--version" | "-V" if args.len() == 1 => {
+        "--version" if args.len() == 1 => {
             println!("llmsh {}", env!("CARGO_PKG_VERSION"));
-            Some(0)
+            // Probes that look for "GNU bash" keep working.
+            let st = std::process::Command::new("bash").arg("--version").status();
+            Some(st.ok().and_then(|s| s.code()).unwrap_or(0))
         }
-        "--help" | "-h" if args.len() == 1 => {
+        "--help" if args.len() == 1 => {
             println!(
                 "llmsh {}: bash with a line editor and LLM help\n\n  llmsh            start the shell\n  llmsh status     show models and whether they answer\n  llmsh config     edit the config (prints the path if not a terminal)\n\nOther arguments go to bash.",
                 env!("CARGO_PKG_VERSION")
             );
             Some(0)
         }
+        // A file of that name in the cwd means bash semantics (`bash status`).
+        "status" | "config" if std::path::Path::new(a).exists() => None,
         "status" if args.len() == 1 => {
             let llm = Llm::new();
             if llm.config().is_none() {
