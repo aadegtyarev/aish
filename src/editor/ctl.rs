@@ -94,6 +94,7 @@ pub struct Controller {
     notice: Vec<u8>,
     seen_blocks: u64,
     llm: Arc<Llm>,
+    resolver: Resolver,
     tasks: TaskMaker,
     /// An answer is streaming: keys are buffered, Ctrl-C cancels.
     task: Option<Arc<TaskShared>>,
@@ -127,11 +128,12 @@ impl Controller {
             stdout: Arc::new(stdout.try_clone().expect("dup stdout")),
             wake: wake.clone(),
         };
+        let resolver = Resolver::default();
         let env = Env {
             llm: llm.clone(),
             tasks: tasks.clone(),
             tracker,
-            resolver: Resolver::default(),
+            resolver: resolver.clone(),
             history: SharedHistory::new(Box::new(MemHistory::default())),
         };
         let mut modules = module::builtin(enabled);
@@ -161,6 +163,7 @@ impl Controller {
             notice: Vec::new(),
             seen_blocks: 0,
             llm,
+            resolver,
             tasks,
             task: None,
             pending_prefill: None,
@@ -265,6 +268,7 @@ impl Controller {
             return;
         }
         if let Some(n) = self.llm.take_notice() {
+            let n = n.replace("{cmd}", crate::llm::cmd::name_for(&self.resolver));
             // bash's prompt is on this line: put the notice in its place and
             // have bash repaint the prompt below (picked up at the next quiet).
             let th = self.ed.theme();

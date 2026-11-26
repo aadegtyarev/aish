@@ -576,6 +576,11 @@ impl Editor {
             ghost: &self.ghost_buf,
             extra: &self.deco_rows,
             extra_rows: self.deco_nrows,
+            right: if self.deco.input.is_some() {
+                None
+            } else {
+                self.deco.right.as_deref()
+            },
             theme: &self.theme,
         }
     }
@@ -643,6 +648,7 @@ impl Editor {
         v.cursor = line.len();
         v.extra = b"";
         v.extra_rows = 0;
+        v.right = None;
         rend.draw(&mut buf, &v, width);
         let r = out.write_all(&buf);
         self.rend = rend;

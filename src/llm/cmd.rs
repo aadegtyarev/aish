@@ -10,11 +10,30 @@ use crate::config::Setting;
 
 pub const SUBS: &[&str] = &["status", "chat", "complete", "on", "off", "config"];
 
+fn is_cmd_line(s: &str, name: &str) -> bool {
+    let mut w = s.split_whitespace();
+    w.next() == Some(name) && w.next().is_none_or(|x| SUBS.contains(&x))
+}
+
 /// `llmsh` or `llmsh <known subcommand> ...`; anything else (`llmsh -c ...`)
 /// is a real command.
 pub fn is_llmsh_line(s: &str) -> bool {
-    let mut w = s.split_whitespace();
-    w.next() == Some("llmsh") && w.next().is_none_or(|x| SUBS.contains(&x))
+    is_cmd_line(s, "llmsh")
+}
+
+/// The short form, `ai` / `ai <subcommand>`. Only claim it when the shell
+/// does not know `ai` (see `Resolver::is_free_confirmed`).
+pub fn is_ai_line(s: &str) -> bool {
+    is_cmd_line(s, "ai")
+}
+
+/// What to call the command in messages: `ai` unless the user's shell has one.
+pub fn name_for(resolver: &crate::editor::resolve::Resolver) -> &'static str {
+    if resolver.is_free("ai") {
+        "ai"
+    } else {
+        "llmsh"
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -76,7 +95,8 @@ pub fn apply(llm: &Llm, cmd: &Cmd) -> String {
             }
         }
         Cmd::Usage => {
-            "llmsh [status | chat <провайдер/модель> | complete <…> | on | off | config]".into()
+            "ai | llmsh [status | chat <провайдер/модель> | complete <…> | on | off | config]"
+                .into()
         }
         Cmd::Status | Cmd::Config => String::new(),
     }
@@ -200,6 +220,12 @@ mod tests {
             "llmsh foo",
         ] {
             assert!(!is_llmsh_line(t), "{t}");
+        }
+        for t in ["ai", "ai chat a/b", "ai  off", "ai config"] {
+            assert!(is_ai_line(t), "{t}");
+        }
+        for t in ["ai write a poem", "aix", "ai -h", "echo ai"] {
+            assert!(!is_ai_line(t), "{t}");
         }
     }
 

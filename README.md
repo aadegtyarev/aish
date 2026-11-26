@@ -79,9 +79,10 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
   Ctrl-C clears). `?!` starts a fresh conversation. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
-- `llmsh` (inside a session) shows the roles and whether they answer; `llmsh chat <provider/alias>`,
-  `llmsh complete <..>` switch a role for this session, `llmsh on|off` toggles model suggestions,
-  `llmsh config` puts `${EDITOR:-vi} ~/.config/llmsh/config.yaml` in the line. `llmsh status` and
+- `ai` (inside a session; claimed only if the shell has no `ai` of its own: alias, function, builtin or
+  PATH executable) and its always-available long form `llmsh` show the roles and whether they answer;
+  `ai chat <provider/alias>`, `ai complete <..>` switch a role for this session, `ai on|off` toggles model
+  suggestions, `ai config` puts `${EDITOR:-vi} ~/.config/llmsh/config.yaml` in the line. `llmsh status` and
   `llmsh config` also work as CLI commands; any other arguments go to bash. Tab completes them.
 - First start without a config probes ollama (`:11434`), LM Studio (`:1234`), llama.cpp `llama-server` (`:8080`) and `$OPENAI_API_KEY`
   (override URLs for tests with `LLMSH_PROBE_OLLAMA`, `LLMSH_PROBE_LMSTUDIO`, `LLMSH_PROBE_LLAMACPP`, `LLMSH_OPENAI_URL`),
@@ -90,6 +91,10 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   a worker asks for the continuation (cwd, last 5 commands, `ls` names; `max_tokens` 48, stop `\n`). Stale answers are
   dropped, results cached per line prefix, 3 failures in a row pause requests for 60 s. `→` / Alt-→ accept.
 - Network I/O (crate `crates/llmsh-llm`, blocking `ureq` on worker threads) never runs on the key path.
+
+- A dim `?` sits at the right edge of the input row while editing (hidden when the input gets within 3
+  columns, when it wraps, and with `NO_COLOR`); it is erased on submit. Library: `plugins::RightHint` +
+  `HintText` (host-settable text).
 
 ## License
 

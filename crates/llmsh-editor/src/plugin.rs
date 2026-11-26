@@ -80,6 +80,7 @@ pub struct Decoration {
     pub(crate) lines: Vec<Row>,
     pub(crate) input: Option<(String, usize)>,
     pub(crate) hide_ghost: bool,
+    pub(crate) right: Option<String>,
 }
 
 impl Decoration {
@@ -94,6 +95,14 @@ impl Decoration {
     /// buffer, e.g. a search query.
     pub fn show_input(&mut self, text: &str, cursor: usize) {
         self.input = Some((text.to_owned(), cursor.min(text.len())));
+    }
+
+    /// Transient dim text at the right edge of the input row (like a right
+    /// prompt). It is drawn only when the whole input, ghost included, stays
+    /// on the first row and ends at least 3 columns before it, and never with
+    /// colors off; it is erased when the line is submitted.
+    pub fn right_hint(&mut self, text: &str) {
+        self.right = Some(text.chars().filter(|c| !c.is_control()).collect());
     }
 
     /// Do not draw suggestion text.

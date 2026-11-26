@@ -18,6 +18,8 @@ pub(crate) struct View<'a> {
     /// Pre-formatted rows below the input, separated by `\n`.
     pub extra: &'a [u8],
     pub extra_rows: u16,
+    /// Right-edge hint (see `Decoration::right_hint`).
+    pub right: Option<&'a str>,
     pub theme: &'a Theme,
 }
 
@@ -180,6 +182,15 @@ impl Renderer {
             lay = gl;
         }
         out.extend_from_slice(b"\x1b[J");
+        if let Some(h) = v.right.filter(|h| v.theme.enabled && !h.is_empty()) {
+            let w = usize::from(width);
+            let hw = UnicodeWidthStr::width(h);
+            // last column stays free; keep 3 columns between input and hint
+            if lay.row == 0 && hw + 1 < w && usize::from(lay.col) + 3 + hw < w {
+                let col = w - 1 - hw;
+                let _ = write!(out, "\x1b[{}G\x1b[0;{}m{h}\x1b[0m", col + 1, v.theme.dim);
+            }
+        }
         let mut end_row = lay.row;
         if v.extra_rows > 0 {
             for line in v.extra.split(|&b| b == b'\n') {
@@ -231,6 +242,7 @@ mod tests {
             ghost,
             extra: b"",
             extra_rows: 0,
+            right: None,
             theme: &TH,
         }
     }
@@ -278,6 +290,33 @@ mod tests {
         r.erase(&mut out);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("\x1b[3A\x1b[4G\x1b[J"), "{s:?}");
+    }
+
+    #[test]
+    fn right_hint_only_when_there_is_room() {
+        let draw = |t: &str, hint: Option<&str>, w: u16, th: &Theme| {
+            let mut r = Renderer::default();
+            r.reset(2);
+            let mut out = vec![];
+            let mut v = view(t, t.len(), "");
+            v.right = hint;
+            v.theme = th;
+            r.draw(&mut out, &v, w);
+            String::from_utf8(out).unwrap()
+        };
+        // 20 columns: hint at 0-based column 18 (1-based 19)
+        let s = draw("ls", Some("?"), 20, &TH);
+        assert!(s.contains("\x1b[19G\x1b[0;2m?\x1b[0m"), "{s:?}");
+        // collides (end col 2+14=16, +3 > 18): hidden
+        assert!(!draw(&"a".repeat(14), Some("?"), 20, &TH).contains("\x1b[19G"));
+        // just enough room (end col 2+13=15 -> 15+3 <= 18)
+        assert!(draw(&"a".repeat(13), Some("?"), 20, &TH).contains("\x1b[19G"));
+        // wrapped input: hidden
+        assert!(!draw(&"a".repeat(30), Some("?"), 20, &TH).contains("\x1b[19G"));
+        // no color: nothing
+        let plain = Theme::plain();
+        assert!(!draw("ls", Some("?"), 20, &plain).contains("\x1b[19G"));
+        assert!(!draw("ls", None, 20, &TH).contains("\x1b[19G"));
     }
 
     #[test]

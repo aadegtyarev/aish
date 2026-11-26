@@ -14,7 +14,7 @@ Two layers, both compile-time Rust traits today.
 | `on_buffer_change(ctx)` | line text changed | |
 | `suggest(ctx) -> Option<&str>` | each redraw, cursor at end | ghost text; first plugin (by priority) with a hit wins |
 | `highlight(text, out)` | each redraw | layers; higher priority paints over lower |
-| `decorate(ctx, width, out)` | each redraw | rows below the input, or an alternative input line (search query) |
+| `decorate(ctx, width, out)` | each redraw | rows below the input, an alternative input line (search query), or `right_hint` (transient dim text at the right edge, only if it fits) |
 | `on_submit(ctx, line) -> Submit/Intercept/Edit` | Enter | all plugins consulted; any `Intercept` makes `Event::Intercepted` |
 | `on_delivery(ctx, payload)` | a result arrived through the plugin's `Handle` | only if the line did not change since the request |
 

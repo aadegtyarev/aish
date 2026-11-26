@@ -182,8 +182,10 @@ fn first_run_probe_writes_config_and_says_so_once() {
     cmd.env("LLMSH_PROBE_OLLAMA", m.url())
         .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
     let mut p = spawn(cmd);
-    p.expect("llmsh · chat: ollama/qwen3:32b · complete: ollama/qwen2.5-coder:1.5b · llmsh config — изменить")
-        .unwrap();
+    p.expect(expectrl::Regex(
+        "llmsh · chat: ollama/qwen3:32b · complete: ollama/qwen2.5-coder:1.5b · (ai|llmsh) config — изменить",
+    ))
+    .unwrap();
     p.expect("E> ").unwrap();
     settle();
     let cfg = std::fs::read_to_string(home.path().join(".config/llmsh/config.yaml")).unwrap();
@@ -373,6 +375,114 @@ fn first_run_finds_llama_server() {
         .env("LLMSH_PROBE_LLAMACPP", m.url());
     let mut p = spawn(cmd);
     p.expect("chat: llamacpp/gguf-model-7b").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+/// The sidecar that reports the shell's aliases/functions needs a moment.
+fn sidecar_ready() {
+    std::thread::sleep(Duration::from_millis(2200));
+}
+
+#[test]
+fn ai_is_the_short_command_when_the_shell_has_no_ai() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    sidecar_ready();
+    p.send("ai\r").unwrap();
+    p.expect("chat    mock/m · test · ok ").unwrap();
+    p.expect("подсказки: вкл").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("ai off\r").unwrap();
+    p.expect("подсказки: выкл").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // the long form always works
+    p.send("llmsh on\r").unwrap();
+    p.expect("подсказки: вкл").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // Tab completes subcommands of both
+    p.send("ai conf\t").unwrap();
+    p.expect("config").unwrap();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn users_own_ai_wins_over_the_builtin() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let ai = bin.join("ai");
+    std::fs::write(&ai, "#!/bin/sh\necho real-ai-ran\n").unwrap();
+    std::os::unix::fs::PermissionsExt::set_mode(
+        &mut std::fs::metadata(&ai).unwrap().permissions(),
+        0o755,
+    );
+    std::fs::set_permissions(&ai, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let dir = home.path().join(".config/llmsh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+    std::fs::write(
+        home.path().join(".bashrc"),
+        format!("PS1='E> '\nexport PATH={}:$PATH\n", bin.display()),
+    )
+    .unwrap();
+    std::fs::write(home.path().join("hist"), "").unwrap();
+    let mut cmd = base(&home);
+    // base() rewrites .bashrc: restore ours afterwards
+    std::fs::write(
+        home.path().join(".bashrc"),
+        format!("PS1='E> '\nexport PATH={}:$PATH\n", bin.display()),
+    )
+    .unwrap();
+    cmd.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let mut p = spawn(cmd);
+    p.expect("E> ").unwrap();
+    sidecar_ready();
+    p.send("ai\r").unwrap();
+    p.expect("real-ai-ran").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    // llmsh still works; `?` points at the long form
+    p.send("llmsh\r").unwrap();
+    p.expect("chat    mock/m").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn quiet_marker_is_drawn_at_the_right_edge_and_not_left_in_scrollback() {
+    let home = TempDir::new().unwrap();
+    let m = answering_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo hi").unwrap();
+    // default pty width is 80 columns: hint at 1-based column 79
+    p.expect("\x1b[79G\x1b[0;2m?\x1b[0m").unwrap();
+    p.send("\r").unwrap();
+    let f = p.expect("\x07hi\r\n").unwrap();
+    // the submitted line is redrawn without the marker, erased before bash gets it
+    let tail = String::from_utf8_lossy(f.before()).into_owned();
+    let after_erase = tail.rsplit("\x1b[J").next().unwrap_or("");
+    assert!(
+        after_erase.contains("echo hi") && !after_erase.contains("\x1b[79G"),
+        "{tail:?}"
+    );
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();

@@ -214,7 +214,8 @@ fn model_line_does_not_reach_bash() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? hello\r").unwrap();
-    p.expect("модель не настроена · llmsh config").unwrap();
+    p.expect("модель не настроена · ").unwrap();
+    p.expect(expectrl::Regex("(ai|llmsh) config")).unwrap();
     p.expect("E> ").unwrap();
     settle();
     // A glob stays a shell command.
