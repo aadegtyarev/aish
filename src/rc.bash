@@ -1,61 +1,104 @@
 # llmsh shell integration (generated; do not edit, overwritten on start)
-[[ -f /etc/bash.bashrc ]] && source /etc/bash.bashrc
-[[ -f ~/.bashrc ]] && source ~/.bashrc
+# Written to survive `set -u` in user rc files: every expansion uses ${X-}.
+if [[ -n ${LLMSH_LOGIN-} ]]; then
+  [[ -f /etc/profile ]] && source /etc/profile
+  for __llmsh_f in ~/.bash_profile ~/.bash_login ~/.profile; do
+    if [[ -f $__llmsh_f ]]; then source "$__llmsh_f"; break; fi
+  done
+  unset __llmsh_f LLMSH_LOGIN
+else
+  [[ -f /etc/bash.bashrc ]] && source /etc/bash.bashrc
+  [[ -f ~/.bashrc ]] && source ~/.bashrc
+fi
 
 __llmsh_t0=
 __llmsh_hn=
+__llmsh_q=0
+# 0: no integration (bash < 4.4, no PS0); 1: SECONDS timing; 2: EPOCHREALTIME (5.0+)
+__llmsh_mode=0
+if (( BASH_VERSINFO[0] >= 5 )); then __llmsh_mode=2
+elif (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4 )); then __llmsh_mode=1; fi
+__llmsh_funsub=0
+if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) )); then
+  __llmsh_funsub=1
+fi
 
-# Runs first in PROMPT_COMMAND so that $? is the user's command status.
+# Percent-encode $1 into $__llmsh_enc using bytes (C locale), capped at 8 KiB.
+__llmsh_encode() {
+  local LC_ALL=C s=${1:0:8192} ch i h
+  __llmsh_enc=
+  for (( i = 0; i < ${#s}; i++ )); do
+    ch=${s:i:1}
+    case $ch in
+      [A-Za-z0-9_./=:,@+-]) __llmsh_enc+=$ch ;;
+      *) printf -v h '%%%02X' "'$ch"; __llmsh_enc+=$h ;;
+    esac
+  done
+}
+
+# Runs first in PROMPT_COMMAND so that $1 is the user's command status.
 __llmsh_pre() {
-  local rc=$?
-  if [[ -n $__llmsh_t0 ]]; then
-    local now=${EPOCHREALTIME//[.,]/} h c n re='^[A-Za-z0-9_./ =:,@%+-]*$'
-    local ms=$(( (now - __llmsh_t0) / 1000 ))
+  local rc=${1:-0} h c n now ms dur txt
+  if [[ -n ${__llmsh_t0-} ]]; then
+    if (( __llmsh_mode == 2 )); then now=${EPOCHREALTIME//[.,]/}; else now=$(( SECONDS * 1000000 )); fi
+    ms=$(( (now - __llmsh_t0) / 1000 ))
     __llmsh_t0=
-    h=$(HISTTIMEFORMAT= builtin history 1)
+    if (( __llmsh_funsub )); then
+      eval 'h=${ HISTTIMEFORMAT= builtin history 1; }'
+    else
+      h=$(HISTTIMEFORMAT= builtin history 1)
+    fi
     if [[ $h =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]]; then
       n=${BASH_REMATCH[1]} c=${BASH_REMATCH[2]}
-      if [[ $n != "$__llmsh_hn" ]]; then
+      if [[ $n != "${__llmsh_hn-}" ]]; then
         __llmsh_hn=$n
-        if [[ $c =~ $re ]]; then
-          printf '\e]1337;llmsh;t=%s\a' "$c"
-        else
-          printf '\e]1337;llmsh;b=%s\a' "$(printf %s "$c" | base64 -w0)"
-        fi
+        __llmsh_encode "$c"
+        printf '\e]1337;llmsh;p=%s\a' "$__llmsh_enc"
       fi
     fi
     printf '\e]133;D;%s\a' "$rc"
     if (( rc != 0 || ms > 5000 )); then
-      local dur txt
       if (( ms >= 60000 )); then dur="$((ms / 60000))m$((ms % 60000 / 1000))s"
       else dur="$((ms / 1000)).$((ms % 1000 / 100))s"; fi
       if (( rc != 0 )); then
         txt=$rc; (( ms > 5000 )) && txt+=" · $dur"
-        if [[ -n $NO_COLOR ]]; then printf ' ✗ %s\n' "$txt"
+        if [[ -n ${NO_COLOR-} ]]; then printf ' ✗ %s\n' "$txt"
         else printf ' \e[31m✗\e[0m \e[2m%s\e[0m\n' "$txt"; fi
       else
-        if [[ -n $NO_COLOR ]]; then printf ' ✓ %s\n' "$dur"
+        if [[ -n ${NO_COLOR-} ]]; then printf ' ✓ %s\n' "$dur"
         else printf ' \e[32m✓\e[0m \e[2m%s\e[0m\n' "$dur"; fi
       fi
     fi
   else
     printf '\e]133;D;%s\a' "$rc"
   fi
-  return $rc
+  return "$rc"
 }
 
 # Runs last: cwd + (re)wrap PS1 with A/B marks, even if PROMPT_COMMAND set PS1.
 __llmsh_post() {
   local rc=$?
-  printf '\e]7;file://%s%s\a' "$HOSTNAME" "${PWD// /%20}"
-  [[ $PS1 == *'133;B'* ]] || PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+  printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "${PWD// /%20}"
+  [[ ${PS1-} == *'133;B'* ]] || PS1='\[\e]133;A\a\]'"${PS1-}"'\[\e]133;B\a\]'
   return $rc
 }
 
-if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-  PROMPT_COMMAND=(__llmsh_pre "${PROMPT_COMMAND[@]}" __llmsh_post)
-else
-  PROMPT_COMMAND="__llmsh_pre"$'\n'"${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__llmsh_post"
+if (( __llmsh_mode > 0 )); then
+  __llmsh_h1='__llmsh_q=$?; declare -F __llmsh_pre >/dev/null && __llmsh_pre $__llmsh_q'
+  __llmsh_h2='declare -F __llmsh_post >/dev/null && __llmsh_post'
+  if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+    PROMPT_COMMAND=("$__llmsh_h1" "${PROMPT_COMMAND[@]}" "$__llmsh_h2")
+  else
+    PROMPT_COMMAND="$__llmsh_h1"$'\n'"${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}$__llmsh_h2"
+  fi
+  # C mark + start timestamp (assignment must live in the current shell; the
+  # substring-offset form is the one bash 5.x evaluates there).
+  if (( __llmsh_mode == 2 )); then
+    PS0="${PS0-}"'\e]133;C\a${BASH:$((__llmsh_t0=${EPOCHREALTIME//[.,]/})):0}'
+  else
+    PS0="${PS0-}"'\e]133;C\a${BASH:$((__llmsh_t0=SECONDS*1000000)):0}'
+  fi
+  # Don't leak into nested shells / tmux, which lack our functions.
+  export -n PROMPT_COMMAND PS0
 fi
-# C mark + start timestamp (assignment happens in the current shell).
-PS0="${PS0}"'\e]133;C\a${BASH:$((__llmsh_t0=${EPOCHREALTIME//[.,]/})):0}'
+unset LLMSH __llmsh_h1 __llmsh_h2

@@ -6,7 +6,6 @@ description = "bash wrapper with LLM assistance"
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
 crossterm = "0.28"
 # Direct pty via nix instead of portable-pty: we only target unix, need a plain
 # master fd for a zero-copy blocking read/write loop, and portable-pty's

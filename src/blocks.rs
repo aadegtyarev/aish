@@ -6,10 +6,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime};
 
-use base64::Engine;
 use vte::{Params, Parser, Perform};
 
-use crate::osc::PRIVATE_PREFIX;
+use crate::osc::{OscGuard, PRIVATE_PREFIX};
 
 const HEAD_CAP: usize = 128 * 1024;
 const TAIL_CAP: usize = 128 * 1024;
@@ -211,11 +210,7 @@ impl Perform for Collector {
                 debug_assert!(PRIVATE_PREFIX.ends_with(b"llmsh;"));
                 let payload = payload.join(&b';');
                 let cmd = match payload.split_at_checked(2) {
-                    Some((b"t=", t)) => Some(String::from_utf8_lossy(t).into_owned()),
-                    Some((b"b=", b)) => base64::engine::general_purpose::STANDARD
-                        .decode(b)
-                        .ok()
-                        .map(|v| String::from_utf8_lossy(&v).into_owned()),
+                    Some((b"p=", p)) => Some(percent_decode(&String::from_utf8_lossy(p))),
                     _ => None,
                 };
                 if cmd.is_some() {
@@ -232,6 +227,7 @@ impl Perform for Collector {
 /// Feed raw PTY output; query finished blocks.
 pub struct BlockTracker {
     parser: Parser,
+    guard: OscGuard,
     state: Collector,
 }
 
@@ -239,6 +235,7 @@ impl Default for BlockTracker {
     fn default() -> Self {
         BlockTracker {
             parser: Parser::new(),
+            guard: OscGuard::default(),
             state: Collector::default(),
         }
     }
@@ -246,7 +243,14 @@ impl Default for BlockTracker {
 
 impl BlockTracker {
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.state, bytes);
+        // vte buffers unterminated OSCs without bound; cut them off with CAN.
+        let mut rest = bytes;
+        while let Some(i) = self.guard.advance(rest) {
+            self.parser.advance(&mut self.state, &rest[..=i]);
+            self.parser.advance(&mut self.state, &[0x18]);
+            rest = &rest[i + 1..];
+        }
+        self.parser.advance(&mut self.state, rest);
     }
 
     pub fn blocks(&self) -> &Blocks {
@@ -264,9 +268,9 @@ mod tests {
 
     const STREAM: &[u8] = b"\x1b]7;file://h/tmp/a%20b\x07\x1b]133;A\x07$ \x1b]133;B\x07\
 \x1b]133;C\x07\x1b[1mhi\x1b[0m\r\nline\ttwo\r\n\
-\x1b]1337;llmsh;t=echo hi; x\x07\x1b]133;D;3\x07\
+\x1b]1337;llmsh;p=echo%20hi;%20x\x07\x1b]133;D;3\x07\
 \x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;C\x07out\r\n\
-\x1b]1337;llmsh;b=bHMgLWwgIiTDqSI=\x07\x1b]133;D;0\x07\x1b]133;A\x07$ ";
+\x1b]1337;llmsh;p=ls%20-l%20%22%24%C3%A9%22\x07\x1b]133;D;0\x07\x1b]133;A\x07$ ";
 
     fn check(t: &BlockTracker) {
         let b: Vec<_> = t.blocks().last(10).collect();
@@ -316,6 +320,21 @@ mod tests {
         let o = &t.blocks().last(1).next().unwrap().output;
         assert!(o.len() < 300 * 1024 && o.starts_with("HEAD") && o.ends_with("TAIL"));
         assert!(o.contains("bytes omitted"));
+    }
+
+    #[test]
+    fn unterminated_osc_does_not_swallow_output() {
+        let mut t = BlockTracker::default();
+        t.feed(b"\x1b]133;C\x07\x1b]x");
+        t.feed(&vec![b'a'; 200 * 1024]);
+        t.feed(b"visible\n\x1b]133;D;0\x07");
+        assert!(t
+            .blocks()
+            .last(1)
+            .next()
+            .unwrap()
+            .output
+            .contains("visible"));
     }
 
     #[test]

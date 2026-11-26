@@ -14,6 +14,26 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+/// True for `-llmsh` style argv[0] (login shell).
+pub fn is_login() -> bool {
+    std::env::args_os()
+        .next()
+        .is_some_and(|a| a.to_string_lossy().starts_with('-'))
+}
+
+/// Replace this process with plain bash. Only returns on failure.
+pub fn exec_bash(args: &[std::ffi::OsString], interactive: bool) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new("bash");
+    if is_login() {
+        cmd.arg("-l");
+    }
+    if interactive {
+        cmd.arg("-i");
+    }
+    cmd.args(args).exec()
+}
+
 /// Run the shell under the proxy; returns its exit code.
 pub fn run() -> Result<i32> {
     match config::load() {
@@ -21,23 +41,38 @@ pub fn run() -> Result<i32> {
         Ok(None) => tracing::info!("no config"),
         Err(e) => tracing::warn!("config: {e:#}"),
     }
+    pty::clear_nonblock(0);
+    pty::clear_nonblock(1);
     let rc = shell::install_rc()?;
+    let signals = term::Signals::register()?;
     let mut cmd = Command::new("bash");
     cmd.arg("--rcfile").arg(&rc).arg("-i").env("LLMSH", "1");
+    if is_login() {
+        cmd.env("LLMSH_LOGIN", "1");
+    }
     let (mut child, master) = pty::spawn(cmd, &term::window_size())?;
 
     let raw = term::RawGuard::enter();
     let tracker = Arc::new(Mutex::new(blocks::BlockTracker::default()));
-    term::forward_resizes(&master)?;
-
-    let stdin = pty::dup_std(&std::io::stdin())?;
-    let stdout = pty::dup_std(&std::io::stdout())?;
-    let (m_in, m_out) = (master.try_clone()?, master);
+    let setup = (|| -> Result<_> {
+        let stdin = pty::dup_std(&std::io::stdin())?;
+        let stdout = pty::dup_std(&std::io::stdout())?;
+        Ok((stdin, stdout, master.try_clone()?, master.try_clone()?))
+    })();
+    let (stdin, stdout, m_in, m_sig) = match setup {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
+    signals.watch(m_sig, child.id());
     let is_tty = raw.is_some();
     std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty));
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        pty::pump_output(m_out, stdout, tracker);
+        pty::pump_output(master, stdout, tracker);
         let _ = done_tx.send(());
     });
 

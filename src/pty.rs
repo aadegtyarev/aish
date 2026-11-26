@@ -89,3 +89,15 @@ pub fn dup_std(fd: &impl AsFd) -> Result<File> {
     let owned: OwnedFd = fd.as_fd().try_clone_to_owned()?;
     Ok(File::from(owned))
 }
+
+/// A non-blocking stdin/stdout (inherited file description) would make the
+/// pumps fail with EAGAIN; force blocking mode.
+pub fn clear_nonblock(fd: std::os::fd::RawFd) {
+    use nix::fcntl::OFlag;
+    if let Ok(f) = fcntl(fd, FcntlArg::F_GETFL) {
+        let f = OFlag::from_bits_truncate(f);
+        if f.contains(OFlag::O_NONBLOCK) {
+            let _ = fcntl(fd, FcntlArg::F_SETFL(f - OFlag::O_NONBLOCK));
+        }
+    }
+}

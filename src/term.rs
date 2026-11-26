@@ -1,5 +1,6 @@
 //! Host terminal: raw mode, window size, SIGWINCH.
 
+use std::fs::File;
 use std::io::IsTerminal;
 use std::os::fd::{AsRawFd, RawFd};
 
@@ -56,14 +57,32 @@ pub fn set_window_size(fd: RawFd, ws: &libc::winsize) {
     let _ = unsafe { tiocswinsz(fd, ws) };
 }
 
-/// Propagate SIGWINCH to the pty on a helper thread.
-pub fn forward_resizes(master: &impl AsRawFd) -> std::io::Result<()> {
-    let fd = master.as_raw_fd();
-    let mut sigs = signal_hook::iterator::Signals::new([signal_hook::consts::SIGWINCH])?;
-    std::thread::spawn(move || {
-        for _ in sigs.forever() {
-            set_window_size(fd, &window_size());
-        }
-    });
-    Ok(())
+/// Signals handled by llmsh itself. Register before spawning the shell so none
+/// is lost, then call [`Signals::watch`] once the child exists.
+pub struct Signals(signal_hook::iterator::Signals);
+
+impl Signals {
+    pub fn register() -> std::io::Result<Signals> {
+        use signal_hook::consts::*;
+        signal_hook::iterator::Signals::new([SIGWINCH, SIGTERM, SIGQUIT, SIGHUP]).map(Signals)
+    }
+
+    /// WINCH resizes the pty (and is re-synced once now, closing the race with
+    /// startup); TERM/QUIT/HUP restore the terminal, hang up the shell, exit.
+    pub fn watch(mut self, master: File, child_pid: u32) {
+        std::thread::spawn(move || {
+            use signal_hook::consts::*;
+            set_window_size(master.as_raw_fd(), &window_size());
+            for sig in self.0.forever() {
+                if sig == SIGWINCH {
+                    set_window_size(master.as_raw_fd(), &window_size());
+                    continue;
+                }
+                let _ = crossterm::terminal::disable_raw_mode();
+                // SAFETY: plain kill(2) on our own child.
+                unsafe { libc::kill(child_pid as i32, SIGHUP) };
+                std::process::exit(128 + sig);
+            }
+        });
+    }
 }

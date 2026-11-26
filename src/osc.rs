@@ -9,9 +9,12 @@ enum State {
     Normal,
     /// Matched this many bytes of the prefix.
     Matching(usize),
-    /// Inside a private OSC; bool = previous byte was ESC.
-    Inside(bool),
+    /// Inside a private OSC (bytes so far), previous byte was ESC.
+    Inside(usize, bool),
 }
+
+/// Longest private OSC we will swallow; beyond this it is not ours.
+const MAX_OSC: usize = 64 * 1024;
 
 /// Streaming filter removing private OSCs from forwarded output. Only holds
 /// bytes back while they might still turn out to be the private prefix.
@@ -49,7 +52,7 @@ impl Filter {
                     if b == PRIVATE_PREFIX[n] {
                         i += 1;
                         self.state = if n + 1 == PRIVATE_PREFIX.len() {
-                            State::Inside(false)
+                            State::Inside(0, false)
                         } else {
                             State::Matching(n + 1)
                         };
@@ -59,17 +62,75 @@ impl Filter {
                         self.state = State::Normal;
                     }
                 }
-                State::Inside(esc) => {
+                State::Inside(len, esc) => {
                     let b = input[i];
+                    if esc && b != b'\\' {
+                        // ESC began something new (e.g. the next OSC): re-examine.
+                        self.state = State::Matching(1);
+                        continue;
+                    }
                     i += 1;
-                    self.state = if b == 0x07 || (esc && b == b'\\') {
-                        State::Normal
-                    } else {
-                        State::Inside(b == 0x1b)
+                    self.state = match b {
+                        0x07 | 0x18 | 0x1a => State::Normal,
+                        b'\\' if esc => State::Normal,
+                        _ if len >= MAX_OSC => State::Normal,
+                        _ => State::Inside(len + 1, b == 0x1b),
                     };
                 }
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum G {
+    #[default]
+    Normal,
+    Esc,
+    Osc(usize),
+    OscEsc,
+}
+
+/// Tracks whether a stream is inside an OSC and for how long, so the vte
+/// parser (which buffers OSCs without bound) can be told to give up.
+#[derive(Default)]
+pub struct OscGuard {
+    state: G,
+}
+
+impl OscGuard {
+    /// Scan `bytes`; returns the index of the byte at which an OSC exceeded
+    /// the cap (state is reset, call again with the rest).
+    pub fn advance(&mut self, bytes: &[u8]) -> Option<usize> {
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            self.state = match self.state {
+                G::Normal => {
+                    match bytes[i..].iter().position(|&x| x == 0x1b) {
+                        Some(n) => i += n,
+                        None => return None,
+                    }
+                    G::Esc
+                }
+                G::Esc if b == b']' => G::Osc(0),
+                G::Esc if b == 0x1b => G::Esc,
+                G::Esc => G::Normal,
+                G::Osc(n) => match b {
+                    0x07 | 0x18 | 0x1a => G::Normal,
+                    0x1b => G::OscEsc,
+                    _ if n >= MAX_OSC => {
+                        self.state = G::Normal;
+                        return Some(i);
+                    }
+                    _ => G::Osc(n + 1),
+                },
+                G::OscEsc if b == b']' => G::Osc(0),
+                G::OscEsc => G::Normal,
+            };
+            i += 1;
+        }
+        None
     }
 }
 
@@ -97,6 +158,27 @@ mod tests {
         let s = b"x\x1b]1337;llmsh;t=ls\x07y\x1b]7;file:///\x07z\x1b[1m";
         let chunks: Vec<&[u8]> = s.chunks(1).collect();
         assert_eq!(run(&chunks), b"xy\x1b]7;file:///\x07z\x1b[1m");
+    }
+
+    #[test]
+    fn unterminated_private_osc_is_released() {
+        // CAN, ESC-reexamine and the length cap all end the swallowing.
+        assert_eq!(run(&[b"a\x1b]1337;llmsh;xx\x18b"]), b"ab");
+        assert_eq!(run(&[b"a\x1b]1337;llmsh;xx\x1b[0mb"]), b"a\x1b[0mb");
+        let mut big = b"\x1b]1337;llmsh;".to_vec();
+        big.extend(vec![b'z'; 70 * 1024]);
+        big.extend(b"tail");
+        let out = run(&[&big]);
+        assert!(out.ends_with(b"tail") && out.len() < 70 * 1024);
+    }
+
+    #[test]
+    fn guard_caps_osc() {
+        let mut g = OscGuard::default();
+        assert_eq!(g.advance(b"\x1b]0;title\x07plain"), None);
+        let mut v = b"\x1b]x".to_vec();
+        v.extend(vec![b'a'; MAX_OSC + 10]);
+        assert!(g.advance(&v).is_some());
     }
 
     #[test]

@@ -26,7 +26,7 @@ Config: `$XDG_CONFIG_HOME/llmsh/config.yaml` (optional). Log: `~/.local/state/ll
 - The generated rc sources `/etc/bash.bashrc` and `~/.bashrc`, then wraps `PROMPT_COMMAND`
   (string or array) with a first and a last hook, wraps `PS1` with OSC 133 A/B and sets `PS0`
   to emit C. The first hook sees the real `$?`, emits the command text
-  (`OSC 1337;llmsh;t=<plain>` or `b=<base64>`, stripped before reaching the terminal),
+  (`OSC 1337;llmsh;p=<percent-encoded>`, stripped before reaching the terminal),
   `D;<exit>`, and the status line (` ✗ 101 · 14.2s`, ` ✓ 14.2s` only for exit != 0 or > 5 s).
   OSC 133 and OSC 7 are forwarded as-is.
 - Command text comes from `history 1`; commands skipped by `HISTCONTROL`/`set +o history`
