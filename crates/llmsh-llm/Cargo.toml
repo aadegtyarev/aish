@@ -1,0 +1,16 @@
+[package]
+name = "llmsh-llm"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAI-compatible streaming clients (chat completions, responses) for llmsh"
+license = "MIT"
+publish = false
+
+[features]
+# In-process mock HTTP server for tests of this crate and of llmsh.
+mock = []
+
+[dependencies]
+serde_json = "1"
+# Blocking HTTP on worker threads (no async runtime), rustls for https.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }

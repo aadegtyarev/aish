@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/llmsh-editor"]
+members = [".", "crates/llmsh-editor", "crates/llmsh-llm"]
 resolver = "2"
 
 [package]
