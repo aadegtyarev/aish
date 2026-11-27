@@ -474,11 +474,23 @@ pub struct Term {
     parser: Parser,
 }
 
-/// Wrap `cmd` so that the pty has `cols`x`rows` before aish starts.
-pub fn sized(cmd: Command, cols: u16, rows: u16) -> Command {
+/// Spawn `cmd` on a pty of `cols`x`rows`, set before aish starts. The pty
+/// library sets 80x24 on the master right after the fork, so the child waits
+/// for a flag file that is created once our size is in place.
+pub fn spawn_sized(cmd: Command, cols: u16, rows: u16) -> Session {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let flag = std::env::temp_dir().join(format!(
+        "aish-narrow-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let mut c = Command::new("sh");
     c.arg("-c")
-        .arg(format!("stty cols {cols} rows {rows}; exec \"$0\""))
+        .arg(format!(
+            "i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; rm -f '{}'; exec \"$0\"",
+            flag.display(),
+            flag.display()
+        ))
         .arg(cmd.get_program());
     for a in cmd.get_args() {
         c.arg(a);
@@ -489,7 +501,10 @@ pub fn sized(cmd: Command, cols: u16, rows: u16) -> Command {
             c.env(k, v);
         }
     }
-    c
+    let mut p = Session::spawn(c).unwrap();
+    p.get_process_mut().set_window_size(cols, rows).unwrap();
+    std::fs::write(&flag, "").unwrap();
+    p
 }
 
 impl Term {

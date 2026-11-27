@@ -8,11 +8,21 @@ use std::process::Command;
 use std::time::Duration;
 
 use aish_llm::mock::{self, Mock};
-use common::{sized, Term};
-use expectrl::Session;
+use common::{spawn_sized, Term};
 use tempfile::TempDir;
 
 const W: u16 = 36;
+
+thread_local! {
+    static UTF8: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Every scenario runs in a UTF-8 locale (a phone) and in the C locale. They
+/// differ for readline: in UTF-8 it lets the terminal autowrap a long prompt
+/// (and fills a row exactly with `" \r"`), in C it breaks the rows itself.
+fn utf8() -> bool {
+    UTF8.with(|u| u.get())
+}
 const H: u16 = 20;
 
 fn config(url: &str) -> String {
@@ -39,7 +49,7 @@ fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
         .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
     // (readline only measures wide characters right in a UTF-8 locale; there it
     // also lets the terminal wrap long prompts instead of breaking them itself)
-    if home.path().join("utf8").exists() || std::env::var_os("NARROW_UTF8").is_some() {
+    if utf8() || home.path().join("utf8").exists() {
         cmd.env("LC_ALL", "C.UTF-8");
     }
     let st = home.path().join("state/aish");
@@ -67,7 +77,7 @@ fn start(home: &TempDir, ps1: &str, hist: &str, cols: u16) -> Term {
 }
 
 fn start_rows(home: &TempDir, ps1: &str, hist: &str, cols: u16, rows: u16) -> Term {
-    let p = Session::spawn(sized(command(home, ps1, hist), cols, rows)).unwrap();
+    let p = spawn_sized(command(home, ps1, hist), cols, rows);
     let mut t = Term::new(p, cols, rows);
     let vis = visible(ps1);
     t.wait_for(&vis.trim_end().chars().take(8).collect::<String>());
@@ -152,10 +162,11 @@ fn view_p(t: &Term, ps1: &str, typed: &str, ghost: &str, cur: usize, popup: Opti
     }
     // only bash's own prompt may have been wrapped by the terminal
     let wrapped: Vec<usize> = (0..t.scr.rows).filter(|&y| t.scr.row_wrapped(y)).collect();
-    // (bash breaks an over-long prompt with an explicit CRLF as well)
-    assert_eq!(
-        wrapped,
-        Vec::<usize>::new(),
+    // (a long prompt is wrapped by the terminal in UTF-8, broken by bash in C)
+    // (only rows of the prompt itself, above the row where the input starts)
+    let limit = if utf8() { start / w } else { 0 };
+    assert!(
+        wrapped.iter().all(|&y| y < limit),
         "stray wraps\n{}",
         t.scr.dump()
     );
@@ -166,7 +177,6 @@ fn narrow_prompts() -> Vec<usize> {
     vec![36, 35, 34, 33, 37, 50, 72]
 }
 
-#[test]
 fn long_prompt_typing_ghost_and_editing_stay_intact() {
     let home = TempDir::new().unwrap();
     let hist = "echo history-line-that-is-long-enough\n";
@@ -227,7 +237,6 @@ fn with_dir(home: &TempDir) {
     }
 }
 
-#[test]
 fn tab_pager_across_the_wrap() {
     // (prompt columns, terminal columns, popup rows cut at cols - 4)
     let cases: [(usize, u16, [&str; 4]); 4] = [
@@ -300,7 +309,6 @@ fn tab_pager_across_the_wrap() {
     }
 }
 
-#[test]
 fn ctrl_r_search_across_the_wrap() {
     let home = TempDir::new().unwrap();
     let hist = "echo history-line-that-is-long-enough\nls dd\n";
@@ -335,7 +343,6 @@ fn ctrl_r_search_across_the_wrap() {
     }
 }
 
-#[test]
 fn ghost_longer_than_the_line_wraps_cleanly_and_leaves_no_residue() {
     let long = "echo aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff gggggggggg";
     let home = TempDir::new().unwrap();
@@ -371,7 +378,7 @@ fn ghost_longer_than_the_line_wraps_cleanly_and_leaves_no_residue() {
 // ---- notices -------------------------------------------------------------
 
 fn start_cmd(cmd: Command, cols: u16, wait: &str) -> Term {
-    let p = Session::spawn(sized(cmd, cols, H)).unwrap();
+    let p = spawn_sized(cmd, cols, H);
     let mut t = Term::new(p, cols, H);
     t.wait_for(wait);
     t.pump_for(Duration::from_millis(600));
@@ -403,7 +410,6 @@ fn assert_notice_rows(t: &Term, mark: &str, ps1: &str, rows: usize) {
     assert_eq!(lines.last().unwrap(), ps1.trim_end(), "{}", t.scr.dump());
 }
 
-#[test]
 fn update_notice_is_cut_to_the_width() {
     for cols in [36u16, 20] {
         let home = TempDir::new().unwrap();
@@ -441,7 +447,6 @@ fn update_notice_is_cut_to_the_width() {
     }
 }
 
-#[test]
 fn first_run_line_is_cut_to_the_width() {
     let m = Mock::start(|_, c| {
         mock::json(
@@ -470,7 +475,6 @@ fn first_run_line_is_cut_to_the_width() {
     }
 }
 
-#[test]
 fn job_notice_with_a_long_command_is_one_row() {
     let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
     for (cols, n) in [(36u16, 20usize), (36, 34), (36, 50), (20, 12), (20, 30)] {
@@ -490,9 +494,8 @@ fn job_notice_with_a_long_command_is_one_row() {
         assert!(row.contains('…'), "{row:?}");
         // the prompt is repainted exactly once under the notice
         let k = lines.iter().position(|l| l.contains('✓')).unwrap();
-        for y in k..t.scr.rows {
-            assert!(!t.scr.row_wrapped(y), "row {y} wrapped\n{}", t.scr.dump());
-        }
+        // (the repainted prompt may be autowrapped in UTF-8; the notice is not)
+        assert!(!t.scr.row_wrapped(k), "notice wrapped\n{}", t.scr.dump());
         let tail: Vec<char> = ps1.chars().collect();
         let want: Vec<String> = tail
             .chunks(cols as usize)
@@ -538,7 +541,6 @@ fn answer_mock() -> Mock {
     })
 }
 
-#[test]
 fn question_answer_keeps_the_bar_and_fits_the_width() {
     for (cols, n) in [(36u16, 12usize), (36, 36), (36, 50), (20, 12)] {
         let home = TempDir::new().unwrap();
@@ -611,7 +613,6 @@ fn question_answer_keeps_the_bar_and_fits_the_width() {
 
 // ---- Ctrl-Q overlay ----------------------------------------------------------
 
-#[test]
 fn overlay_header_input_answer_and_footer_fit_and_the_screen_comes_back() {
     let m = Mock::start(|r, c| {
         if r.path.ends_with("/models") {
@@ -685,7 +686,6 @@ fn overlay_header_input_answer_and_footer_fit_and_the_screen_comes_back() {
 
 // ---- SIGWINCH -----------------------------------------------------------------
 
-#[test]
 fn resize_wide_to_narrow_and_back_while_editing_a_long_line() {
     let hist =
         "echo aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff gggggggggg\n";
@@ -728,7 +728,6 @@ fn count_lines(t: &Term, text: &str) -> usize {
         .count()
 }
 
-#[test]
 fn two_line_prompt_keeps_its_first_line_under_notices() {
     let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
     for cols in [80u16, 36] {
@@ -746,7 +745,6 @@ fn two_line_prompt_keeps_its_first_line_under_notices() {
     }
 }
 
-#[test]
 fn two_line_prompt_update_notice() {
     for cols in [80u16, 36] {
         let home = TempDir::new().unwrap();
@@ -773,7 +771,6 @@ fn two_line_prompt_update_notice() {
     }
 }
 
-#[test]
 fn two_line_prompt_answer_reruns_prompt_command() {
     for cols in [80u16, 36] {
         let home = TempDir::new().unwrap();
@@ -813,7 +810,6 @@ fn two_line_prompt_answer_reruns_prompt_command() {
     }
 }
 
-#[test]
 fn stray_background_output_then_a_notice_keeps_the_output() {
     let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
     for (cols, ps1) in [(80u16, TWO_LINE), (36, TWO_LINE), (36, "u@h:~$ ")] {
@@ -845,7 +841,6 @@ fn stray_background_output_then_a_notice_keeps_the_output() {
     }
 }
 
-#[test]
 fn wide_characters_and_colours_in_the_prompt() {
     let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
     // 24 columns, and 40 columns (wraps at 36)
@@ -876,3 +871,32 @@ fn wide_characters_and_colours_in_the_prompt() {
         t.assert_clean();
     }
 }
+
+macro_rules! both {
+    ($($n:ident),* $(,)?) => {
+        mod utf8 {
+            $( #[test] fn $n() { super::UTF8.with(|u| u.set(true)); super::$n() } )*
+        }
+        mod c_locale {
+            $( #[test] fn $n() { super::UTF8.with(|u| u.set(false)); super::$n() } )*
+        }
+    };
+}
+
+both!(
+    long_prompt_typing_ghost_and_editing_stay_intact,
+    tab_pager_across_the_wrap,
+    ctrl_r_search_across_the_wrap,
+    ghost_longer_than_the_line_wraps_cleanly_and_leaves_no_residue,
+    update_notice_is_cut_to_the_width,
+    first_run_line_is_cut_to_the_width,
+    job_notice_with_a_long_command_is_one_row,
+    question_answer_keeps_the_bar_and_fits_the_width,
+    overlay_header_input_answer_and_footer_fit_and_the_screen_comes_back,
+    resize_wide_to_narrow_and_back_while_editing_a_long_line,
+    two_line_prompt_keeps_its_first_line_under_notices,
+    two_line_prompt_update_notice,
+    two_line_prompt_answer_reruns_prompt_command,
+    stray_background_output_then_a_notice_keeps_the_output,
+    wide_characters_and_colours_in_the_prompt
+);

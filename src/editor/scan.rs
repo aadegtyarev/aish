@@ -27,6 +27,9 @@ pub struct Scan {
     /// break (the row count goes on), anything else is a newline of the prompt
     /// string (readline repaints only the text after it).
     lf_rows: Option<u16>,
+    /// A space right after 133;B: readline's trick for a prompt that fills the
+    /// row (`" \r"` moves the cursor to the next row). A CR next cancels it.
+    space_after_b: bool,
     st: St,
     osc: [u8; 64],
     osc_n: usize,
@@ -71,6 +74,7 @@ impl Scan {
             col: 0,
             rows: 0,
             lf_rows: None,
+            space_after_b: false,
             st: St::Ground,
             osc: [0; 64],
             osc_n: 0,
@@ -225,6 +229,9 @@ impl Scan {
     }
 
     fn ground(&mut self, b: u8, width: u16) {
+        if std::mem::take(&mut self.space_after_b) && b != b'\r' {
+            self.printed_after_b = true; // it was real typed-ahead text
+        }
         if let Some(r) = self.lf_rows.take() {
             if b == b'\r' {
                 self.rows = r;
@@ -257,6 +264,11 @@ impl Scan {
             0x08 => self.col = self.col.saturating_sub(1),
             b'\t' => self.col = ((self.col / 8 + 1) * 8).min(width - 1),
             0x00..=0x1f | 0x7f => {}
+            b' ' if self.b_seen && !self.printed_after_b => {
+                self.space_after_b = true;
+                self.adv(1, width);
+                self.printed_after_b = false;
+            }
             0x20..=0x7e => self.adv(1, width),
             0xc2..=0xdf => self.start_utf(b, 2),
             0xe0..=0xef => self.start_utf(b, 3),
@@ -295,6 +307,16 @@ mod tests {
         assert_eq!(s.col, 2);
         s.feed(b"\x1b]133;C\x07", 80);
         assert!(!s.b_seen && s.saw_cd);
+    }
+
+    #[test]
+    fn readline_wrap_trick_after_b_is_not_typed_text() {
+        let mut s = Scan::default();
+        s.feed(b"\x1b]133;A\x07abc \x1b]133;B\x07 \r", 4);
+        assert!(!s.printed_after_b);
+        assert_eq!((s.rows, s.col), (1, 0));
+        s.feed(b"x", 4); // a real key echoed
+        assert!(s.printed_after_b);
     }
 
     #[test]
