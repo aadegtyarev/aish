@@ -14,4 +14,6 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # pty tests (expectrl) allocate their own pty via openpty; no `script` or locale needed.
+      - name: Environment (for PTY test diagnostics)
+        run: bash --version | head -1; locale; echo "TERM=$TERM"; infocmp xterm | head -3 || true
       - run: cargo test --workspace
