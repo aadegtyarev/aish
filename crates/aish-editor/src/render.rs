@@ -25,10 +25,17 @@ pub(crate) struct View<'a> {
 
 #[derive(Default)]
 pub(crate) struct Renderer {
+    /// Column on the first row where the input starts (at the current width).
     pub start_col: u16,
+    /// Offset of the input start in its terminal line: more than the column
+    /// when a resize made the terminal wrap the prompt's row.
+    start_off: u32,
     pub cur_row: u16,
-    cur_hard: u16,
-    cur_cells: u32,
+    /// Lengths of the drawn rows above the cursor row (the first one counts
+    /// from the line start), and the cursor's offset in its own row. Every
+    /// row is ended by us with CR LF, so a resize reflows each one by itself.
+    row_lens: Vec<u32>,
+    cur_off: u32,
     /// End column of the drawn input when it (and nothing else) fits on the
     /// first row; None when it wraps or popups are shown.
     pub first_row_end: Option<u16>,
@@ -37,9 +44,19 @@ pub(crate) struct Renderer {
 struct Lay {
     row: u16,
     col: u16,
-    /// Hard newlines so far, and cells since the last one (for resize math).
-    hard: u16,
-    cells: u32,
+    /// Cells on the first row that lie before `col` 0 (see `Renderer::start_off`).
+    base: u32,
+    /// Length of every finished row.
+    lens: Vec<u32>,
+}
+
+impl Lay {
+    fn end_row(&mut self) {
+        let b = if self.row == 0 { self.base } else { 0 };
+        self.lens.push(b + u32::from(self.col));
+        self.row += 1;
+        self.col = 0;
+    }
 }
 
 fn sgr(out: &mut Vec<u8>, c: Class, t: &Theme) {
@@ -64,10 +81,7 @@ fn emit(out: &mut Vec<u8>, lay: &mut Lay, g: &str, width: u16, rec: Option<&mut 
                 *r = (lay.row, lay.col);
             }
             out.extend_from_slice(b"\x1b[K\r\n");
-            lay.row += 1;
-            lay.col = 0;
-            lay.hard += 1;
-            lay.cells = 0;
+            lay.end_row();
             return;
         }
         _ => {
@@ -82,28 +96,26 @@ fn emit(out: &mut Vec<u8>, lay: &mut Lay, g: &str, width: u16, rec: Option<&mut 
     };
     if w > 0 && lay.col + w > width {
         out.extend_from_slice(b"\x1b[K\r\n");
-        lay.row += 1;
-        lay.col = 0;
+        lay.end_row();
     }
     if let Some(r) = rec {
         *r = (lay.row, lay.col);
     }
     out.extend_from_slice(bytes);
     lay.col += w;
-    lay.cells += u32::from(w);
     if lay.col >= width {
         out.extend_from_slice(b"\r\n");
-        lay.row += 1;
-        lay.col = 0;
+        lay.end_row();
     }
 }
 
 impl Renderer {
     pub(crate) fn reset(&mut self, start_col: u16) {
         self.start_col = start_col;
+        self.start_off = u32::from(start_col);
         self.cur_row = 0;
-        self.cur_hard = 0;
-        self.cur_cells = u32::from(start_col);
+        self.row_lens.clear();
+        self.cur_off = u32::from(start_col);
     }
 
     fn to_origin(&self, out: &mut Vec<u8>) {
@@ -119,23 +131,25 @@ impl Renderer {
         self.to_origin(out);
         out.extend_from_slice(b"\x1b[J\x1b[?2026l");
         self.cur_row = 0;
-        self.cur_hard = 0;
-        self.cur_cells = u32::from(self.start_col);
+        self.row_lens.clear();
+        self.cur_off = self.start_off;
     }
 
     pub(crate) fn draw(&mut self, out: &mut Vec<u8>, v: &View, width: u16) {
         let width = width.max(4);
-        self.start_col = self.start_col.min(width - 1);
+        // (a prompt wider than the terminal after a resize starts mid-row)
+        self.start_col = (self.start_off % u32::from(width)) as u16;
+        let base = self.start_off - u32::from(self.start_col);
         out.extend_from_slice(b"\x1b[?2026h");
         self.to_origin(out);
         let mut lay = Lay {
             row: 0,
             col: self.start_col,
-            hard: 0,
-            cells: u32::from(self.start_col),
+            base,
+            lens: Vec::new(),
         };
         let mut cur = (0u16, self.start_col);
-        let mut cur_hc = (0u16, u32::from(self.start_col));
+        let mut cur_lens = 0;
         let mut cur_set = false;
         let mut si = 0;
         let mut style = Class::Default;
@@ -156,7 +170,7 @@ impl Renderer {
             let rec = (i == v.cursor).then_some(&mut cur);
             if rec.is_some() {
                 cur_set = true;
-                cur_hc = (lay.hard, lay.cells);
+                cur_lens = lay.lens.len();
             }
             emit(out, &mut lay, g, width, rec);
         }
@@ -165,21 +179,22 @@ impl Renderer {
         }
         if !cur_set {
             cur = (lay.row, lay.col);
-            cur_hc = (lay.hard, lay.cells);
+            cur_lens = lay.lens.len();
         }
         if v.theme.enabled && !v.ghost.is_empty() {
             let _ = write!(out, "\x1b[0;{}m", v.theme.ghost);
             let mut gl = Lay {
                 row: lay.row,
                 col: lay.col,
-                hard: lay.hard,
-                cells: lay.cells,
+                base,
+                lens: Vec::new(),
             };
             for g in v.ghost.graphemes(true) {
                 emit(out, &mut gl, g, width, None);
             }
             out.extend_from_slice(b"\x1b[0m");
-            lay = gl;
+            lay.row = gl.row;
+            lay.col = gl.col;
         }
         out.extend_from_slice(b"\x1b[J");
         if let Some(h) = v.right.filter(|h| v.theme.enabled && !h.is_empty()) {
@@ -206,25 +221,40 @@ impl Renderer {
         let _ = write!(out, "\x1b[{}G", cur.1 + 1);
         out.extend_from_slice(b"\x1b[?2026l");
         self.cur_row = cur.0;
-        self.cur_hard = cur_hc.0;
-        self.cur_cells = cur_hc.1;
+        lay.lens.truncate(cur_lens);
+        self.row_lens = lay.lens;
+        self.cur_off = u32::from(cur.1) + if cur.0 == 0 { base } else { 0 };
         self.first_row_end = (lay.row == 0 && v.extra_rows == 0).then_some(lay.col);
     }
 
-    /// Erase after the terminal was resized to `width` columns: assume the
-    /// terminal reflowed the wrapped text, so the cursor row is computed with
-    /// the new width instead of the one we drew with.
-    pub(crate) fn erase_resized(&mut self, out: &mut Vec<u8>, width: u16) {
+    /// Erase after the terminal was resized to `width` columns. The terminal
+    /// reflowed every row we drew (each ends in CR LF, so rows are not joined,
+    /// only split or, for a prompt it had split before, rejoined): the rows
+    /// between the input start and the cursor are counted with the new width.
+    pub(crate) fn erase_resized(&mut self, out: &mut Vec<u8>, width: u16) -> bool {
         let w = u32::from(width.max(1));
-        let row = u32::from(self.cur_hard) + self.cur_cells / w;
+        let rows = |len: u32| len.div_ceil(w).max(1);
+        let cursor_row: u32 =
+            self.row_lens.iter().map(|&l| rows(l)).sum::<u32>() + self.cur_off / w;
+        let up = cursor_row.saturating_sub(self.start_off / w);
         out.extend_from_slice(b"\x1b[?2026h");
-        if row > 0 {
-            let _ = write!(out, "\x1b[{row}A");
+        if up > 0 {
+            let _ = write!(out, "\x1b[{up}A");
         }
-        let _ = write!(out, "\x1b[{}G\x1b[J\x1b[?2026l", self.start_col + 1);
+        let col = (self.start_off % w) as u16;
+        let _ = write!(out, "\x1b[{}G\x1b[J", col + 1);
+        // A prompt the terminal wrapped: readline repaints it from the row the
+        // cursor is on (it clears that row only), so wait for it at the top.
+        let top = self.start_off / w;
+        if top > 0 {
+            let _ = write!(out, "\x1b[{top}A\x1b[1G");
+        }
+        out.extend_from_slice(b"\x1b[?2026l");
+        self.start_col = col;
         self.cur_row = 0;
-        self.cur_hard = 0;
-        self.cur_cells = u32::from(self.start_col);
+        self.row_lens.clear();
+        self.cur_off = self.start_off;
+        top > 0
     }
 }
 

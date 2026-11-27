@@ -613,13 +613,17 @@ impl Editor {
 
     /// Erase after the terminal was resized to `width` columns (assumes the
     /// terminal reflowed what we had drawn).
-    pub fn erase_resized(&mut self, out: &mut dyn Write, width: u16) -> std::io::Result<()> {
+    ///
+    /// Returns true when the cursor was left at the top of a prompt that the
+    /// terminal wrapped: the shell is expected to repaint it, and drawing
+    /// before that would land on the wrong row.
+    pub fn erase_resized(&mut self, out: &mut dyn Write, width: u16) -> std::io::Result<bool> {
         let mut buf = std::mem::take(&mut self.scratch);
         buf.clear();
-        self.rend.erase_resized(&mut buf, width);
+        let top = self.rend.erase_resized(&mut buf, width);
         let r = out.write_all(&buf);
         self.scratch = buf;
-        r
+        r.map(|()| top)
     }
 
     /// After a [`draw`](Editor::draw): the column where the input (with

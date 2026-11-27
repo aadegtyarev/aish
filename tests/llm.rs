@@ -193,7 +193,8 @@ fn first_run_probe_writes_config_and_says_so_once() {
         .env("AISH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
     let mut p = spawn(cmd);
     p.expect(expectrl::Regex(
-        "aish · chat: ollama/qwen3:32b · complete: ollama/qwen2.5-coder:1.5b · (ai|aish) config — изменить",
+        // (the line is cut to the 80-column pty, the rest is not asserted)
+        "aish · chat: ollama/qwen3:32b · complete: ollama/qwen2.5-coder:1.5b · ",
     ))
     .unwrap();
     p.expect("E> ").unwrap();

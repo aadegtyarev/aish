@@ -52,6 +52,26 @@ pub fn sanitize(s: &str) -> String {
     s.chars().filter(|&c| !is_bad(c)).collect()
 }
 
+/// One line cut to at most `cols - 1` columns (the last one stays free, so the
+/// terminal never wraps it), ending in `…` when something was cut.
+pub fn fit_line(s: &str, cols: usize) -> String {
+    let room = cols.saturating_sub(1).max(1);
+    if s.chars().map(width).sum::<usize>() <= room {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        if used + width(c) + 1 > room {
+            break;
+        }
+        used += width(c);
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
 pub(crate) fn unsafe_cmd(cmd: &str) -> bool {
     cmd.chars().any(|c| is_bad(c) && c != '\n' && c != '\t')
 }
@@ -444,6 +464,14 @@ fn parse_inline(s: &str, all_bold: bool) -> Vec<(char, Sty)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fit_line_cuts_to_the_width_with_an_ellipsis() {
+        assert_eq!(super::fit_line("abc", 4), "abc");
+        assert_eq!(super::fit_line("abcd", 4), "ab…");
+        assert_eq!(super::fit_line("ждёмждём", 6), "ждём…");
+        assert_eq!(super::fit_line("日本語日本語", 6), "日本…");
+    }
+
     use super::*;
 
     fn run(parts: &[&str], color: bool, cols: u16) -> (String, Option<String>) {

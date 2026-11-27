@@ -566,14 +566,33 @@ pub fn header(cmd: Option<&str>, lines: usize, alt: bool, cols: usize) -> String
     } else {
         format!("последние {lines} строк")
     };
-    let max = cols.saturating_sub(2 + 3 + meta.chars().count()).max(8);
+    let max = cols.saturating_sub(1 + 2 + 3 + meta.chars().count()).max(4);
     let c = if one.chars().count() > max {
         let t: String = one.chars().take(max - 1).collect();
         format!("{t}…")
     } else {
         one
     };
-    format!("  {c} · {meta}")
+    // narrow screens: never wider than the line
+    crate::llm::render::fit_line(&format!("  {c} · {meta}"), cols)
+}
+
+/// The key hints, the longest variant that fits one row of `cols` columns.
+pub fn footer_text(insert: bool, cols: usize) -> &'static str {
+    let tiers: &[&str] = if insert {
+        &[
+            "  Enter — вставить · Esc — закрыть",
+            "  Enter — вставить · Esc",
+            "  Enter · Esc",
+        ]
+    } else {
+        &["  Esc — закрыть", "  Esc"]
+    };
+    tiers
+        .iter()
+        .copied()
+        .find(|t| t.chars().count() < cols)
+        .unwrap_or(tiers[tiers.len() - 1])
 }
 
 impl Overlay {
@@ -617,11 +636,7 @@ impl Overlay {
     }
 
     fn footer(&mut self, insert: bool) {
-        let t = if insert {
-            "  Enter — вставить · Esc — закрыть"
-        } else {
-            "  Esc — закрыть"
-        };
+        let t = footer_text(insert, cols() as usize);
         let d = self.dim(t);
         self.w(format!("\r\n{d}").as_bytes());
     }
@@ -1024,6 +1039,14 @@ mod tests {
         assert_eq!(toggle_prefix("? ", 2), ("".into(), 0));
         assert_eq!(toggle_prefix("?", 1), ("".into(), 0));
         assert_eq!(toggle_prefix("?x", 2), ("? ?x".into(), 4)); // a glob stays a command
+    }
+
+    #[test]
+    fn footer_shortens_to_fit() {
+        assert_eq!(footer_text(true, 80), "  Enter — вставить · Esc — закрыть");
+        assert_eq!(footer_text(true, 30), "  Enter — вставить · Esc");
+        assert_eq!(footer_text(true, 20), "  Enter · Esc");
+        assert_eq!(footer_text(false, 10), "  Esc");
     }
 
     #[test]

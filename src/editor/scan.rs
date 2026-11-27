@@ -20,6 +20,9 @@ pub const MOUSE_MODES: [u16; 5] = [1000, 1002, 1003, 1006, 1015];
 
 pub struct Scan {
     pub col: u16,
+    /// Rows the cursor went down since the last prompt mark (a prompt wider
+    /// than the terminal, or one with newlines, spans several rows).
+    pub rows: u16,
     st: St,
     osc: [u8; 64],
     osc_n: usize,
@@ -62,6 +65,7 @@ impl Scan {
         Scan {
             nonce,
             col: 0,
+            rows: 0,
             st: St::Ground,
             osc: [0; 64],
             osc_n: 0,
@@ -181,6 +185,7 @@ impl Scan {
         if ours && o.len() >= 5 && &o[..4] == b"133;" && (o.len() == 5 || o[5] == b';') {
             match o[4] {
                 b'A' => {
+                    self.rows = 0;
                     self.b_seen = false;
                     self.saw_a = true;
                 }
@@ -207,6 +212,7 @@ impl Scan {
             self.printed_after_b = true;
         }
         if self.col + w > width {
+            self.rows = self.rows.saturating_add(1);
             self.col = w;
         } else {
             self.col += w;
@@ -234,7 +240,7 @@ impl Scan {
         match b {
             0x1b => self.st = St::Esc,
             b'\r' => self.col = 0,
-            b'\n' | 0x0b | 0x0c => {}
+            b'\n' | 0x0b | 0x0c => self.rows = self.rows.saturating_add(1),
             0x08 => self.col = self.col.saturating_sub(1),
             b'\t' => self.col = ((self.col / 8 + 1) * 8).min(width - 1),
             0x00..=0x1f | 0x7f => {}
@@ -276,6 +282,18 @@ mod tests {
         assert_eq!(s.col, 2);
         s.feed(b"\x1b]133;C\x07", 80);
         assert!(!s.b_seen && s.saw_cd);
+    }
+
+    #[test]
+    fn prompt_rows_count_newlines_and_wraps() {
+        let mut s = Scan::default();
+        s.feed(b"\x1b]133;A\x07", 10);
+        s.feed(b"0123456789ab", 10);
+        assert_eq!((s.rows, s.col), (1, 2));
+        s.feed(b"\r\n\rxy", 10);
+        assert_eq!((s.rows, s.col), (2, 2));
+        s.feed(b"\x1b]133;A\x07", 10);
+        assert_eq!(s.rows, 0);
     }
 
     #[test]

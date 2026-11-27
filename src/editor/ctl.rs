@@ -432,10 +432,20 @@ impl Controller {
             }
             if let Some(n) = notice {
                 let n = n.replace("{cmd}", &self.llm.command_label());
+                let n = crate::llm::render::fit_line(&n, width() as usize);
                 text.push_str(&format!("{a}{n}{b}\r\n"));
             }
-            let _ = write!(self.stdout, "\r\x1b[2K{text}");
+            // A prompt of several rows: go to its top, and leave as many rows
+            // below the notice as readline will clear when it repaints.
+            let up = self.scan.rows;
+            let mut pre = String::from("\r");
+            if up > 0 {
+                pre.push_str(&format!("\x1b[{up}A"));
+            }
+            let pad = "\r\n".repeat(usize::from(up));
+            let _ = write!(self.stdout, "{pre}\x1b[J{text}{pad}");
             self.scan.col = 0;
+            self.scan.rows = 0;
             self.scan.b_seen = false;
             self.send(REDRAW_KEY);
             return;
@@ -614,7 +624,20 @@ impl Controller {
             // prints a fresh prompt, where the editor takes over again.
             self.task = None;
             self.pending_prefill = done;
-            self.send(b"\r");
+            let up = self.scan.rows;
+            if up > 0 {
+                // A prompt of several rows (long, or with newlines): on Enter
+                // readline would go up and repaint it over the answer's last
+                // row. Ask for a repaint below instead, with the rows it
+                // clears above the new prompt left blank.
+                let pad = "\r\n".repeat(usize::from(up) + 1);
+                let _ = self.stdout.write_all(pad.as_bytes());
+                self.scan.col = 0;
+                self.scan.b_seen = false;
+                self.send(REDRAW_KEY);
+            } else {
+                self.send(b"\r");
+            }
         }
         if !self.prompt {
             return;
@@ -739,12 +762,16 @@ impl Controller {
     /// Terminal resized: bash gets the new size via `apply`; we erase before
     /// and redraw after so the region is consistent with what the terminal shows.
     pub fn resize(&mut self, apply: impl FnOnce()) {
+        let mut wait_for_bash = false;
         if self.prompt {
             // The terminal already reflowed our rows: erase with the new width.
-            let _ = self.ed.erase_resized(&mut self.stdout, width());
+            wait_for_bash = self
+                .ed
+                .erase_resized(&mut self.stdout, width())
+                .unwrap_or(false);
         }
         apply();
-        if self.prompt {
+        if self.prompt && !wait_for_bash {
             self.draw();
         }
         if self.gate.is_open() {
