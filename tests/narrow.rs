@@ -49,8 +49,12 @@ fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
         .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
     // (readline only measures wide characters right in a UTF-8 locale; there it
     // also lets the terminal wrap long prompts instead of breaking them itself)
+    // (explicit locale and no inputrc: nothing of the runner's setup may leak in)
+    cmd.env("INPUTRC", "/dev/null");
     if utf8() || home.path().join("utf8").exists() {
         cmd.env("LC_ALL", "C.UTF-8");
+    } else {
+        cmd.env("LC_ALL", "C");
     }
     let st = home.path().join("state/aish");
     std::fs::create_dir_all(&st).unwrap();
@@ -162,9 +166,9 @@ fn view_p(t: &Term, ps1: &str, typed: &str, ghost: &str, cur: usize, popup: Opti
     }
     // only bash's own prompt may have been wrapped by the terminal
     let wrapped: Vec<usize> = (0..t.scr.rows).filter(|&y| t.scr.row_wrapped(y)).collect();
-    // (a long prompt is wrapped by the terminal in UTF-8, broken by bash in C)
+    // (a long prompt is wrapped by the terminal or broken by readline itself, depending on the readline build and locale)
     // (only rows of the prompt itself, above the row where the input starts)
-    let limit = if utf8() { start / w } else { 0 };
+    let limit = start / w;
     assert!(
         wrapped.iter().all(|&y| y < limit),
         "stray wraps\n{}",
