@@ -9,6 +9,13 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Fixed
+- Narrow terminals (phones, ~36 columns): a prompt that exactly fills the row
+  no longer disables ghost text, the marker, Ctrl-R, Tab and notices (UTF-8).
+- Notices, the first-run line and the Ctrl-Q overlay are cut to the width;
+  multi-row and two-line prompts keep their rows, and a `?` answer is no
+  longer overwritten by the repainted prompt; cleaner redraw after a resize.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added
