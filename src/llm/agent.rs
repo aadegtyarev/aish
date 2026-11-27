@@ -633,10 +633,14 @@ pub fn drive(
 ) -> Option<String> {
     let mut use_tools = t.tools;
     let web = llm.config().and_then(|c| Web::from_config(&c));
-    let (offer_search, offer_read) = web
-        .as_ref()
-        .map_or((false, false), |w| w.offers(t.native_search));
-    let web_note = offer_search || offer_read || (t.native_search && web.is_some());
+    // native search needs `provider` in the search chain
+    let native = t.native_search
+        && web
+            .as_ref()
+            .is_some_and(|w| w.search.contains(&web::Backend::Provider));
+    let mut native_on = native;
+    let (mut offer_search, mut offer_read) =
+        web.as_ref().map_or((false, false), |w| w.offers(native));
     let env = Env {
         llm,
         tracker,
@@ -665,7 +669,7 @@ pub fn drive(
                 Vec::new()
             })
             .collect(),
-            native_search: t.native_search && web.is_some(),
+            native_search: native_on && use_tools,
             ..Request::chat(
                 format!(
                     "{}{}",
@@ -674,7 +678,11 @@ pub fn drive(
                         (true, false) => format!("{SYSTEM}{AGENT_GUIDE}"),
                         (false, false) => SYSTEM.to_owned(),
                     },
-                    if web_note { WEB_GUIDE } else { "" }
+                    if use_tools && (offer_search || offer_read) {
+                        WEB_GUIDE
+                    } else {
+                        ""
+                    }
                 ),
                 masked_history(&all, t.local),
             )
@@ -709,6 +717,15 @@ pub fn drive(
                 m.contains("tool") || m.contains("function")
             } =>
             {
+                if native_on {
+                    // maybe only the built-in search is refused: try without it first
+                    tracing::warn!("model rejects native search: {message}");
+                    native_on = false;
+                    // our own web_search takes over
+                    (offer_search, offer_read) =
+                        web.as_ref().map_or((false, false), |w| w.offers(false));
+                    continue;
+                }
                 tracing::warn!("model rejects tools: {message}");
                 llm.mark_no_tools(&t.label);
                 use_tools = false;

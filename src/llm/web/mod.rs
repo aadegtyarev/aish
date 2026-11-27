@@ -211,6 +211,12 @@ fn cancellable<T: Send + 'static>(
 
 /// The text handed to the model: capped, marked as untrusted data.
 fn wrap(what: &str, backend: &str, body: &str) -> String {
+    // no control characters (C0/C1 except newline and tab) reach the model
+    let body: String = body
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect();
+    let body = body.as_str();
     let total = body.chars().count();
     let mut b: String = body.chars().take(RESULT_CHARS).collect();
     if total > RESULT_CHARS {
@@ -284,15 +290,45 @@ pub fn search(web: &Web, query: &str, cancel: &AtomicBool) -> Result<Outcome, St
     })
 }
 
+/// May this URL go to an external reader? Not private literals or internal names.
+fn jina_ok(u: &url::Url) -> bool {
+    match u.host() {
+        Some(url::Host::Ipv4(a)) => ssrf::is_public_ip(a.into()),
+        Some(url::Host::Ipv6(a)) => ssrf::is_public_ip(a.into()),
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d.contains('.')
+                && ![
+                    "local",
+                    "internal",
+                    "lan",
+                    "corp",
+                    "localhost",
+                    "home",
+                    "intranet",
+                ]
+                .iter()
+                .any(|t| d.ends_with(&format!(".{t}")))
+        }
+        None => false,
+    }
+}
+
 pub fn read(web: &Web, url: &str, cancel: &AtomicBool) -> Result<Outcome, String> {
     let url = url.trim();
     // a mangled URL must not be fetched
     if mask(url) != url {
         return Err("refused: the URL contains a secret".into());
     }
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    let mut parsed = url::Url::parse(url).map_err(|_| "invalid URL".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
         return Err("only http and https URLs are allowed".into());
     }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("refused: the URL contains credentials".into());
+    }
+    parsed.set_fragment(None);
+    let url = parsed.as_str();
     let mut errs: Vec<String> = Vec::new();
     let mut weak: Option<Outcome> = None;
     for &b in &web.read {
@@ -305,6 +341,15 @@ pub fn read(web: &Web, url: &str, cancel: &AtomicBool) -> Result<Outcome, String
                     .map(|p| (p.text, p.weak))
             }
             Backend::Jina => {
+                let exempt = format!(
+                    "{}:{}",
+                    parsed.host_str().unwrap_or(""),
+                    parsed.port_or_known_default().unwrap_or(0)
+                );
+                if !jina_ok(&parsed) && !web.allow_private.contains(&exempt) {
+                    errs.push("jina: not sent (looks like a private host)".into());
+                    continue;
+                }
                 let (base, key, u) = (web.jina_url.clone(), web.jina_key.clone(), url.to_owned());
                 cancellable(cancel, move || jina::read(&base, key.as_deref(), &u))
                     .ok_or_else(|| "cancelled".to_owned())
@@ -332,6 +377,10 @@ pub fn read(web: &Web, url: &str, cancel: &AtomicBool) -> Result<Outcome, String
                 }
             }
             Err(e) if e == "cancelled" => return Err(e),
+            // a private target must not be handed to a third party either
+            Err(e) if b == Backend::Direct && e.starts_with("blocked") => {
+                return Err(format!("direct: {e}"))
+            }
             Err(e) => errs.push(format!("{}: {e}", b.name())),
         }
     }

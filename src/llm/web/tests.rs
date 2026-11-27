@@ -369,3 +369,56 @@ fn cancel_aborts_a_stalled_request_promptly() {
     assert_eq!(e, "cancelled");
     assert!(t.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+fn private_direct_refusal_stops_the_chain_and_jina_skips_internal_hosts() {
+    let jina = html_mock("never");
+    let mut w = web(&[("jina", &jina)]);
+    w.allow_private.clear();
+    let cancel = AtomicBool::new(false);
+    let e = read(&w, "http://127.0.0.1:9/", &cancel).err().unwrap();
+    assert!(e.contains("blocked"), "{e}");
+    assert!(jina.requests().is_empty(), "private URL never forwarded");
+    for u in [
+        "http://10.0.0.1/",
+        "http://[::1]/",
+        "http://nas/",
+        "http://x.local/",
+        "http://a.internal/",
+        "http://b.lan/",
+        "http://c.corp/",
+    ] {
+        assert!(!jina_ok(&url::Url::parse(u).unwrap()), "{u}");
+    }
+    assert!(jina_ok(&url::Url::parse("https://example.com/").unwrap()));
+}
+
+#[test]
+fn credentials_refused_and_fragment_stripped() {
+    let m = html_mock("<p>x</p>");
+    let w = web(&[("", &m)]);
+    let cancel = AtomicBool::new(false);
+    let e = read(
+        &w,
+        &format!("http://user:pw@127.0.0.1:{}/", m.port),
+        &cancel,
+    )
+    .err()
+    .unwrap();
+    assert!(e.contains("refused"), "{e}");
+    let e = read(&w, &format!("http://user@127.0.0.1:{}/", m.port), &cancel)
+        .err()
+        .unwrap();
+    assert!(e.contains("refused"), "{e}");
+    assert!(m.requests().is_empty());
+    let _ = read(&w, &format!("http://127.0.0.1:{}/p#frag", m.port), &cancel);
+    assert_eq!(m.requests()[0].path, "/p");
+}
+
+#[test]
+fn control_chars_are_stripped_and_percent_decoding_edges() {
+    let t = wrap("x", "y", "a\u{1b}[31mb\u{85}c\td\ne\u{7}");
+    assert!(t.ends_with("a[31mbc\td\ne"), "{t:?}");
+    assert_eq!(html::url_decode("a%41%4"), "aA%4");
+    assert_eq!(html::url_decode("%41"), "A");
+}

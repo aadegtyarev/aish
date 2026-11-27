@@ -1489,3 +1489,66 @@ fn web_off_sends_no_web_tools_and_overlay_keeps_web_but_not_run() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+#[test]
+fn native_search_rejection_retries_without_it_keeping_function_tools() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|r, c| {
+        if r.body.contains(r#""type":"web_search""#) {
+            mock::json(
+                c,
+                400,
+                r#"{"error":{"message":"tool web_search is not supported"}}"#,
+            );
+        } else {
+            mock::resp_stream(c, &["plain-ok\n"], Duration::ZERO);
+        }
+    });
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = config_kind(&m.url(), "responses").replace("{id: test}", "{id: test, web: native}");
+    std::fs::write(dir.join("config.yaml"), cfg).unwrap();
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? привет\r").unwrap();
+    p.expect("plain-ok").unwrap();
+    p.expect("E> ").unwrap();
+    let r = m.requests();
+    assert_eq!(r.len(), 2);
+    assert!(
+        r[1].body.contains(r#""name":"run""#) && r[1].body.contains(r#""name":"web_search""#),
+        "{}",
+        r[1].body
+    );
+    assert!(!r[1].body.contains(r#""type":"web_search""#));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn native_search_needs_provider_in_the_search_chain() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|_, c| mock::resp_stream(c, &["ok\n"], Duration::ZERO));
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = config_kind(&m.url(), "responses").replace("{id: test}", "{id: test, web: native}");
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("{cfg}web: {{search: [duckduckgo]}}\n"),
+    )
+    .unwrap();
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? привет\r").unwrap();
+    p.expect("ok").unwrap();
+    p.expect("E> ").unwrap();
+    let b = m.requests()[0].body.clone();
+    assert!(
+        !b.contains(r#""type":"web_search""#) && b.contains(r#""name":"web_search""#),
+        "{b}"
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
