@@ -42,7 +42,11 @@ gnupghome=$(mktemp -d)
 trap 'rm -rf "$gnupghome"' EXIT
 chmod 700 "$gnupghome"
 export GNUPGHOME=$gnupghome
-printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --quiet --import
+# Tolerate a key pasted through a web form: CRLF, indentation, trailing
+# spaces, and a lost blank line after the BEGIN header all break gpg's armor parser.
+printf '%s\n' "$APT_SIGNING_KEY" | tr -d '\r' |
+  sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF { print } /^-----BEGIN /{ print "" }' |
+  gpg --batch --quiet --import
 fpr=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
 sign=(gpg --batch --yes --pinentry-mode loopback --passphrase '' -u "$fpr")
 "${sign[@]}" --clearsign -o dists/stable/InRelease dists/stable/Release

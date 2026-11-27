@@ -1,0 +1,53 @@
+# Publish the debs of a GitHub release into the signed apt repository on
+# GitHub Pages (branch gh-pages). Called by release.yml; can also be run by
+# hand for an existing tag (Actions → apt → Run workflow).
+name: apt
+on:
+  workflow_call:
+    inputs:
+      tag: { type: string, required: true }
+  workflow_dispatch:
+    inputs:
+      tag: { description: "Release tag, e.g. v0.2.0", type: string, required: true }
+permissions:
+  contents: write
+concurrency:
+  group: apt
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish apt repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::warning::APT_SIGNING_KEY is not set, apt repository not updated"
+            exit 0
+          fi
+          mkdir -p dist
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.deb' -D dist
+          git init -q pages
+          # The token is passed per command (never stored in pages/.git/config).
+          auth="http.extraheader=Authorization: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -C pages remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          if git -C pages -c "$auth" fetch -q --depth 1 origin gh-pages; then
+            git -C pages checkout -q -B gh-pages FETCH_HEAD
+          else
+            git -C pages checkout -q --orphan gh-pages
+          fi
+          docker run --rm -e APT_SIGNING_KEY -v "$PWD":/w -w /w debian:bookworm bash -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq apt-utils gnupg >/dev/null
+            build/apt-repo.sh pages dist/*.deb
+            chown -R "$0" pages' "$(id -u):$(id -g)"
+          cd pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "apt repo: ${TAG}" || { echo "nothing to publish"; exit 0; }
+          git -c "$auth" push origin HEAD:gh-pages
