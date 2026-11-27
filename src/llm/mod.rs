@@ -17,6 +17,7 @@ pub mod suggest;
 pub mod web;
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -58,6 +59,11 @@ pub struct Llm {
     /// Held for a whole turn: a quick re-ask waits for the cancelled one.
     pub turn: Mutex<()>,
     notice: Mutex<Option<String>>,
+    /// Runs once the pending notice was actually shown (update-check marks
+    /// "notified" only then).
+    notice_shown: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Wakes the controller (its wake pipe) when a notice arrives late.
+    waker: std::sync::OnceLock<Arc<std::fs::File>>,
     /// Models that answered 400 to tools in this session (`provider/alias`).
     no_tools: Mutex<std::collections::HashSet<String>>,
     /// An agent turn waiting for the user to run a proposed command.
@@ -79,6 +85,8 @@ impl Llm {
             convo: Mutex::new(Vec::new()),
             turn: Mutex::new(()),
             notice: Mutex::new(None),
+            notice_shown: Mutex::new(None),
+            waker: std::sync::OnceLock::new(),
             no_tools: Mutex::default(),
             pending: Mutex::new(None),
             jobs: Mutex::default(),
@@ -196,6 +204,34 @@ impl Llm {
         // model ids come from a server: never let them carry escapes
         if let Ok(mut n) = self.notice.lock() {
             *n = Some(render::sanitize(&s));
+        }
+        // the producer may finish after the prompt is up: have it shown now
+        if let Some(w) = self.waker.get() {
+            let _ = (&**w).write(&[1]);
+        }
+    }
+
+    /// `set_notice`, and `shown` runs when the line has really been printed.
+    pub fn set_notice_then(&self, s: String, shown: impl FnOnce() + Send + 'static) {
+        if let Ok(mut f) = self.notice_shown.lock() {
+            *f = Some(Box::new(shown));
+        }
+        self.set_notice(s);
+    }
+
+    pub fn set_waker(&self, w: Arc<std::fs::File>) {
+        let _ = self.waker.set(w);
+    }
+
+    pub fn has_notice(&self) -> bool {
+        self.notice.lock().is_ok_and(|n| n.is_some())
+    }
+
+    /// The notice taken with `take_notice` is on the screen.
+    pub fn notice_shown(&self) {
+        let f = self.notice_shown.lock().ok().and_then(|mut f| f.take());
+        if let Some(f) = f {
+            f();
         }
     }
 

@@ -490,14 +490,19 @@ pub fn spawn_check(llm: Arc<Llm>) {
             }
             c.checked = t; // a failed check also waits a day
         }
-        if c.should_notify(t, env!("CARGO_PKG_VERSION")) {
-            llm.set_notice(format!(" ↑ aish {} — aish update", c.latest));
-            c.notified = t;
-        }
         if let Some(d) = path.parent() {
             let _ = std::fs::create_dir_all(d);
         }
         let _ = std::fs::write(&path, c.render());
+        if c.should_notify(t, env!("CARGO_PKG_VERSION")) {
+            // "notified" is written when the line was shown, not before: a
+            // session that ends first leaves the notice for the next one
+            let text = format!(" ↑ aish {} — aish update", c.latest);
+            c.notified = t;
+            llm.set_notice_then(text, move || {
+                let _ = std::fs::write(&path, c.render());
+            });
+        }
     });
 }
 

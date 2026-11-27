@@ -161,6 +161,7 @@ impl Controller {
             stdout: Arc::new(stdout.try_clone().expect("dup stdout")),
             wake: wake.clone(),
         };
+        llm.set_waker(wake.clone());
         spawn_job_poller(llm.clone(), wake.clone());
         let gate = Arc::new(Gate::default());
         gate.set_waker(wake.clone());
@@ -405,6 +406,46 @@ impl Controller {
         false
     }
 
+    /// bash's prompt is on this line: put the notices in its place and have
+    /// bash repaint the prompt below (picked up at the next quiet).
+    fn write_notices(&mut self, notice: Option<String>, jobs: Vec<crate::llm::jobs::Finished>) {
+        let shown = notice.is_some();
+        let th = self.ed.theme();
+        let (a, b) = if th.enabled {
+            (format!("\x1b[{}m", th.dim), "\x1b[0m")
+        } else {
+            (String::new(), "")
+        };
+        let mut text = String::new();
+        for f in &jobs {
+            let (ok, t) = crate::llm::jobs::notice_text(f, width() as usize);
+            let (c, m) = if ok { ("32", "✓") } else { ("31", "✗") };
+            if th.enabled {
+                text.push_str(&format!(" \x1b[{c}m{m}\x1b[0m {a}{t}{b}\r\n"));
+            } else {
+                text.push_str(&format!(" {m} {t}\r\n"));
+            }
+        }
+        if let Some(n) = notice {
+            let n = n.replace("{cmd}", &self.llm.command_label());
+            let n = crate::llm::render::fit_line(&n, width() as usize);
+            text.push_str(&format!("{a}{n}{b}\r\n"));
+        }
+        // A prompt of several rows: go to its top, and leave as many rows
+        // below the notice as readline will clear when it repaints.
+        let up = self.scan.rows;
+        let pre = self.prompt_top();
+        let pad = "\r\n".repeat(usize::from(up));
+        let _ = write!(self.stdout, "{pre}\x1b[J{text}{pad}");
+        self.scan.col = 0;
+        self.scan.rows = 0;
+        self.scan.b_seen = false;
+        self.send(REDRAW_KEY);
+        if shown {
+            self.llm.notice_shown();
+        }
+    }
+
     /// The quiet timer fired.
     pub fn on_quiet(&mut self) {
         if !self.armed() {
@@ -413,39 +454,7 @@ impl Controller {
         let notice = self.llm.take_notice();
         let jobs = self.llm.take_job_notices();
         if notice.is_some() || !jobs.is_empty() {
-            // bash's prompt is on this line: put the notices in its place and
-            // have bash repaint the prompt below (picked up at the next quiet).
-            let th = self.ed.theme();
-            let (a, b) = if th.enabled {
-                (format!("\x1b[{}m", th.dim), "\x1b[0m")
-            } else {
-                (String::new(), "")
-            };
-            let mut text = String::new();
-            for f in &jobs {
-                let (ok, t) = crate::llm::jobs::notice_text(f, width() as usize);
-                let (c, m) = if ok { ("32", "✓") } else { ("31", "✗") };
-                if th.enabled {
-                    text.push_str(&format!(" \x1b[{c}m{m}\x1b[0m {a}{t}{b}\r\n"));
-                } else {
-                    text.push_str(&format!(" {m} {t}\r\n"));
-                }
-            }
-            if let Some(n) = notice {
-                let n = n.replace("{cmd}", &self.llm.command_label());
-                let n = crate::llm::render::fit_line(&n, width() as usize);
-                text.push_str(&format!("{a}{n}{b}\r\n"));
-            }
-            // A prompt of several rows: go to its top, and leave as many rows
-            // below the notice as readline will clear when it repaints.
-            let up = self.scan.rows;
-            let pre = self.prompt_top();
-            let pad = "\r\n".repeat(usize::from(up));
-            let _ = write!(self.stdout, "{pre}\x1b[J{text}{pad}");
-            self.scan.col = 0;
-            self.scan.rows = 0;
-            self.scan.b_seen = false;
-            self.send(REDRAW_KEY);
+            self.write_notices(notice, jobs);
             return;
         }
         if self.task.is_none() {
@@ -640,6 +649,17 @@ impl Controller {
             } else {
                 self.send(b"\r");
             }
+        }
+        // A notice that arrived after the prompt was taken: show it now if
+        // nothing is typed (otherwise it waits for the next quiet moment).
+        if self.prompt && self.task.is_none() && self.ed.text().is_empty() && self.llm.has_notice()
+        {
+            self.erase();
+            self.leave(false);
+            let notice = self.llm.take_notice();
+            let jobs = self.llm.take_job_notices();
+            self.write_notices(notice, jobs);
+            return;
         }
         if !self.prompt {
             return;

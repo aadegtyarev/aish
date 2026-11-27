@@ -876,6 +876,94 @@ fn wide_characters_and_colours_in_the_prompt() {
     }
 }
 
+// ---- a notice that arrives after the prompt is up -------------------------------
+
+fn late_notice_check(t: &Term, mark: &str, ps1: &str) {
+    let l = t.scr.lines_no_marker();
+    let last = ps1.rsplit('\n').next().unwrap().trim_end();
+    assert_eq!(l.last().map(String::as_str), Some(last), "{}", t.scr.dump());
+    let k = l
+        .iter()
+        .position(|r| r.contains(mark))
+        .unwrap_or_else(|| panic!("{}", t.scr.dump()));
+    assert_eq!(
+        k + 1,
+        l.len() - 1,
+        "notice right above the last prompt line\n{}",
+        t.scr.dump()
+    );
+    assert!(l[k].chars().count() < t.scr.cols, "{}", t.scr.dump());
+    assert_eq!(l.iter().filter(|r| r.contains(mark)).count(), 1);
+    if ps1.contains('\n') {
+        assert_eq!(l[0], "u@h", "{}", t.scr.dump());
+    }
+    assert!(!t.scr.row_wrapped(k), "{}", t.scr.dump());
+}
+
+fn late_first_run() {
+    let m = Mock::start(|_, c| {
+        // the probe gives up after 300 ms, the editor takes the prompt within ~10 ms
+        std::thread::sleep(Duration::from_millis(200));
+        mock::json(
+            c,
+            200,
+            r#"{"data":[{"id":"qwen3:32b"},{"id":"qwen2.5-coder:1.5b"}]}"#,
+        )
+    });
+    for (cols, ps1) in [
+        (36u16, prompt(12)),
+        (80, TWO_LINE.to_string()),
+        (36, TWO_LINE.to_string()),
+    ] {
+        let home = TempDir::new().unwrap();
+        let mut cmd = command(&home, &ps1, "");
+        cmd.env("AISH_PROBE_OLLAMA", m.url())
+            .env("AISH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
+        let mut t = Term::new(spawn_sized(cmd, cols, H), cols, H);
+        t.wait_for(&visible(&ps1).trim_end().chars().take(8).collect::<String>());
+        // the prompt is up and idle first; the probe answers later
+        t.wait_for("aish ·");
+        t.pump_for(Duration::from_millis(800));
+        late_notice_check(&t, "aish ·", &ps1);
+        t.assert_clean();
+    }
+}
+
+fn late_update_notice() {
+    let m = Mock::start(|r, c| {
+        if r.path == "/latest" {
+            std::thread::sleep(Duration::from_millis(900));
+            mock::json(c, 200, r#"{"tag_name":"v99.0.0","assets":[]}"#);
+        } else {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        }
+    });
+    for (cols, ps1) in [(36u16, prompt(12)), (36, TWO_LINE.to_string())] {
+        let home = TempDir::new().unwrap();
+        let dir = home.path().join(".config/aish");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+        let mut cmd = command(&home, &ps1, "");
+        let cache = home.path().join("state/aish/update-check");
+        std::fs::remove_file(&cache).unwrap(); // a check is due
+        cmd.env(
+            "AISH_TEST_UPDATE_URL",
+            format!("http://127.0.0.1:{}/latest", m.port),
+        );
+        let mut t = Term::new(spawn_sized(cmd, cols, H), cols, H);
+        t.wait_for(&visible(&ps1).trim_end().chars().take(8).collect::<String>());
+        // not yet announced, so not marked as notified either
+        assert!(!t.scr.everything().contains("↑ aish"));
+        t.wait_for("↑ aish");
+        t.pump_for(Duration::from_millis(800));
+        late_notice_check(&t, "↑ aish", &ps1);
+        let c = std::fs::read_to_string(&cache).unwrap();
+        let notified: u64 = c.lines().nth(2).unwrap().parse().unwrap();
+        assert!(c.contains("99.0.0") && notified > 0, "{c:?}");
+        t.assert_clean();
+    }
+}
+
 macro_rules! both {
     ($($n:ident),* $(,)?) => {
         mod utf8 {
@@ -888,6 +976,8 @@ macro_rules! both {
 }
 
 both!(
+    late_first_run,
+    late_update_notice,
     long_prompt_typing_ghost_and_editing_stay_intact,
     tab_pager_across_the_wrap,
     ctrl_r_search_across_the_wrap,
