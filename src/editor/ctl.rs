@@ -395,9 +395,10 @@ impl Controller {
             let _ = self.stdout.write_all(b"\r\n");
             self.scan.col = 0;
         }
-        // Stray output (background job...): ask bash to repaint its prompt below
-        // it (private key bound to redraw-current-line); the repaint carries
-        // OSC 133 A/B so we pick the line up again like at any prompt.
+        self.scan.rows = 0; // readline repaints the last line only, from here
+                            // Stray output (background job...): ask bash to repaint its prompt below
+                            // it (private key bound to redraw-current-line); the repaint carries
+                            // OSC 133 A/B so we pick the line up again like at any prompt.
         self.scan.b_seen = false;
         self.leave(false);
         self.send(REDRAW_KEY);
@@ -438,10 +439,7 @@ impl Controller {
             // A prompt of several rows: go to its top, and leave as many rows
             // below the notice as readline will clear when it repaints.
             let up = self.scan.rows;
-            let mut pre = String::from("\r");
-            if up > 0 {
-                pre.push_str(&format!("\x1b[{up}A"));
-            }
+            let pre = self.prompt_top();
             let pad = "\r\n".repeat(usize::from(up));
             let _ = write!(self.stdout, "{pre}\x1b[J{text}{pad}");
             self.scan.col = 0;
@@ -456,8 +454,10 @@ impl Controller {
             let taken = self.modules.iter_mut().any(|m| m.on_resume(&mut task));
             if taken && task.is_none() {
                 // bash's prompt is on this line: the continued answer replaces it
-                let _ = self.stdout.write_all(b"\r\x1b[2K");
+                let pre = self.prompt_top();
+                let _ = write!(self.stdout, "{pre}\x1b[J");
                 self.scan.col = 0;
+                self.scan.rows = 0;
                 self.leave(true);
                 self.task = shared;
                 return;
@@ -626,10 +626,11 @@ impl Controller {
             self.pending_prefill = done;
             let up = self.scan.rows;
             if up > 0 {
-                // A prompt of several rows (long, or with newlines): on Enter
-                // readline would go up and repaint it over the answer's last
-                // row. Ask for a repaint below instead, with the rows it
-                // clears above the new prompt left blank.
+                // A prompt whose last line wraps: on Enter readline would go
+                // up and repaint it over the answer's last row (so no Enter
+                // here, and PROMPT_COMMAND does not rerun for this case).
+                // Ask for a repaint below instead, with the rows it clears
+                // above the new prompt left blank.
                 let pad = "\r\n".repeat(usize::from(up) + 1);
                 let _ = self.stdout.write_all(pad.as_bytes());
                 self.scan.col = 0;
@@ -759,6 +760,14 @@ impl Controller {
         self.send(&b);
     }
 
+    /// CR and up to the first row of the prompt's last line.
+    fn prompt_top(&self) -> String {
+        match self.scan.rows {
+            0 => "\r".to_owned(),
+            n => format!("\r\x1b[{n}A"),
+        }
+    }
+
     /// Terminal resized: bash gets the new size via `apply`; we erase before
     /// and redraw after so the region is consistent with what the terminal shows.
     pub fn resize(&mut self, apply: impl FnOnce()) {
@@ -771,7 +780,12 @@ impl Controller {
                 .unwrap_or(false);
         }
         apply();
-        if self.prompt && !wait_for_bash {
+        if self.prompt && wait_for_bash {
+            // readline repaints the prompt now: keys that arrive before it
+            // must not be drawn over it; the next 133;B takes the line again
+            self.leave(false);
+            self.scan.b_seen = false;
+        } else if self.prompt {
             self.draw();
         }
         if self.gate.is_open() {

@@ -22,9 +22,10 @@ fn config(url: &str) -> String {
 }
 
 fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
+    let extra = std::fs::read_to_string(home.path().join("extra_rc")).unwrap_or_default();
     std::fs::write(
         home.path().join(".bashrc"),
-        format!("PS1='{ps1}'\ncd \"$HOME/dd\" 2>/dev/null\n"),
+        format!("PS1='{ps1}'\ncd \"$HOME/dd\" 2>/dev/null\n{extra}"),
     )
     .unwrap();
     std::fs::write(home.path().join("hist"), hist).unwrap();
@@ -36,6 +37,11 @@ fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
         .env("TERM", "xterm")
         .env("XDG_STATE_HOME", home.path().join("state"))
         .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
+    // (readline only measures wide characters right in a UTF-8 locale; there it
+    // also lets the terminal wrap long prompts instead of breaking them itself)
+    if home.path().join("utf8").exists() || std::env::var_os("NARROW_UTF8").is_some() {
+        cmd.env("LC_ALL", "C.UTF-8");
+    }
     let st = home.path().join("state/aish");
     std::fs::create_dir_all(&st).unwrap();
     let now = std::time::SystemTime::now()
@@ -46,6 +52,16 @@ fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
     cmd
 }
 
+/// The prompt as the terminal shows it: no `\[ \]`, no colour codes.
+fn visible(ps1: &str) -> String {
+    let mut s = ps1.replace("\\[", "").replace("\\]", "");
+    while let Some(i) = s.find("\\e[") {
+        let end = s[i..].find('m').map_or(s.len(), |k| i + k + 1);
+        s.replace_range(i..end, "");
+    }
+    s
+}
+
 fn start(home: &TempDir, ps1: &str, hist: &str, cols: u16) -> Term {
     start_rows(home, ps1, hist, cols, H)
 }
@@ -53,7 +69,8 @@ fn start(home: &TempDir, ps1: &str, hist: &str, cols: u16) -> Term {
 fn start_rows(home: &TempDir, ps1: &str, hist: &str, cols: u16, rows: u16) -> Term {
     let p = Session::spawn(sized(command(home, ps1, hist), cols, rows)).unwrap();
     let mut t = Term::new(p, cols, rows);
-    t.wait_for(&ps1.trim_end()[..ps1.trim_end().len().min(20)]);
+    let vis = visible(ps1);
+    t.wait_for(&vis.trim_end().chars().take(8).collect::<String>());
     t.pump_for(Duration::from_millis(500));
     t
 }
@@ -696,5 +713,166 @@ fn resize_wide_to_narrow_and_back_while_editing_a_long_line() {
         view(&t, &ps1, "", "", 0);
         t.assert_clean();
         t.send("exit\r");
+    }
+}
+
+// ---- prompts with a newline, wide characters and colours ----------------------
+
+const TWO_LINE: &str = "u@h\n$ ";
+
+fn count_lines(t: &Term, text: &str) -> usize {
+    t.scr
+        .lines_no_marker()
+        .iter()
+        .filter(|l| l.as_str() == text)
+        .count()
+}
+
+#[test]
+fn two_line_prompt_keeps_its_first_line_under_notices() {
+    let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
+    for cols in [80u16, 36] {
+        let home = TempDir::new().unwrap();
+        let mut t = start_llm(&home, &m, TWO_LINE, cols);
+        t.send("sh -c 'sleep 1' long-argument-to-make-the-notice-long &\r");
+        t.wait_for("✓");
+        t.pump_for(Duration::from_millis(800));
+        let l = t.scr.lines_no_marker();
+        let k = l.iter().position(|r| r.contains('✓')).unwrap();
+        // first prompt (with the command) and the repainted one keep their `u@h`
+        assert_eq!(count_lines(&t, "u@h"), 2, "{}", t.scr.dump());
+        assert_eq!(&l[k + 1..], ["$"], "{}", t.scr.dump());
+        t.assert_clean();
+    }
+}
+
+#[test]
+fn two_line_prompt_update_notice() {
+    for cols in [80u16, 36] {
+        let home = TempDir::new().unwrap();
+        let m = Mock::start(|_, c| mock::json(c, 200, "{}"));
+        let dir = home.path().join(".config/aish");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+        let cmd = command(&home, TWO_LINE, "");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(
+            home.path().join("state/aish/update-check"),
+            format!("{now}\n99.0.0\n0\n"),
+        )
+        .unwrap();
+        let t = start_cmd(cmd, cols, "↑ aish");
+        let l = t.scr.lines_no_marker();
+        assert_eq!(l.len(), 3, "{}", t.scr.dump());
+        assert_eq!(l[0], "u@h", "{}", t.scr.dump());
+        assert!(l[1].starts_with(" ↑ aish"), "{}", t.scr.dump());
+        assert_eq!(l[2], "$", "{}", t.scr.dump());
+    }
+}
+
+#[test]
+fn two_line_prompt_answer_reruns_prompt_command() {
+    for cols in [80u16, 36] {
+        let home = TempDir::new().unwrap();
+        std::fs::write(
+            home.path().join("extra_rc"),
+            "PROMPT_COMMAND='echo x >> \"$HOME/pc.log\"'\n",
+        )
+        .unwrap();
+        let m = answer_mock();
+        let mut t = start_llm_rows(&home, &m, TWO_LINE, cols, 40);
+        let runs = || {
+            std::fs::read_to_string(home.path().join("pc.log"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        let before = runs();
+        t.send("? say hi\r");
+        t.wait_for("Try:");
+        t.pump_for(Duration::from_millis(800));
+        assert_eq!(
+            runs(),
+            before + 1,
+            "PROMPT_COMMAND after the answer\n{}",
+            t.scr.dump()
+        );
+        let l = t.scr.lines_no_marker();
+        let k = l.iter().rposition(|r| r == "u@h").unwrap();
+        assert!(l[k + 1].starts_with("$ echo one-two"), "{}", t.scr.dump());
+        assert!(k > 2, "{}", t.scr.dump());
+        assert!(
+            l.iter().any(|r| r.starts_with("│ Try:")),
+            "{}",
+            t.scr.dump()
+        );
+        t.assert_clean();
+    }
+}
+
+#[test]
+fn stray_background_output_then_a_notice_keeps_the_output() {
+    let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
+    for (cols, ps1) in [(80u16, TWO_LINE), (36, TWO_LINE), (36, "u@h:~$ ")] {
+        let home = TempDir::new().unwrap();
+        let mut t = start_llm(&home, &m, ps1, cols);
+        t.send("(sleep 1; echo STRAY-OUT; sleep 1) &\r");
+        t.wait_for("STRAY-OUT");
+        t.wait_for("✓");
+        t.pump_for(Duration::from_millis(600));
+        let l = t.scr.lines_no_marker();
+        let s = l
+            .iter()
+            .position(|r| r.contains("STRAY-OUT"))
+            .unwrap_or_else(|| panic!("{}", t.scr.dump()));
+        let k = l.iter().position(|r| r.contains('✓')).unwrap();
+        assert!(s < k, "{}", t.scr.dump());
+        assert!(
+            l.iter().filter(|r| r.contains("STRAY-OUT")).count() >= 2,
+            "{}",
+            t.scr.dump()
+        ); // the job line quotes it too
+        assert_eq!(
+            l.last().unwrap(),
+            ps1.rsplit('\n').next().unwrap().trim_end(),
+            "{}",
+            t.scr.dump()
+        );
+        t.assert_clean();
+    }
+}
+
+#[test]
+fn wide_characters_and_colours_in_the_prompt() {
+    let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#));
+    // 24 columns, and 40 columns (wraps at 36)
+    for (cjk, cols) in [(12usize, 36u16), (19, 36)] {
+        let home = TempDir::new().unwrap();
+        std::fs::write(home.path().join("utf8"), "").unwrap();
+        let ps1 = format!("\\[\\e[1;32m\\]{}\\[\\e[0m\\]$ ", "日".repeat(cjk));
+        let mut t = start_llm(&home, &m, &ps1, cols);
+        let width = cjk * 2 + 2;
+        t.send("abc");
+        let (cx, cy) = (t.scr.cx, t.scr.cy);
+        assert_eq!(
+            (cx, cy),
+            ((width + 3) % 36, (width + 3) / 36),
+            "{}",
+            t.scr.dump()
+        );
+        t.send("\x15");
+        t.send("sh -c 'sleep 1' a &\r");
+        t.wait_for("✓");
+        t.pump_for(Duration::from_millis(800));
+        let l = t.scr.lines_no_marker();
+        let k = l.iter().position(|r| r.contains('✓')).unwrap();
+        assert!(l[k + 1].starts_with('日'), "{}", t.scr.dump());
+        assert!(l.iter().filter(|r| r.contains('日')).count() >= 2);
+        // (the prompt's own rows are wrapped by the terminal; the notice is not)
+        assert!(!t.scr.row_wrapped(k), "{}", t.scr.dump());
+        t.assert_clean();
     }
 }

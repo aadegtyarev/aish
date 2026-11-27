@@ -11,6 +11,9 @@ use expectrl::Session;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
+/// Blank cell left at the end of a row when a wide glyph moved to the next.
+const PAD: char = '\u{1}';
+
 #[derive(Clone)]
 struct Row {
     cells: Vec<(char, bool)>, // (glyph, dim); '\0' = right half of a wide glyph
@@ -28,7 +31,7 @@ impl Row {
         let s: String = self
             .cells
             .iter()
-            .filter(|c| c.0 != '\0')
+            .filter(|c| c.0 != '\0' && c.0 != PAD)
             .map(|c| c.0)
             .collect();
         s.trim_end().to_string()
@@ -89,6 +92,9 @@ impl Screen {
             return;
         }
         if self.pending || self.cx + w > self.cols {
+            if !self.pending && self.cx < self.cols {
+                self.grid[self.cy].cells[self.cx] = (PAD, false);
+            }
             self.grid[self.cy].wrapped = true;
             self.cx = 0;
             self.linefeed();
@@ -114,16 +120,21 @@ impl Screen {
 
     /// Terminal resize with reflow of wrapped lines (as phone terminals do).
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        // logical lines and the cursor inside them
+        // logical lines (as glyphs) and the cursor as a glyph index inside them
         let mut lines: Vec<Vec<(char, bool)>> = vec![];
         let mut cur = (0usize, 0usize);
         let mut acc: Vec<(char, bool)> = vec![];
         for (y, r) in self.grid.iter().enumerate() {
+            let glyph = |c: &&(char, bool)| c.0 != '\0' && c.0 != PAD;
             if y == self.cy {
-                cur = (lines.len(), acc.len() + self.cx + usize::from(self.pending));
+                let upto = self.cx + usize::from(self.pending);
+                let before = r.cells[..upto.min(r.cells.len())]
+                    .iter()
+                    .filter(glyph)
+                    .count();
+                cur = (lines.len(), acc.len() + before);
             }
-            let mut cells: Vec<(char, bool)> =
-                r.cells.iter().copied().filter(|c| c.0 != '\0').collect();
+            let mut cells: Vec<(char, bool)> = r.cells.iter().filter(glyph).copied().collect();
             if !r.wrapped {
                 while cells.last().is_some_and(|c| c.0 == ' ') {
                     cells.pop();
@@ -140,16 +151,21 @@ impl Screen {
         let mut out: Vec<Row> = vec![];
         let mut cur_rc = (0usize, 0usize);
         for (li, l) in lines.iter().enumerate() {
-            let start = out.len();
             let mut r = Row::new(cols);
             let mut x = 0;
-            for &(c, d) in l {
+            for (i, &(c, d)) in l.iter().enumerate() {
                 let w = UnicodeWidthChar::width(c).unwrap_or(1).max(1);
                 if x + w > cols {
+                    if x < cols {
+                        r.cells[x] = (PAD, false); // blank left by a wide glyph
+                    }
                     r.wrapped = true;
                     out.push(r);
                     r = Row::new(cols);
                     x = 0;
+                }
+                if li == cur.0 && i == cur.1 {
+                    cur_rc = (out.len(), x);
                 }
                 r.cells[x] = (c, d);
                 if w == 2 {
@@ -157,13 +173,17 @@ impl Screen {
                 }
                 x += w;
             }
-            out.push(r);
-            if li == cur.0 {
-                let off = cur.1;
-                cur_rc = (start + off / cols, off % cols);
-                while out.len() <= cur_rc.0 {
-                    out.push(Row::new(cols));
+            if li == cur.0 && cur.1 >= l.len() {
+                if x >= cols {
+                    out.push(r);
+                    r = Row::new(cols);
+                    x = 0;
                 }
+                cur_rc = (out.len(), x);
+            }
+            out.push(r);
+            while li == cur.0 && out.len() <= cur_rc.0 {
+                out.push(Row::new(cols));
             }
         }
         // drop blank rows below the cursor when too long, then scroll the top off

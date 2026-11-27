@@ -46,14 +46,17 @@ struct Lay {
     col: u16,
     /// Cells on the first row that lie before `col` 0 (see `Renderer::start_off`).
     base: u32,
-    /// Length of every finished row.
+    /// Length of every finished row (not recorded for the suggestion).
     lens: Vec<u32>,
+    rec: bool,
 }
 
 impl Lay {
     fn end_row(&mut self) {
         let b = if self.row == 0 { self.base } else { 0 };
-        self.lens.push(b + u32::from(self.col));
+        if self.rec {
+            self.lens.push(b + u32::from(self.col));
+        }
         self.row += 1;
         self.col = 0;
     }
@@ -146,8 +149,10 @@ impl Renderer {
             row: 0,
             col: self.start_col,
             base,
-            lens: Vec::new(),
+            lens: std::mem::take(&mut self.row_lens),
+            rec: true,
         };
+        lay.lens.clear();
         let mut cur = (0u16, self.start_col);
         let mut cur_lens = 0;
         let mut cur_set = false;
@@ -188,6 +193,7 @@ impl Renderer {
                 col: lay.col,
                 base,
                 lens: Vec::new(),
+                rec: false,
             };
             for g in v.ghost.graphemes(true) {
                 emit(out, &mut gl, g, width, None);

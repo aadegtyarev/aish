@@ -23,6 +23,10 @@ pub struct Scan {
     /// Rows the cursor went down since the last prompt mark (a prompt wider
     /// than the terminal, or one with newlines, spans several rows).
     pub rows: u16,
+    /// A line feed just arrived; a CR right after it is readline's own wrap
+    /// break (the row count goes on), anything else is a newline of the prompt
+    /// string (readline repaints only the text after it).
+    lf_rows: Option<u16>,
     st: St,
     osc: [u8; 64],
     osc_n: usize,
@@ -66,6 +70,7 @@ impl Scan {
             nonce,
             col: 0,
             rows: 0,
+            lf_rows: None,
             st: St::Ground,
             osc: [0; 64],
             osc_n: 0,
@@ -220,6 +225,11 @@ impl Scan {
     }
 
     fn ground(&mut self, b: u8, width: u16) {
+        if let Some(r) = self.lf_rows.take() {
+            if b == b'\r' {
+                self.rows = r;
+            }
+        }
         if self.utf_need > 0 {
             if b & 0xc0 == 0x80 {
                 self.utf[self.utf_n] = b;
@@ -240,7 +250,10 @@ impl Scan {
         match b {
             0x1b => self.st = St::Esc,
             b'\r' => self.col = 0,
-            b'\n' | 0x0b | 0x0c => self.rows = self.rows.saturating_add(1),
+            b'\n' | 0x0b | 0x0c => {
+                self.lf_rows = Some(self.rows.saturating_add(1));
+                self.rows = 0;
+            }
             0x08 => self.col = self.col.saturating_sub(1),
             b'\t' => self.col = ((self.col / 8 + 1) * 8).min(width - 1),
             0x00..=0x1f | 0x7f => {}
@@ -290,8 +303,10 @@ mod tests {
         s.feed(b"\x1b]133;A\x07", 10);
         s.feed(b"0123456789ab", 10);
         assert_eq!((s.rows, s.col), (1, 2));
-        s.feed(b"\r\n\rxy", 10);
+        s.feed(b"\r\n\rxy", 10); // readline's wrap break: LF then CR
         assert_eq!((s.rows, s.col), (2, 2));
+        s.feed(b"\r\n$ ", 10); // a newline in PS1: only the last line counts
+        assert_eq!((s.rows, s.col), (0, 2));
         s.feed(b"\x1b]133;A\x07", 10);
         assert_eq!(s.rows, 0);
     }
