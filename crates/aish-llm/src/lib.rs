@@ -140,6 +140,8 @@ pub struct Request {
     pub tools: Vec<Tool>,
     /// Give up if nothing at all (not even reasoning) arrives within this time.
     pub first_token_timeout: Duration,
+    /// Responses API: also offer the provider's built-in web search.
+    pub native_search: bool,
 }
 
 impl Request {
@@ -152,6 +154,7 @@ impl Request {
             stop: Vec::new(),
             tools: Vec::new(),
             first_token_timeout: FIRST_TOKEN_CHAT,
+            native_search: false,
         }
     }
 }
@@ -168,6 +171,8 @@ pub struct Usage {
 pub enum Event {
     /// A piece of the answer text (reasoning is never reported).
     Delta(String),
+    /// The provider searched the web by itself (the query, may be empty).
+    Search(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +210,7 @@ enum Msg {
     /// Something arrived (reasoning, keep-alive): resets the timeouts.
     Alive,
     Delta(String),
+    Search(String),
     Tools(Vec<ToolCall>),
     Done(Usage),
     Err(Error),
@@ -247,6 +253,7 @@ impl State {
 pub(crate) enum Item {
     Alive,
     Delta(String),
+    Search(String),
     Done(Usage),
     Err(Error),
     Skip,
@@ -349,6 +356,11 @@ pub fn stream_tools(
                 last = Instant::now();
                 on_event(Event::Delta(s));
             }
+            Ok(Msg::Search(q)) => {
+                first = false;
+                last = Instant::now();
+                on_event(Event::Search(q));
+            }
             Ok(Msg::Tools(c)) => {
                 first = false;
                 last = Instant::now();
@@ -368,7 +380,11 @@ pub fn stream_tools(
 /// Convenience: collect the whole answer.
 pub fn complete(ep: &Endpoint, req: &Request, cancel: &AtomicBool) -> Result<String, Error> {
     let mut s = String::new();
-    stream(ep, req, cancel, |Event::Delta(d)| s.push_str(&d))?;
+    stream(ep, req, cancel, |e| {
+        if let Event::Delta(d) = e {
+            s.push_str(&d)
+        }
+    })?;
     Ok(s)
 }
 
@@ -450,6 +466,7 @@ fn worker(
             Item::Skip => continue,
             Item::Alive => Msg::Alive,
             Item::Delta(s) => Msg::Delta(s),
+            Item::Search(q) => Msg::Search(q),
             Item::Done(u) => {
                 send_end(&tx, &mut st, Some(u));
                 return;

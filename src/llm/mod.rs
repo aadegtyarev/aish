@@ -14,6 +14,7 @@ pub mod mask;
 pub mod render;
 pub mod status;
 pub mod suggest;
+pub mod web;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,6 +37,8 @@ pub struct Target {
     pub local: bool,
     /// Offer function tools (the agent loop); false = single-step `?`.
     pub tools: bool,
+    /// The provider has server-side web search (`web: native`, or OpenAI Responses).
+    pub native_search: bool,
 }
 
 #[derive(Default)]
@@ -163,6 +166,14 @@ impl Llm {
             label: format!("{}/{}", r.provider.id, r.alias),
             window: r.model.context_window.clone().value(),
             local: is_local(&r.provider.url),
+            native_search: match &r.model.web {
+                Setting::Value(_) => true,
+                Setting::Off => false,
+                Setting::Unset => {
+                    r.provider.kind == ProviderType::Responses
+                        && r.provider.url.contains("api.openai.com")
+                }
+            },
             tools: !matches!(r.model.tools, Setting::Off)
                 && !self
                     .no_tools

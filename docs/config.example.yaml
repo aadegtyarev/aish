@@ -19,6 +19,8 @@ providers:
         id: gpt-6
         effort: medium
         context_window: 400000
+        # web: native            # the provider searches the web itself (default for api.openai.com
+        #                       # with type: responses; chat providers: set it only if the model does)
 
 roles:
   complete:
@@ -42,3 +44,16 @@ roles:
 # allow:
 #   - make check
 #   - docker ps
+
+# Web tools for the agent: web_search(query) and web_read(url), read-only, run by themselves.
+# Each has a chain of backends, tried in order; one that is unavailable or finds nothing
+# is skipped. The query/URL goes through the secret masker and leaves your machine.
+# search: provider (the model's own search), duckduckgo (keyless), brave (needs brave_key)
+# read:   provider (nothing to do, skipped), direct (our own fetch, public hosts only),
+#         jina (r.jina.ai, renders JS pages; works without a key at a low rate)
+# web:
+#   search: [provider, duckduckgo, brave]   # default [provider, duckduckgo]
+#   read: [provider, direct, jina]          # default [provider, direct]
+#   brave_key: $BRAVE_API_KEY
+#   jina_key: $JINA_API_KEY
+# web: off                                  # no web tools at all

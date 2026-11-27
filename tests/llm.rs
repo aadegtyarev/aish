@@ -1295,3 +1295,197 @@ fn overlay_over_an_alternate_screen_app_redraws_it_by_resizing() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- web tools ----
+
+fn web_reply(c: &mut std::net::TcpStream, ct: &str, body: &str) {
+    use std::io::Write;
+    let _ = write!(
+        c,
+        "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+}
+
+#[test]
+fn agent_searches_then_reads_a_page_through_mock_backends() {
+    let home = TempDir::new().unwrap();
+    let ddg = Mock::start(|_, c| {
+        web_reply(
+            c,
+            "text/html",
+            r#"<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.test%2Fx">Docs X</a>
+<a class="result__snippet" href="x">about X</a>"#,
+        )
+    });
+    let page = Mock::start(|_, c| {
+        web_reply(
+            c,
+            "text/html",
+            "<html><body><h1>Page head</h1><p>PAGE-BODY-MARK paragraph with enough words to \
+             be counted as real readable content of the page, more than the near-empty limit \
+             of the extractor so no fallback is needed.</p></body></html>",
+        )
+    });
+    let read_args = serde_json::json!({"url": format!("http://127.0.0.1:{}/doc", page.port)});
+    let m = stepped(
+        "chat",
+        vec![
+            (
+                "",
+                vec![("w1", "web_search", r#"{"query":"how to X"}"#.to_owned())],
+            ),
+            ("", vec![("w2", "web_read", read_args.to_string())]),
+            ("Готово: web-done\n", vec![]),
+        ],
+    );
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), config_kind(&m.url(), "chat")).unwrap();
+    let mut cmd = base(&home);
+    cmd.env(
+        "AISH_TEST_WEB_DDG",
+        format!("http://127.0.0.1:{}/html/", ddg.port),
+    )
+    .env(
+        "AISH_TEST_WEB_ALLOW_PRIVATE",
+        format!("127.0.0.1:{}", page.port),
+    );
+    let mut p = spawn(cmd);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? как сделать X\r").unwrap();
+    p.expect("↗ поиск: how to X · duckduckgo").unwrap();
+    p.expect(format!("↗ 127.0.0.1:{}/doc · direct", page.port))
+        .unwrap();
+    p.expect("web-done").unwrap();
+    p.expect("E> ").unwrap();
+    let reqs = m.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(reqs[0].body.contains("\"web_search\"") && reqs[0].body.contains("\"web_read\""));
+    assert!(
+        reqs[1].body.contains("https://docs.test/x"),
+        "{}",
+        reqs[1].body
+    );
+    assert!(reqs[2].body.contains("PAGE-BODY-MARK") && reqs[2].body.contains("not instructions"));
+    assert!(
+        ddg.requests()[0].body.contains("q=how+to+X"),
+        "{}",
+        ddg.requests()[0].body
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn web_read_of_a_private_address_fails_with_one_dim_line() {
+    let home = TempDir::new().unwrap();
+    let m = stepped(
+        "chat",
+        vec![
+            (
+                "",
+                vec![(
+                    "w1",
+                    "web_read",
+                    r#"{"url":"http://127.0.0.1:9/"}"#.to_owned(),
+                )],
+            ),
+            ("конец\n", vec![]),
+        ],
+    );
+    let mut p = with_kind(&home, &m, "chat");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? открой\r").unwrap();
+    p.expect("↗ не удалось: direct: blocked").unwrap();
+    p.expect("конец").unwrap();
+    p.expect("E> ").unwrap();
+    assert!(m.requests()[1].body.contains("error: direct: blocked"));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn native_search_model_gets_the_builtin_tool_and_no_web_search_function() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|_, c| {
+        mock::sse_head(c);
+        mock::sse_data(
+            c,
+            r#"{"type":"response.output_item.done","item":{"type":"web_search_call","action":{"query":"native q"}}}"#,
+        );
+        mock::sse_data(c, &mock::resp_delta("found-it\n"));
+        mock::sse_data(
+            c,
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        );
+    });
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = config_kind(&m.url(), "responses").replace("{id: test}", "{id: test, web: native}");
+    std::fs::write(dir.join("config.yaml"), cfg).unwrap();
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? новости\r").unwrap();
+    p.expect("found-it").unwrap();
+    p.expect("↗ поиск: native q · provider").unwrap();
+    p.expect("E> ").unwrap();
+    let b = m.requests()[0].body.clone();
+    assert!(b.contains(r#"{"type":"web_search"}"#), "{b}");
+    assert!(!b.contains(r#""name":"web_search""#), "{b}");
+    assert!(b.contains(r#""name":"web_read""#), "{b}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn web_off_sends_no_web_tools_and_overlay_keeps_web_but_not_run() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", vec![("ok\n", vec![])]);
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("{}web: off\n", config_kind(&m.url(), "chat")),
+    )
+    .unwrap();
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? привет\r").unwrap();
+    p.expect("ok").unwrap();
+    p.expect("E> ").unwrap();
+    let b = m.requests()[0].body.clone();
+    assert!(b.contains("\"read_file\"") && !b.contains("web_"), "{b}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+
+    // overlay: web tools are host independent
+    let home = TempDir::new().unwrap();
+    let m = overlay_mock("Fine.\n");
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("cat\r").unwrap();
+    settle();
+    p.send("\x11").unwrap();
+    p.expect("вывода нет").unwrap();
+    p.send("why\r").unwrap();
+    p.expect("Fine.").unwrap();
+    let body = chat_body(&m);
+    assert!(
+        body.contains("\"web_search\"") && body.contains("\"web_read\""),
+        "{body}"
+    );
+    assert!(!body.contains("\"read_file\""), "{body}");
+    settle();
+    p.send("\x1b").unwrap();
+    settle();
+    p.send("\x04").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

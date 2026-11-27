@@ -16,8 +16,10 @@ fn ep(kind: Kind, m: &Mock) -> Endpoint {
 
 fn run(e: &Endpoint, req: &Request) -> (Result<Usage, Error>, String) {
     let mut s = String::new();
-    let r = stream(e, req, &AtomicBool::new(false), |Event::Delta(d)| {
-        s.push_str(&d)
+    let r = stream(e, req, &AtomicBool::new(false), |e| {
+        if let Event::Delta(d) = e {
+            s.push_str(&d)
+        }
     });
     (r, s)
 }
@@ -246,8 +248,10 @@ fn tools_req(messages: Vec<Message>) -> Request {
 
 fn run_tools(e: &Endpoint, req: &Request) -> (Usage, Vec<ToolCall>, String) {
     let mut s = String::new();
-    let (u, c) = stream_tools(e, req, &AtomicBool::new(false), |Event::Delta(d)| {
-        s.push_str(&d)
+    let (u, c) = stream_tools(e, req, &AtomicBool::new(false), |e| {
+        if let Event::Delta(d) = e {
+            s.push_str(&d)
+        }
     })
     .unwrap();
     (u, c, s)
@@ -325,4 +329,53 @@ fn responses_tool_calls_are_assembled_and_serialized() {
     assert_eq!(b["input"][1]["call_id"], "p1");
     assert_eq!(b["input"][2]["type"], "function_call_output");
     assert_eq!(b["input"][2]["output"], "out");
+}
+
+#[test]
+fn responses_native_search_tool_and_status_events() {
+    let m = Mock::start(|_, c| {
+        sse_head(c);
+        sse_data(
+            c,
+            r#"{"type":"response.output_item.added","item":{"type":"web_search_call","id":"ws_1","status":"in_progress"}}"#,
+        );
+        sse_data(
+            c,
+            r#"{"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust news"}}}"#,
+        );
+        sse_data(c, &resp_delta("answer "));
+        sse_data(
+            c,
+            r#"{"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://x.test"}}"#,
+        );
+        sse_data(
+            c,
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        );
+    });
+    let e = ep(Kind::Responses, &m);
+    let mut r = tools_req(vec![Message::user("hi")]);
+    r.native_search = true;
+    let (mut text, mut searches) = (String::new(), Vec::new());
+    stream_tools(&e, &r, &AtomicBool::new(false), |ev| match ev {
+        Event::Delta(d) => text.push_str(&d),
+        Event::Search(q) => searches.push(q),
+    })
+    .unwrap();
+    assert_eq!(text, "answer ");
+    assert_eq!(searches, vec!["rust news"]);
+    let b: serde_json::Value = serde_json::from_str(&m.requests()[0].body).unwrap();
+    let tools = b["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 2);
+    assert!(tools.contains(&serde_json::json!({"type": "web_search"})));
+    // off: not sent; chat never gets it
+    let m2 = Mock::start(|_, c| resp_stream(c, &["x"], Duration::ZERO));
+    r.native_search = false;
+    r.tools.clear();
+    run(&ep(Kind::Responses, &m2), &r);
+    assert!(!m2.requests()[0].body.contains("web_search"));
+    let m3 = Mock::start(|_, c| chat_stream(c, &["x"], Duration::ZERO));
+    r.native_search = true;
+    run(&ep(Kind::Chat, &m3), &r);
+    assert!(!m3.requests()[0].body.contains("web_search"));
 }

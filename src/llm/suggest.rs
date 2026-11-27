@@ -336,7 +336,8 @@ fn ask(
     // Only the first line matters: stop (and close the connection) at "\n".
     let mut reply = String::new();
     let mut seen_nl = false;
-    let r = aish_llm::stream(&t.ep, &req, &job.cancel, |aish_llm::Event::Delta(d)| {
+    let r = aish_llm::stream(&t.ep, &req, &job.cancel, |e| {
+        let aish_llm::Event::Delta(d) = e else { return };
         reply.push_str(&d);
         if reply.contains('\n') && !seen_nl {
             seen_nl = true;

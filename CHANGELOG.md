@@ -10,6 +10,11 @@ version and date, and the release notes on GitHub are taken from it.
 ## [Unreleased]
 
 ### Added
+- Web tools for the agent: `web_search` and `web_read`, each with a configurable
+  chain of backends (provider's own search, DuckDuckGo, Brave; direct fetch with
+  SSRF protection, Jina Reader). Read-only, run without asking, also in the
+  Ctrl-Q overlay; queries and URLs are masked. Config: `web:` (`web: off` to
+  disable), per model `web: native`.
 - Ctrl-Q asks the model from anywhere, also in the middle of a running command
   (ssh, REPLs, docker exec): an overlay with the command's recent output that
   can type the answer's command into the program (never pressing Enter).

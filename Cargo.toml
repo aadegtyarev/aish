@@ -37,6 +37,9 @@ unicode-width = "0.2"
 lineedit-wip = { path = "crates/aish-editor" }
 aish-llm = { path = "crates/aish-llm" }
 vte = "0.15"
+# Web tools (web_read): own fetch with a vetted resolver, no cookies.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+url = "2"
 
 [dev-dependencies]
 expectrl = "0.7"

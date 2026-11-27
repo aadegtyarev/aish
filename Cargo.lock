@@ -30,6 +30,8 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-width",
+ "ureq",
+ "url",
  "vte",
 ]
 

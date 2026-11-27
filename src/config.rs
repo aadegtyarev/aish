@@ -60,6 +60,10 @@ pub struct Model {
     /// `tools: off` — never offer function tools to this model.
     #[serde(default)]
     pub tools: Setting<String>,
+    /// `web: native` — the provider searches the web by itself; `off` — never.
+    /// Unset: on for api.openai.com with `type: responses`.
+    #[serde(default)]
+    pub web: Setting<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,13 +80,31 @@ pub struct Provider {
 impl Provider {
     /// Literal key, or the value of `$ENV` (None if unset/empty).
     pub fn api_key(&self) -> Option<String> {
-        let key = self.key.as_deref()?;
-        match key.strip_prefix('$') {
-            Some(var) => std::env::var(var).ok().filter(|v| !v.is_empty()),
-            None => Some(key.to_string()),
-        }
+        resolve_key(self.key.as_deref()?)
     }
 }
+
+/// Literal key, or the value of `$ENV` (None if unset/empty).
+pub fn resolve_key(key: &str) -> Option<String> {
+    match key.strip_prefix('$') {
+        Some(var) => std::env::var(var).ok().filter(|v| !v.is_empty()),
+        None => Some(key.to_string()),
+    }
+}
+
+/// `web:` section (tools `web_search` / `web_read`). `web: off` disables both.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct WebCfg {
+    /// Backends tried in order: provider, duckduckgo, brave.
+    pub search: Option<Vec<String>>,
+    /// Backends tried in order: provider, direct, jina.
+    pub read: Option<Vec<String>>,
+    pub brave_key: Option<String>,
+    pub jina_key: Option<String>,
+}
+
+pub const SEARCH_BACKENDS: &[&str] = &["provider", "duckduckgo", "brave"];
+pub const READ_BACKENDS: &[&str] = &["provider", "direct", "jina"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Role {
@@ -108,6 +130,8 @@ pub struct Config {
     pub allow: Vec<String>,
     #[serde(default)]
     pub keys: Keys,
+    #[serde(default)]
+    pub web: Setting<WebCfg>,
 }
 
 /// Key bindings (`keys:` in the config).
@@ -139,6 +163,30 @@ impl Config {
         for (i, p) in self.providers.iter().enumerate() {
             if self.providers[..i].iter().any(|q| q.id == p.id) {
                 bail!("duplicate provider id '{}'", p.id);
+            }
+        }
+        if let Setting::Value(w) = &self.web {
+            for (chain, known, what) in [
+                (&w.search, SEARCH_BACKENDS, "search"),
+                (&w.read, READ_BACKENDS, "read"),
+            ] {
+                for b in chain.iter().flatten() {
+                    if !known.contains(&b.to_ascii_lowercase().as_str()) {
+                        bail!(
+                            "web.{what}: unknown backend '{b}' (known: {})",
+                            known.join(", ")
+                        );
+                    }
+                }
+            }
+        }
+        for p in &self.providers {
+            for (alias, m) in &p.models {
+                if let Setting::Value(v) = &m.web {
+                    if v != "native" {
+                        bail!("model '{}/{alias}': web must be 'native' or off", p.id);
+                    }
+                }
             }
         }
         for name in self.roles.keys() {
@@ -280,6 +328,20 @@ roles:
             Setting::Off
         );
         assert_eq!(Config::parse("{}").unwrap().keys.ask, Setting::Unset);
+    }
+
+    #[test]
+    fn web_section() {
+        let c = Config::parse("web: {search: [duckduckgo, brave], brave_key: $K}").unwrap();
+        let Setting::Value(w) = &c.web else { panic!() };
+        assert_eq!(w.search.as_deref().unwrap().len(), 2);
+        assert!(w.read.is_none());
+        assert_eq!(Config::parse("web: off").unwrap().web, Setting::Off);
+        assert!(matches!(Config::parse("{}").unwrap().web, Setting::Unset));
+        assert!(Config::parse("web: {search: [bing]}").is_err());
+        let m = "providers:\n  - {id: p, url: u, type: chat, models: {m: {id: a, web: native}}}";
+        assert!(Config::parse(m).is_ok());
+        assert!(Config::parse(&m.replace("native", "yes")).is_err());
     }
 
     #[test]

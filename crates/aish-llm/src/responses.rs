@@ -38,13 +38,19 @@ pub(crate) fn body(ep: &Endpoint, req: &Request) -> String {
     if !req.system.is_empty() {
         b["instructions"] = json!(req.system);
     }
-    if !req.tools.is_empty() {
-        b["tools"] = json!(req
-            .tools
-            .iter()
-            .map(|t| json!({"type": "function", "name": t.name,
-                "description": t.description, "parameters": t.parameters}))
-            .collect::<Vec<_>>());
+    let mut tools: Vec<Value> = req
+        .tools
+        .iter()
+        .map(|t| {
+            json!({"type": "function", "name": t.name,
+                "description": t.description, "parameters": t.parameters})
+        })
+        .collect();
+    if req.native_search {
+        tools.push(json!({"type": "web_search"}));
+    }
+    if !tools.is_empty() {
+        b["tools"] = json!(tools);
     }
     if let Some(e) = &ep.effort {
         b["reasoning"] = json!({"effort": e});
@@ -75,6 +81,15 @@ pub(crate) fn parse(v: &Value, st: &mut State) -> Item {
             Some(s) if !s.is_empty() => Item::Delta(s.to_owned()),
             _ => Item::Alive,
         },
+        // the provider's own web search: only a status line, never a tool call
+        "response.output_item.done" if v["item"]["type"] == "web_search_call" => {
+            let a = &v["item"]["action"];
+            let q = a["query"]
+                .as_str()
+                .or_else(|| a["queries"][0].as_str())
+                .unwrap_or("");
+            Item::Search(q.to_owned())
+        }
         "response.output_item.added" | "response.output_item.done"
             if v["item"]["type"] == "function_call" =>
         {
