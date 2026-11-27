@@ -107,10 +107,7 @@ impl OscGuard {
             let b = bytes[i];
             self.state = match self.state {
                 G::Normal => {
-                    match bytes[i..].iter().position(|&x| x == 0x1b) {
-                        Some(n) => i += n,
-                        None => return None,
-                    }
+                    i += bytes[i..].iter().position(|&x| x == 0x1b)?;
                     G::Esc
                 }
                 G::Esc if b == b']' => G::Osc(0),
