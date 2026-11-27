@@ -372,10 +372,10 @@ fn responses_native_search_tool_and_status_events() {
     let m2 = Mock::start(|_, c| resp_stream(c, &["x"], Duration::ZERO));
     r.native_search = false;
     r.tools.clear();
-    run(&ep(Kind::Responses, &m2), &r);
+    let _ = run(&ep(Kind::Responses, &m2), &r);
     assert!(!m2.requests()[0].body.contains("web_search"));
     let m3 = Mock::start(|_, c| chat_stream(c, &["x"], Duration::ZERO));
     r.native_search = true;
-    run(&ep(Kind::Chat, &m3), &r);
+    let _ = run(&ep(Kind::Chat, &m3), &r);
     assert!(!m3.requests()[0].body.contains("web_search"));
 }
