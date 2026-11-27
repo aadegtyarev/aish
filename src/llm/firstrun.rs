@@ -12,7 +12,8 @@ use super::Llm;
 /// Default cloud chat model written into a new config.
 pub const DEFAULT_CLOUD_MODEL: &str = "gpt-5.5";
 const OPENAI_URL: &str = "https://api.openai.com/v1";
-const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+// Runs in the background and the line may arrive late, so this can be generous.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name)

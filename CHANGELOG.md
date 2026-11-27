@@ -15,6 +15,9 @@ version and date, and the release notes on GitHub are taken from it.
 - Notices, the first-run line and the Ctrl-Q overlay are cut to the width;
   multi-row and two-line prompts keep their rows, and a `?` answer is no
   longer overwritten by the repainted prompt; cleaner redraw after a resize.
+- bash 5.3: typing after a terminal resize no longer overwrites the prompt.
+- The first-run and update lines show up as soon as they are ready, also when
+  the background check finishes after the prompt was drawn.
 
 ## [0.2.0] - 2026-11-27
 
