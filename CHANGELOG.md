@@ -9,6 +9,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Added
 - Install and update straight from GitHub: a signed apt repository on GitHub Pages
   (`https://aadegtyarev.github.io/aish`), `curl -fsSL .../install.sh | bash`
@@ -51,5 +53,6 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aadegtyarev/aish/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aadegtyarev/aish/releases/tag/v0.1.0
