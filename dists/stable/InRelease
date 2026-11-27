@@ -5,7 +5,7 @@ Acquire-By-Hash: yes
 Architectures: amd64 arm64
 Codename: stable
 Components: main
-Date: Fri, 27 Nov 2026 19:57:32 +0000
+Date: Fri, 27 Nov 2026 20:02:52 +0000
 Label: aish
 Origin: aish
 Suite: stable
@@ -31,8 +31,8 @@ SHA512:
  1d05224fdb453a8d00784bcfb9aa961b67bb18645b04fd540aa9a261b06fb0b29996563e02f2f9303dacdf730faac29c0e8916e326ec6872f738f197f760e888              649 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYIAB0WIQQS+WUSdF0qWMxkpiZbQctdiKRN+gUCawngrAAKCRBbQctdiKRN
-+s3uAQCUec39ZxFXv//DyrvbYlMfYAvYHKhSlAZV3486yPvEWQD/SZlHSbBuRjn4
-RVDw8IiFgC55SKNBtD4JMYKWe+osrgI=
-=M7VQ
+iHUEARYIAB0WIQQS+WUSdF0qWMxkpiZbQctdiKRN+gUCawnh7AAKCRBbQctdiKRN
++o9CAP9L74kKiYBP9dulEXJZhdKOmEWxZzrLIRtEMVHTV9M4wQEAxEx6MKBoX5f0
+Yq+rjcGGvCBCxYBBntjqAD2g+aOsrAc=
+=/48V
 -----END PGP SIGNATURE-----
