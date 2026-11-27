@@ -12,7 +12,7 @@ cleanup() { [[ -n $tmp ]] && rm -rf "$tmp"; tmp=; }
 trap cleanup EXIT
 ask() { # ask "question" -> 0 on yes; reads the terminal even under curl | bash
   ((yes)) && return 0
-  [[ -r /dev/tty ]] || die "no terminal to ask on; rerun with --yes"
+  { : </dev/tty; } 2>/dev/null || die "no terminal to ask on; rerun with --yes"
   local a; read -r -p "$1 [y/N] " a </dev/tty
   [[ $a == [yY]* ]]
 }
@@ -100,7 +100,7 @@ main() {
     else install_tarball
     fi
   fi
-  if ((init)) && [[ -r /dev/tty && -w /dev/tty ]] && : </dev/tty 2>/dev/null; then
+  if ((init)) && { : </dev/tty; } 2>/dev/null; then
     cleanup
     PATH=$(dirname "$dest"):$PATH exec "$dest" init </dev/tty >/dev/tty
   fi
