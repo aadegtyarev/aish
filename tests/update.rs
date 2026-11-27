@@ -186,6 +186,15 @@ fn notice_once_a_day() {
     let home = tempfile::tempdir().unwrap();
     let m = release("99.0.0", None);
     let mut p = session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    // The notice is shown at the next prompt after the background check; on a
+    // slow machine the check may finish after the first prompt was drawn.
+    let t = std::time::Instant::now();
+    while m.requests().is_empty() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    p.send_line("true").unwrap();
     p.expect("↑ aish 99.0.0 — aish update").unwrap();
     let c = std::fs::read_to_string(home.path().join("state/aish/update-check")).unwrap();
     assert!(c.contains("99.0.0"), "{c}");
