@@ -1,9 +1,9 @@
 [package]
 name = "lineedit-wip" # placeholder, final name TBD
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Small embeddable emacs-style line editor with a plugin architecture"
-license = "MIT"
+license.workspace = true
 publish = false
 readme = "README.md"
 

@@ -1,9 +1,9 @@
 [package]
 name = "llmsh-llm"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "OpenAI-compatible streaming clients (chat completions, responses) for llmsh"
-license = "MIT"
+license.workspace = true
 publish = false
 
 [features]

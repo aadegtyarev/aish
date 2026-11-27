@@ -5,6 +5,19 @@ Spec: [docs/UX.md](docs/UX.md), [docs/config.example.yaml](docs/config.example.y
 
 ## Install
 
+Debian/Ubuntu (amd64, arm64) - the package registers `/usr/bin/llmsh` in `/etc/shells` and never touches
+user files; run `llmsh init` yourself afterwards:
+
+```
+sudo dpkg -i llmsh_<ver>_amd64.deb      # or: sudo apt install ./llmsh_<ver>_amd64.deb
+llmsh init
+```
+
+Static tarball (x86_64, aarch64; musl, no dependencies besides bash): unpack, then `./install.sh`
+(installs the bundled binary to `~/.local/bin`, `--prefix DIR` to change, `--no-init` to skip setup).
+
+From source:
+
 ```
 ./install.sh              # builds (cargo, or ./dev.sh in docker), copies to ~/.local/bin/llmsh, runs `llmsh init`
 ./install.sh --no-init    # skip the setup;  --bin PATH takes a prebuilt binary
@@ -18,6 +31,12 @@ whether to apply the summary. Blocks are marked `# >>> llmsh >>>` / `# <<< llmsh
 replaces them, the first change to a file leaves `<file>.llmsh-bak`. `llmsh init --remove` removes the
 blocks; `--yes` applies the defaults without questions. Escape hatch: `LLMSH_DISABLE=1 bash` starts plain bash.
 No `chsh`: for a login shell add llmsh's path to `/etc/shells` and run `chsh -s` yourself.
+
+## Release packaging
+
+`./pack.sh [--arch x86_64|aarch64|all]` builds everything in docker (musl targets, zig + cargo-zigbuild
+for cross-linking, cargo-deb) into `dist/`: tarballs, `.deb`s and `SHA256SUMS`. Pushing a `v*` tag runs
+the same script in GitHub Actions and publishes a release. The version lives in the workspace `Cargo.toml`.
 
 ## Run
 

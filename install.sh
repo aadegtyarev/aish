@@ -14,6 +14,7 @@ while (($#)); do
   esac
   shift
 done
+if [[ -z $bin && -x ./llmsh && ! -d ./llmsh ]]; then bin=./llmsh; fi   # release tarball
 if [[ -z $bin ]]; then
   if command -v cargo >/dev/null 2>&1; then cargo build --release
   else ./dev.sh build --release; fi

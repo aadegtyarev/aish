@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|purge)
+        if command -v remove-shell >/dev/null 2>&1; then
+            remove-shell /usr/bin/llmsh
+        fi
+        ;;
+esac
+#DEBHELPER#
+exit 0

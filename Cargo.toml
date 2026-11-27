@@ -2,12 +2,18 @@
 members = [".", "crates/llmsh-editor", "crates/llmsh-llm"]
 resolver = "2"
 
-[package]
-name = "llmsh"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "bash wrapper with LLM assistance"
 license = "MIT"
+
+[package]
+name = "llmsh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+description = "bash wrapper with LLM assistance"
 
 [dependencies]
 anyhow = "1"
@@ -34,3 +40,33 @@ vte = "0.15"
 expectrl = "0.7"
 tempfile = "3"
 llmsh-llm = { path = "crates/llmsh-llm", features = ["mock"] }
+
+# Static musl builds, see pack.sh. panic stays "unwind": main() relies on catch_unwind.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[package.metadata.deb]
+maintainer = "llmsh authors <noreply@example.com>"
+copyright = "llmsh authors"
+license-file = ["LICENSE", "0"]
+section = "shells"
+priority = "optional"
+depends = "bash (>= 4.4)"
+recommends = "bash-completion"
+extended-description = """\
+llmsh runs bash on a pty and adds LLM assistance on top: command blocks with \
+status lines, an inline editor, and an `ai` command for chat and agent \
+actions with any OpenAI-compatible backend. Without an LLM it behaves like \
+plain bash.
+Run `llmsh init` as your own user to set up your shell startup; the package \
+never edits user files."""
+assets = [
+  ["target/release/llmsh", "usr/bin/llmsh", "755"],
+  ["README.md", "usr/share/doc/llmsh/README.md", "644"],
+  ["docs/UX.md", "usr/share/doc/llmsh/UX.md", "644"],
+  ["docs/config.example.yaml", "usr/share/doc/llmsh/config.example.yaml", "644"],
+]
+maintainer-scripts = "debian/"
