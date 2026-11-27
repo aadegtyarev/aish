@@ -162,6 +162,8 @@ impl Controller {
             wake: wake.clone(),
         };
         spawn_job_poller(llm.clone(), wake.clone());
+        let gate = Arc::new(Gate::default());
+        gate.set_waker(wake.clone());
         let resolver = Resolver::default();
         let env = Env {
             llm: llm.clone(),
@@ -213,7 +215,7 @@ impl Controller {
             typeahead: Vec::new(),
             ask,
             detect: Detector::default(),
-            gate: Arc::new(Gate::default()),
+            gate,
             tracker,
             running_cmd: None,
         }))
@@ -254,8 +256,12 @@ impl Controller {
             theme: self.ed.theme().clone(),
             stdout: self.stdout.try_clone().ok()?,
             gate: self.gate.clone(),
-            alt: self.scan.alt,
-            bracketed: self.scan.bracketed,
+            modes: overlay::Modes {
+                alt: self.scan.alt,
+                bracketed: self.scan.bracketed,
+                mouse: self.scan.mouse,
+                cursor_hidden: self.scan.cursor_hidden,
+            },
             screen: crate::llm::ask::Screen {
                 cmd: self.running_cmd.clone(),
                 cwd,
@@ -468,6 +474,11 @@ impl Controller {
             self.dsr = Some(Instant::now());
         }
         self.draw();
+        // a half-seen key that was held back belongs to the editor now
+        let held = self.detect.reset();
+        if !held.is_empty() {
+            self.typeahead.extend_from_slice(&held);
+        }
         if !self.typeahead.is_empty() {
             let mut ta = std::mem::take(&mut self.typeahead);
             let n = ta.len();
@@ -531,6 +542,11 @@ impl Controller {
                 if found || t.elapsed() > DSR_TTL {
                     self.dsr = None;
                     out.extend(self.dsr_filter.take_held());
+                }
+                if !self.detect.is_empty() {
+                    // keep the Esc timer running for the held key start
+                    self.send(&out);
+                    return Input::Handled(true);
                 }
                 if self.scan.b_seen && !out.is_empty() {
                     self.dirty = out[out.len() - 1] != 0x03;

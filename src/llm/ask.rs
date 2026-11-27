@@ -108,6 +108,8 @@ fn convo_chars(c: &[Message]) -> usize {
 /// the task's drop guard (or this) hands the prompt back with `f`'s prefill.
 pub fn run_task(task: Task, f: impl FnOnce(&Task) -> Option<String> + Send + 'static) {
     std::thread::spawn(move || {
+        // a panic here is caught below: the panic hook must not touch the terminal
+        crate::term::IN_GUARD.with(|x| x.set(true));
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&task)));
         match r {
             Ok(prefill) => task.finish(prefill),
@@ -157,6 +159,7 @@ fn answer(
     } else {
         mask(&p.question)
     };
+    let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
     let turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
     agent::drive(llm, tracker, t, turn, task)
@@ -240,6 +243,7 @@ pub fn overlay_answer(
     } else {
         mask(question)
     };
+    let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
     let mut turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
     turn.overlay = true;

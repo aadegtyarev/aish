@@ -125,7 +125,7 @@ pub fn run() -> Result<i32> {
         (None, None)
     };
     let gate = ed.as_ref().map(|c| editor::ctl::lock(c).gate());
-    signals.watch(m_sig, child.id(), ed.clone());
+    signals.watch(m_sig, child.id(), ed.clone(), gate.clone());
     let ed_in = ed.clone().zip(wake_r);
     std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty, ed_in));
     let (done_tx, done_rx) = mpsc::channel();
@@ -135,6 +135,9 @@ pub fn run() -> Result<i32> {
     });
 
     let status = child.wait()?;
+    if let Some(g) = &gate {
+        g.child_gone(); // an open overlay closes and lets the held output through
+    }
     // Drain remaining output, but don't hang if a background job holds the pty.
     let _ = done_rx.recv_timeout(Duration::from_millis(300));
     if let Some(g) = gate {

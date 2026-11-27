@@ -15,6 +15,9 @@ enum St {
     StrEsc,
 }
 
+/// Mouse reporting modes the overlay turns off (and puts back).
+pub const MOUSE_MODES: [u16; 5] = [1000, 1002, 1003, 1006, 1015];
+
 pub struct Scan {
     pub col: u16,
     st: St,
@@ -42,6 +45,10 @@ pub struct Scan {
     pub bracketed: bool,
     /// The program is in the alternate screen (`CSI ? 1049 / 1047 / 47 h`).
     pub alt: bool,
+    /// Bit i: `MOUSE_MODES[i]` is on.
+    pub mouse: u8,
+    /// The program hid the cursor (`CSI ? 25 l`).
+    pub cursor_hidden: bool,
 }
 
 impl Default for Scan {
@@ -70,6 +77,8 @@ impl Scan {
             printed_after_b: false,
             bracketed: false,
             alt: false,
+            mouse: 0,
+            cursor_hidden: false,
         }
     }
 
@@ -147,7 +156,19 @@ impl Scan {
             match p {
                 b"2004" => self.bracketed = on,
                 b"1049" | b"1047" | b"47" => self.alt = on,
-                _ => {}
+                b"25" => self.cursor_hidden = !on,
+                m => {
+                    let n = std::str::from_utf8(m)
+                        .ok()
+                        .and_then(|x| x.parse::<u16>().ok());
+                    if let Some(i) = MOUSE_MODES.iter().position(|&x| Some(x) == n) {
+                        if on {
+                            self.mouse |= 1 << i;
+                        } else {
+                            self.mouse &= !(1 << i);
+                        }
+                    }
+                }
             }
         }
     }
@@ -309,8 +330,14 @@ mod tests {
             s.feed(format!("\x1b[?{off}l").as_bytes(), 80);
             assert!(!s.alt, "{off}");
         }
-        s.feed(b"\x1b[?25l\x1b[?1h\x1b[4h", 80);
-        assert!(!s.alt && !s.bracketed);
+        s.feed(b"\x1b[?1h\x1b[4h", 80);
+        assert!(!s.alt && !s.bracketed && s.mouse == 0 && !s.cursor_hidden);
+        s.feed(b"\x1b[?25l\x1b[?1000;1006h", 80);
+        assert!(s.cursor_hidden && s.mouse == 0b01001);
+        s.feed(b"\x1b[?25h\x1b[?1000l", 80);
+        assert!(!s.cursor_hidden && s.mouse == 0b01000);
+        s.feed(b"\x1b[?1006l", 80);
+        assert_eq!(s.mouse, 0);
         s.feed(b"\x1b[?1049;2004h", 80);
         assert!(s.alt && s.bracketed);
         // split across reads

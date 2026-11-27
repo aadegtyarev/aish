@@ -31,10 +31,18 @@ pub struct TaskShared {
     finished: AtomicBool,
     /// Output is dropped (the screen it was meant for is gone).
     pub muted: AtomicBool,
+    /// Held around "check muted + write" so `mute` is a barrier.
+    write_lock: Mutex<()>,
     wake: Arc<File>,
 }
 
 impl TaskShared {
+    /// Drop all further output; returns once no write is in flight.
+    pub fn mute(&self) {
+        let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn take_done(&self) -> Option<Option<String>> {
         self.done.lock().ok()?.take()
     }
@@ -59,6 +67,11 @@ impl Task {
     }
 
     pub fn write(&self, bytes: &[u8]) {
+        let _g = self
+            .shared
+            .write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if self.shared.muted.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
@@ -113,6 +126,7 @@ impl TaskMaker {
                 done: Mutex::new(None),
                 finished: AtomicBool::new(false),
                 muted: AtomicBool::new(false),
+                write_lock: Mutex::new(()),
                 wake: self.wake.clone(),
             }),
         }

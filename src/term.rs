@@ -79,7 +79,13 @@ impl Signals {
 
     /// WINCH resizes the pty (and is re-synced once now, closing the race with
     /// startup); TERM/QUIT/HUP restore the terminal, hang up the shell, exit.
-    pub fn watch(mut self, master: File, child_pid: u32, ed: Option<crate::editor::ctl::Shared>) {
+    pub fn watch(
+        mut self,
+        master: File,
+        child_pid: u32,
+        ed: Option<crate::editor::ctl::Shared>,
+        gate: Option<std::sync::Arc<crate::editor::overlay::Gate>>,
+    ) {
         std::thread::spawn(move || {
             use signal_hook::consts::*;
             set_window_size(master.as_raw_fd(), &window_size());
@@ -94,8 +100,8 @@ impl Signals {
                     }
                     continue;
                 }
-                if let Some(Ok(g)) = ed.as_ref().map(|c| c.try_lock()) {
-                    g.gate().emergency_restore(); // overlay open: give the screen back
+                if let Some(g) = &gate {
+                    g.emergency_restore(); // overlay open: give the screen back
                 }
                 let _ = crossterm::terminal::disable_raw_mode();
                 // SAFETY: plain kill(2) on our own child.

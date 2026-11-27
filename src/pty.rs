@@ -81,11 +81,14 @@ fn write_out(master: &mut File, bytes: &[u8]) -> bool {
 /// the prompt and forwarded untouched otherwise; `wake` is the read end of the
 /// pipe plugins use to announce late results.
 pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<(Shared, File)>) {
-    let mut buf = [0u8; 4096];
+    // a little room over a read for a key put back after a failed overlay open
+    let mut buf = [0u8; 4096 + 64];
     let mut pending = false;
     let gate = ed.as_ref().map(|(c, _)| ctl::lock(c).gate());
+    // bytes to run through the normal path again (the overlay could not open)
+    let mut replay: Option<Vec<u8>> = None;
     loop {
-        if let Some((c, wake)) = &ed {
+        if let (Some((c, wake)), None) = (&ed, &replay) {
             let timeout = pending.then_some(ESC_WAIT);
             let (inp, woke) = wait_input(&stdin, wake, timeout);
             if woke {
@@ -107,7 +110,15 @@ pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<(S
                 continue;
             }
         }
-        match stdin.read(&mut buf) {
+        let read = match replay.take() {
+            Some(r) => {
+                let n = r.len().min(buf.len());
+                buf[..n].copy_from_slice(&r[..n]);
+                Ok(n)
+            }
+            None => stdin.read(&mut buf[..4096]),
+        };
+        match read {
             Ok(0) => {
                 if !is_tty {
                     let _ = master.write_all(&[0x04]); // piped input: ^D at the end
@@ -151,7 +162,10 @@ pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<(S
                                 Some(s) => overlay::run(s, &req, &stdin, wake, &mut master),
                                 None => {
                                     g.close();
-                                    write_out(&mut master, &req.key)
+                                    // not the moment after all: the key and what
+                                    // followed take the normal route again
+                                    replay = Some([&req.key[..], &req.after[..]].concat());
+                                    true
                                 }
                             };
                             ok

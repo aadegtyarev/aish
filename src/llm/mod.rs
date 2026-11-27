@@ -52,6 +52,8 @@ pub struct Llm {
     over: Mutex<HashMap<String, String>>,
     pub suggest_on: AtomicBool,
     pub convo: Mutex<Vec<Message>>,
+    /// Held for a whole turn: a quick re-ask waits for the cancelled one.
+    pub turn: Mutex<()>,
     notice: Mutex<Option<String>>,
     /// Models that answered 400 to tools in this session (`provider/alias`).
     no_tools: Mutex<std::collections::HashSet<String>>,
@@ -72,6 +74,7 @@ impl Llm {
             over: Mutex::new(HashMap::new()),
             suggest_on: AtomicBool::new(true),
             convo: Mutex::new(Vec::new()),
+            turn: Mutex::new(()),
             notice: Mutex::new(None),
             no_tools: Mutex::default(),
             pending: Mutex::new(None),
