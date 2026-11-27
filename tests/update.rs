@@ -8,7 +8,13 @@ use expectrl::Session;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-const NEW: &[u8] = b"#!/bin/sh\necho new-aish\n";
+// Plays the new release: reports its version like the real one.
+const NEW: &[u8] = b"#!/bin/sh\necho 'aish 99.0.0'\n";
+
+/// The mock API override exists in debug builds only; never touch the real one.
+fn skip() -> bool {
+    !cfg!(debug_assertions)
+}
 
 /// A tarball like the release one, with `aish` inside `aish-<ver>-<arch>-linux/`.
 fn tarball(ver: &str, body: &[u8]) -> Vec<u8> {
@@ -92,6 +98,9 @@ fn update(exe: &std::path::Path, m: &Mock, args: &[&str]) -> (bool, String, Stri
 
 #[test]
 fn replaces_the_binary() {
+    if skip() {
+        return;
+    }
     let d = tempfile::tempdir().unwrap();
     let exe = copy_exe(&d);
     let m = release("99.0.0", None);
@@ -114,6 +123,9 @@ fn replaces_the_binary() {
 
 #[test]
 fn refuses_a_bad_checksum() {
+    if skip() {
+        return;
+    }
     let d = tempfile::tempdir().unwrap();
     let exe = copy_exe(&d);
     let before = std::fs::read(&exe).unwrap();
@@ -126,6 +138,9 @@ fn refuses_a_bad_checksum() {
 
 #[test]
 fn latest_version_is_reported() {
+    if skip() {
+        return;
+    }
     let d = tempfile::tempdir().unwrap();
     let exe = copy_exe(&d);
     let m = release(env!("CARGO_PKG_VERSION"), None);
@@ -165,6 +180,9 @@ fn session(home: &TempDir, m: &Mock, extra_cfg: &str) -> Session {
 
 #[test]
 fn notice_once_a_day() {
+    if skip() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let m = release("99.0.0", None);
     let mut p = session(&home, &m, "");
@@ -184,6 +202,9 @@ fn notice_once_a_day() {
 
 #[test]
 fn notice_can_be_disabled() {
+    if skip() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let m = release("99.0.0", None);
     let mut p = session(&home, &m, "update_check: off\n");

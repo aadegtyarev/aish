@@ -28,6 +28,7 @@ for arch in amd64 arm64; do
 done
 rm -f dists/stable/Release dists/stable/InRelease dists/stable/Release.gpg
 apt-ftparchive \
+  -o APT::FTPArchive::DoByHash=true \
   -o APT::FTPArchive::Release::Origin=aish \
   -o APT::FTPArchive::Release::Label=aish \
   -o APT::FTPArchive::Release::Suite=stable \

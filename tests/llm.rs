@@ -25,6 +25,14 @@ fn base(home: &TempDir) -> Command {
         .env("XDG_STATE_HOME", home.path().join("state"))
         // never reach the real release API from tests (refused at once)
         .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
+    // ... and in release mode (override ignored) the daily check is not due
+    let st = home.path().join("state/aish");
+    std::fs::create_dir_all(&st).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(st.join("update-check"), format!("{now}\n\n{now}\n")).unwrap();
     cmd
 }
 

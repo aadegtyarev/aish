@@ -17,7 +17,8 @@ const DAY: u64 = 24 * 60 * 60;
 const MAX_DOWNLOAD: u64 = 200 * 1024 * 1024;
 
 /// Debug builds only (like the AISH_TEST_WEB_* hooks): a mock release API.
-#[cfg(debug_assertions)]
+/// Tests that need it skip themselves in release mode.
+#[cfg(any(debug_assertions, test))]
 fn api_url() -> String {
     std::env::var("AISH_TEST_UPDATE_URL")
         .ok()
@@ -25,7 +26,7 @@ fn api_url() -> String {
         .unwrap_or_else(|| API.into())
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(debug_assertions, test)))]
 fn api_url() -> String {
     API.into()
 }
@@ -85,21 +86,60 @@ fn agent(url: &str) -> ureq::Agent {
     b.build()
 }
 
-/// `0.2.0`, `v0.2.0`, `0.2.0-rc1` (pre-release suffix ignored) -> (0, 2, 0).
-pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let core = s.trim().trim_start_matches('v').split(['-', '+']).next()?;
+type Version = ((u64, u64, u64), Option<String>);
+
+/// `0.2.0`, `v0.2.0`, `0.2.0-rc1` -> ((0, 2, 0), pre-release).
+pub fn parse_version(s: &str) -> Option<Version> {
+    let s = s.trim().trim_start_matches('v');
+    let s = s.split('+').next()?;
+    let (core, pre) = match s.split_once('-') {
+        Some((c, p)) => (c, Some(p.to_owned())),
+        None => (s, None),
+    };
     let mut p = core.split('.');
     let v = (
         p.next()?.parse().ok()?,
         p.next()?.parse().ok()?,
         p.next()?.parse().ok()?,
     );
-    p.next().is_none().then_some(v)
+    p.next().is_none().then_some((v, pre))
+}
+
+/// Semver precedence of pre-release tags: numeric ids < alphanumeric, a
+/// shorter prefix is lower.
+fn pre_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    let (mut x, mut y) = (a.split('.'), b.split('.'));
+    loop {
+        match (x.next(), y.next()) {
+            (None, None) => return Equal,
+            (None, _) => return Less,
+            (_, None) => return Greater,
+            (Some(p), Some(q)) => {
+                let o = match (p.parse::<u64>(), q.parse::<u64>()) {
+                    (Ok(m), Ok(n)) => m.cmp(&n),
+                    (Ok(_), _) => Less,
+                    (_, Ok(_)) => Greater,
+                    _ => p.cmp(q),
+                };
+                if o != Equal {
+                    return o;
+                }
+            }
+        }
+    }
 }
 
 pub fn is_newer(latest: &str, current: &str) -> bool {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => l > c,
+    let (Some((lc, lp)), Some((cc, cp))) = (parse_version(latest), parse_version(current)) else {
+        return false;
+    };
+    if lc != cc {
+        return lc > cc;
+    }
+    match (lp, cp) {
+        (None, Some(_)) => true,
+        (Some(l), Some(c)) => pre_cmp(&l, &c) == std::cmp::Ordering::Greater,
         _ => false,
     }
 }
@@ -207,28 +247,101 @@ fn extract(tgz: &[u8], member: &str) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
-/// Write `bytes` next to `exe` and rename over it: atomic, and a running
-/// process keeps its old inode.
-fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let tmp = exe.with_file_name(format!(
-        ".{}.new{}",
-        exe.file_name().and_then(|n| n.to_str()).unwrap_or("aish"),
-        std::process::id()
-    ));
+/// A fresh 0755 file next to `exe` (random name, create_new: never follows
+/// or reuses an existing path), synced.
+fn stage(exe: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let tmp = exe.with_file_name(format!(".aish.new.{}.{nanos:x}", std::process::id()));
     let res = (|| {
-        std::fs::write(&tmp, bytes)?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-        std::fs::rename(&tmp, exe)
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()
     })();
-    res.map_err(|e| {
+    match res {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(format!("{}: {e}", tmp.display()))
+        }
+    }
+}
+
+/// The staged binary must say it is the version we meant to install.
+fn check_version(bin: &Path, want: &str) -> Result<(), String> {
+    let out = std::process::Command::new(bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("new binary does not run: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().next().unwrap_or("").trim();
+    if first == format!("aish {want}") {
+        Ok(())
+    } else {
+        Err(format!(
+            "new binary reports '{first}', expected 'aish {want}'"
+        ))
+    }
+}
+
+/// Stage next to `exe`, check the version, then rename over it: atomic, and a
+/// running process keeps its old inode.
+fn replace_exe(exe: &Path, bytes: &[u8], want: &str) -> Result<(), String> {
+    let tmp = stage(exe, bytes)?;
+    let res = check_version(&tmp, want)
+        .and_then(|()| std::fs::rename(&tmp, exe).map_err(|e| format!("{}: {e}", exe.display())));
+    if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", exe.display())
-    })
+    }
+    res
+}
+
+/// Only replace a file we own (and, as root, only root's own).
+fn check_owner(file_uid: u32, my_uid: u32) -> Result<(), String> {
+    if file_uid == my_uid {
+        Ok(())
+    } else if my_uid == 0 {
+        Err("refusing to replace a file owned by another user as root".into())
+    } else {
+        Err("the binary is owned by another user (update it as that user)".into())
+    }
+}
+
+/// A symlink named on the command line / PATH is not replaced blindly.
+fn symlink_hint(argv0: &std::ffi::OsStr) -> Option<String> {
+    let p = Path::new(argv0);
+    let found = if argv0.as_encoded_bytes().contains(&b'/') {
+        p.to_path_buf()
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join(p))
+            .find(|c| c.is_file())?
+    };
+    let t = std::fs::read_link(&found).ok()?;
+    Some(format!(
+        "{} is a symlink to {}; update the target or reinstall with install.sh",
+        found.display(),
+        t.display()
+    ))
 }
 
 /// Download, verify and install `rel` over `exe`.
 fn install(rel: &Release, exe: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self")
+        .map_err(|e| e.to_string())?
+        .uid();
+    let owner = std::fs::metadata(exe)
+        .map_err(|e| format!("{}: {e}", exe.display()))?
+        .uid();
+    check_owner(owner, me)?;
     let arch = std::env::consts::ARCH;
     let dir = format!("aish-{}-{arch}-linux", rel.version);
     let tar = format!("{dir}.tar.gz");
@@ -240,7 +353,7 @@ fn install(rel: &Release, exe: &Path) -> Result<(), String> {
     let data = get(tar_url)?;
     verify(&data, &want)?;
     let bin = extract(&data, &format!("{dir}/aish"))?;
-    replace_exe(exe, &bin)
+    replace_exe(exe, &bin, &rel.version)
 }
 
 fn dpkg_owned(exe: &Path) -> bool {
@@ -272,6 +385,10 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     if dpkg_owned(&exe) {
         println!("{APT_LINE}");
         return 0;
+    }
+    if let Some(h) = std::env::args_os().next().and_then(|a| symlink_hint(&a)) {
+        eprintln!("aish: {h}");
+        return 1;
     }
     let cur = env!("CARGO_PKG_VERSION");
     let rel = match latest() {
@@ -390,8 +507,13 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert_eq!(parse_version("v0.2.0"), Some((0, 2, 0)));
-        assert_eq!(parse_version("1.10.3-rc1"), Some((1, 10, 3)));
+        assert_eq!(parse_version("v0.2.0"), Some(((0, 2, 0), None)));
+        assert_eq!(parse_version("1.10.3-rc1").unwrap().0, (1, 10, 3));
+        assert!(is_newer("0.4.0", "0.4.0-rc1"));
+        assert!(!is_newer("0.4.0-rc1", "0.4.0"));
+        assert!(is_newer("0.4.0-rc2", "0.4.0-rc1"));
+        assert!(is_newer("0.4.0-rc.10", "0.4.0-rc.9"));
+        assert!(!is_newer("0.4.0-rc1", "0.4.0-rc1"));
         assert_eq!(parse_version("1.2"), None);
         assert!(is_newer("0.10.0", "0.9.9"));
         assert!(is_newer("v0.2.0", "0.1.0"));
@@ -423,28 +545,39 @@ mod tests {
         assert!(sum_for(&sums, "c").is_none());
     }
 
+    fn script(v: &str) -> Vec<u8> {
+        format!("#!/bin/sh\necho 'aish {v}'\n").into_bytes()
+    }
+
     #[test]
-    fn replace_keeps_old_until_rename() {
+    fn replace_checks_version_first() {
+        use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let exe = d.path().join("aish");
         std::fs::write(&exe, b"old").unwrap();
-        replace_exe(&exe, b"new").unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
-        // no temp files left behind
+        let e = replace_exe(&exe, &script("0.9.0"), "1.0.0").unwrap_err();
+        assert!(e.contains("expected 'aish 1.0.0'"), "{e}");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+        replace_exe(&exe, &script("1.0.0"), "1.0.0").unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), script("1.0.0"));
+        let m = std::fs::metadata(&exe).unwrap().permissions().mode();
+        assert_eq!(m & 0o777, 0o755);
+        // no temp files left behind, even after the refusal
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 
     #[test]
-    fn cidr() {
-        assert!(in_cidr("127.0.0.1", "127.0.0.0", "8"));
-        assert!(in_cidr("10.1.2.3", "10.0.0.0", "8"));
-        assert!(!in_cidr("11.0.0.1", "10.0.0.0", "8"));
-        assert!(!in_cidr("example.com", "10.0.0.0", "8"));
+    fn owner_and_symlink_guards() {
+        assert!(check_owner(1000, 1000).is_ok());
+        assert!(check_owner(0, 1000).is_err());
+        assert!(check_owner(1000, 0).unwrap_err().contains("as root"));
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        std::fs::write(&real, "x").unwrap();
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(symlink_hint(link.as_os_str()).unwrap().contains("symlink"));
+        assert!(symlink_hint(real.as_os_str()).is_none());
     }
 
     #[test]
@@ -458,5 +591,13 @@ mod tests {
         assert!(!c.should_notify(500 + DAY - 1, "0.1.0"));
         assert!(!c.should_notify(500 + DAY, "0.2.0"));
         assert!(Cache::parse("").due(now()));
+    }
+
+    #[test]
+    fn cidr() {
+        assert!(in_cidr("127.0.0.1", "127.0.0.0", "8"));
+        assert!(in_cidr("10.1.2.3", "10.0.0.0", "8"));
+        assert!(!in_cidr("11.0.0.1", "10.0.0.0", "8"));
+        assert!(!in_cidr("example.com", "10.0.0.0", "8"));
     }
 }
