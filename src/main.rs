@@ -3,10 +3,6 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if matches!(args.as_slice(), [a] if a == "--version" || a == "-V") {
-        println!("llmsh {}", env!("CARGO_PKG_VERSION"));
-        return ExitCode::SUCCESS;
-    }
     // Only these exact subcommands are ours; everything else is bash's.
     if let Some(code) = llmsh::llm::cmd::cli(&args) {
         return ExitCode::from(code as u8);
