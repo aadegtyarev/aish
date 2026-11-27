@@ -7,7 +7,7 @@ user=(); docker info 2>/dev/null | grep -q rootless || user=(-u "$(id -u):$(id -
 exec docker run --rm -i $([ -t 0 ] && echo -t) \
   "${user[@]}" \
   -v "$PWD":/src -w /src \
-  -v llmsh-cargo:/usr/local/cargo/registry \
+  -v aish-cargo:/usr/local/cargo/registry \
   -e CARGO_HOME=/usr/local/cargo -e CARGO_TARGET_DIR=/src/target \
   rust:1.93.1-bookworm sh -c '
     case "$1" in fmt|clippy) rustup component add rustfmt clippy >/dev/null 2>&1 || true ;; esac

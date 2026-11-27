@@ -12,6 +12,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "aish"
+version = "0.1.0"
+dependencies = [
+ "aish-llm",
+ "anyhow",
+ "crossterm",
+ "expectrl",
+ "lineedit-wip",
+ "nix 0.29.0",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "signal-hook",
+ "tempfile",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "unicode-width",
+ "vte",
+]
+
+[[package]]
+name = "aish-llm"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -370,36 +400,6 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
-
-[[package]]
-name = "llmsh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "expectrl",
- "lineedit-wip",
- "llmsh-llm",
- "nix 0.29.0",
- "serde",
- "serde_json",
- "serde_yaml",
- "signal-hook",
- "tempfile",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "unicode-width",
- "vte",
-]
-
-[[package]]
-name = "llmsh-llm"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "ureq",
-]
 
 [[package]]
 name = "lock_api"

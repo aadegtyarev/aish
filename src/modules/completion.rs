@@ -49,7 +49,7 @@ impl CompletionSource for Bash {
     }
 }
 
-/// Completes `llmsh` subcommands and model references; everything else goes
+/// Completes `aish` subcommands and model references; everything else goes
 /// to the bash source.
 struct WithLlm {
     inner: Bash,
@@ -59,7 +59,7 @@ struct WithLlm {
 impl CompletionSource for WithLlm {
     fn complete(&mut self, req: &Request, reply: Reply) -> Outcome {
         let ours = match req.words.first().map(String::as_str) {
-            Some("llmsh") => true,
+            Some("aish") => true,
             Some(w) => self.llm.command().as_deref() == Some(w),
             None => false,
         };

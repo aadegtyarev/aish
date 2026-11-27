@@ -1,4 +1,4 @@
-//! LLM features: shared state, `?` questions, the `llmsh` command, first run,
+//! LLM features: shared state, `?` questions, the `aish` command, first run,
 //! and model suggestions. Nothing here runs on the keystroke path: all network
 //! work happens on worker threads.
 
@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use llmsh_llm::{Endpoint, Kind, Message};
+use aish_llm::{Endpoint, Kind, Message};
 
 use crate::config::{self, Config, ProviderType, Setting};
 
@@ -48,7 +48,7 @@ struct Cached {
 pub struct Llm {
     path: Option<PathBuf>,
     cached: Mutex<Cached>,
-    /// Session-only role overrides (`llmsh chat cloud/main`).
+    /// Session-only role overrides (`aish chat cloud/main`).
     over: Mutex<HashMap<String, String>>,
     pub suggest_on: AtomicBool,
     pub convo: Mutex<Vec<Message>>,
@@ -111,7 +111,7 @@ impl Llm {
 
     /// Name of the in-session control command: `ai` unless configured;
     /// `None` when switched off (`command: off`). Always wins over any
-    /// program of that name; `llmsh` itself works regardless.
+    /// program of that name; `aish` itself works regardless.
     pub fn command(&self) -> Option<String> {
         match self.config().map(|c| c.command.clone()) {
             Some(Setting::Off) => None,
@@ -120,16 +120,16 @@ impl Llm {
         }
     }
 
-    /// The line starts with one of our command names (`llmsh`, the configured
+    /// The line starts with one of our command names (`aish`, the configured
     /// one) and a space: arguments are ours, not for the model to complete.
     pub fn is_own_line(&self, t: &str) -> bool {
         let first = t.split(' ').next().unwrap_or("");
-        t.contains(' ') && (first == "llmsh" || self.command().as_deref() == Some(first))
+        t.contains(' ') && (first == "aish" || self.command().as_deref() == Some(first))
     }
 
     /// What to call the command in messages.
     pub fn command_label(&self) -> String {
-        self.command().unwrap_or_else(|| "llmsh".to_owned())
+        self.command().unwrap_or_else(|| "aish".to_owned())
     }
 
     pub fn set_override(&self, role: &str, id: &str) {

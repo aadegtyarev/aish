@@ -10,11 +10,11 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use aish_llm::{Message, Request};
 use lineedit_wip::plugins::SharedHistory;
 use lineedit_wip::{Ctx, Handle, Handled, Key, Plugin};
-use llmsh_llm::{Message, Request};
 
-use super::cmd::is_llmsh_line;
+use super::cmd::is_aish_line;
 use super::mask::mask;
 use super::{Llm, Target};
 use crate::blocks::BlockTracker;
@@ -151,7 +151,7 @@ impl ModelSuggest {
         !t.is_empty()
             && ctx.cursor() == t.len()
             && !is_model_line(t)
-            && !is_llmsh_line(t)
+            && !is_aish_line(t)
             && !self.llm.is_own_line(t)
             && self.llm.suggest_on.load(Ordering::Relaxed)
     }
@@ -274,7 +274,7 @@ fn worker(
                     }),
                 );
             }
-            Err(llmsh_llm::Error::Cancelled) => {}
+            Err(aish_llm::Error::Cancelled) => {}
             // Stale (cancelled) jobs say nothing about the server's health.
             Err(_) if job.cancel.load(Ordering::Relaxed) => {}
             Err(e) => {
@@ -294,7 +294,7 @@ fn ask(
     tracker: &Arc<Mutex<BlockTracker>>,
     ls: &LsCache,
     job: &Job,
-) -> Result<Option<String>, llmsh_llm::Error> {
+) -> Result<Option<String>, aish_llm::Error> {
     let (cwd, recent) = match tracker.lock() {
         Ok(tr) => (
             tr.cwd().to_owned(),
@@ -330,13 +330,13 @@ fn ask(
         max_tokens: 48,
         temperature: Some(0.0),
         stop: vec!["\n".into()],
-        first_token_timeout: llmsh_llm::FIRST_TOKEN_COMPLETE,
+        first_token_timeout: aish_llm::FIRST_TOKEN_COMPLETE,
         ..Request::chat(SYSTEM, vec![Message::user(ctx)])
     };
     // Only the first line matters: stop (and close the connection) at "\n".
     let mut reply = String::new();
     let mut seen_nl = false;
-    let r = llmsh_llm::stream(&t.ep, &req, &job.cancel, |llmsh_llm::Event::Delta(d)| {
+    let r = aish_llm::stream(&t.ep, &req, &job.cancel, |aish_llm::Event::Delta(d)| {
         reply.push_str(&d);
         if reply.contains('\n') && !seen_nl {
             seen_nl = true;
@@ -344,7 +344,7 @@ fn ask(
         }
     });
     match r {
-        Err(llmsh_llm::Error::Cancelled) if seen_nl => {}
+        Err(aish_llm::Error::Cancelled) if seen_nl => {}
         Err(e) => return Err(e),
         Ok(_) => {}
     }

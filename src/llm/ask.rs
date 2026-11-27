@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use llmsh_llm::{Error, Message, Part};
+use aish_llm::{Error, Message, Part};
 
 use super::agent;
 use super::context;
@@ -74,7 +74,7 @@ pub fn masked_history(c: &[Message], local: bool) -> Vec<Message> {
                 .iter()
                 .map(|p| match p {
                     Part::Text(t) => Part::Text(mask(t)),
-                    Part::ToolCall(c) => Part::ToolCall(llmsh_llm::ToolCall {
+                    Part::ToolCall(c) => Part::ToolCall(aish_llm::ToolCall {
                         arguments: mask(&c.arguments),
                         ..c.clone()
                     }),
@@ -169,7 +169,7 @@ pub fn remember_turn(llm: &Llm, turn: &agent::Turn) {
     // drop whole old turns (up to the next plain question), never half of one
     while c.len() > 2 && convo_chars(&c) > CONVO_CAP {
         let next = c.iter().skip(1).position(|m| {
-            m.role == llmsh_llm::Role::User && matches!(m.parts.first(), Some(Part::Text(_)))
+            m.role == aish_llm::Role::User && matches!(m.parts.first(), Some(Part::Text(_)))
         });
         match next {
             Some(i) => {

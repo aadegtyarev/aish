@@ -130,7 +130,7 @@ fn width() -> u16 {
 
 /// Whether prompt mode should be used at all for this environment.
 pub fn wanted() -> bool {
-    std::env::var_os("LLMSH_EDITOR").is_none_or(|v| v != "0")
+    std::env::var_os("AISH_EDITOR").is_none_or(|v| v != "0")
         && std::env::var("TERM").is_ok_and(|t| !t.is_empty() && t != "dumb")
 }
 
@@ -625,7 +625,7 @@ impl Controller {
 mod tests {
     use super::*;
 
-    const B: &[u8] = b"\x1b]133;B;llmsh=n1\x07";
+    const B: &[u8] = b"\x1b]133;B;aish=n1\x07";
 
     fn ctl() -> Shared {
         let null = || File::create("/dev/null").unwrap();

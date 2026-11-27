@@ -1,11 +1,11 @@
-# llmsh completion sidecar: a non-interactive-looking bash that answers
-# completion requests from llmsh. Requests arrive on stdin as NUL-terminated
+# aish completion sidecar: a non-interactive-looking bash that answers
+# completion requests from aish. Requests arrive on stdin as NUL-terminated
 # fields, replies go to fd 3 (stdout/stderr are discarded so that nothing in the
 # user's rc files can corrupt the protocol).
 exec 3>&1 1>/dev/null 2>&1
 set +eu +o history +H 2>/dev/null
 unset HISTFILE
-export LLMSH_SIDECAR=1
+export AISH_SIDECAR=1
 shopt -s progcomp extglob 2>/dev/null
 
 # The user's rc must not replace or end this shell.

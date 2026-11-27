@@ -3,7 +3,7 @@ set -e
 case "$1" in
     remove|purge)
         if command -v remove-shell >/dev/null 2>&1; then
-            remove-shell /usr/bin/llmsh
+            remove-shell /usr/bin/aish
         fi
         ;;
 esac

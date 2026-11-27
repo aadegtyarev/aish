@@ -1,4 +1,4 @@
-//! App-level modules. A module is a feature of llmsh (history, completion,
+//! App-level modules. A module is a feature of aish (history, completion,
 //! highlighting, model access, later job notifications) that hooks into the
 //! lifecycle below and may contribute plugins to the line editor. See
 //! docs/PLUGINS.md.

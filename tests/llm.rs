@@ -3,8 +3,8 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use aish_llm::mock::{self, Mock};
 use expectrl::{Eof, Session};
-use llmsh_llm::mock::{self, Mock};
 use tempfile::TempDir;
 
 fn config(url: &str) -> String {
@@ -16,7 +16,7 @@ fn config(url: &str) -> String {
 fn base(home: &TempDir) -> Command {
     std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
     std::fs::write(home.path().join("hist"), "").unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", home.path())
@@ -33,7 +33,7 @@ fn spawn(cmd: Command) -> Session {
 }
 
 fn with_config(home: &TempDir, mock: &Mock) -> Session {
-    let dir = home.path().join(".config/llmsh");
+    let dir = home.path().join(".config/aish");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.yaml"), config(&mock.url())).unwrap();
     spawn(base(home))
@@ -138,27 +138,27 @@ fn http_error_is_one_dim_line() {
 }
 
 #[test]
-fn llmsh_status_switch_and_config_prefill() {
+fn aish_status_switch_and_config_prefill() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
     let mut p = with_config(&home, &m);
     p.expect("E> ").unwrap();
     settle();
-    p.send("llmsh\r").unwrap();
+    p.send("aish\r").unwrap();
     p.expect("chat    mock/m · test · ok ").unwrap();
     p.expect("complete").unwrap();
     p.expect("подсказки: вкл").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    p.send("llmsh off\r").unwrap();
+    p.send("aish off\r").unwrap();
     p.expect("подсказки: выкл").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    p.send("llmsh chat mock/m\r").unwrap();
+    p.send("aish chat mock/m\r").unwrap();
     p.expect("chat → mock/m").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    p.send("llmsh config\r").unwrap();
+    p.send("aish config\r").unwrap();
     p.expect("E> ").unwrap();
     p.expect("config.yaml").unwrap();
     p.send("\x03").unwrap();
@@ -179,16 +179,16 @@ fn first_run_probe_writes_config_and_says_so_once() {
         )
     });
     let mut cmd = base(&home);
-    cmd.env("LLMSH_PROBE_OLLAMA", m.url())
-        .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
+    cmd.env("AISH_PROBE_OLLAMA", m.url())
+        .env("AISH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
     let mut p = spawn(cmd);
     p.expect(expectrl::Regex(
-        "llmsh · chat: ollama/qwen3:32b · complete: ollama/qwen2.5-coder:1.5b · (ai|llmsh) config — изменить",
+        "aish · chat: ollama/qwen3:32b · complete: ollama/qwen2.5-coder:1.5b · (ai|aish) config — изменить",
     ))
     .unwrap();
     p.expect("E> ").unwrap();
     settle();
-    let cfg = std::fs::read_to_string(home.path().join(".config/llmsh/config.yaml")).unwrap();
+    let cfg = std::fs::read_to_string(home.path().join(".config/aish/config.yaml")).unwrap();
     assert!(
         cfg.contains("qwen2.5-coder:1.5b") && cfg.contains("roles:"),
         "{cfg}"
@@ -201,12 +201,12 @@ fn first_run_probe_writes_config_and_says_so_once() {
 fn first_run_with_nothing_found_writes_nothing() {
     let home = TempDir::new().unwrap();
     let mut cmd = base(&home);
-    cmd.env("LLMSH_PROBE_OLLAMA", "http://127.0.0.1:1/v1")
-        .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
+    cmd.env("AISH_PROBE_OLLAMA", "http://127.0.0.1:1/v1")
+        .env("AISH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1");
     let mut p = spawn(cmd);
     p.expect("E> ").unwrap();
     settle();
-    assert!(!home.path().join(".config/llmsh/config.yaml").exists());
+    assert!(!home.path().join(".config/aish/config.yaml").exists());
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
@@ -215,7 +215,7 @@ fn first_run_with_nothing_found_writes_nothing() {
 fn cli_subcommands_and_bash_passthrough() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
-    let dir = home.path().join(".config/llmsh");
+    let dir = home.path().join(".config/aish");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
     let run = |args: &[&str]| {
@@ -232,8 +232,8 @@ fn cli_subcommands_and_bash_passthrough() {
     let o = run(&["config"]);
     assert!(String::from_utf8_lossy(&o.stdout)
         .trim()
-        .ends_with("llmsh/config.yaml"));
-    assert!(String::from_utf8_lossy(&run(&["--version"]).stdout).starts_with("llmsh "));
+        .ends_with("aish/config.yaml"));
+    assert!(String::from_utf8_lossy(&run(&["--version"]).stdout).starts_with("aish "));
     // everything else is bash
     let o = run(&["-c", "echo via-bash"]);
     assert_eq!(o.stdout, b"via-bash\n");
@@ -312,13 +312,13 @@ fn stale_model_suggestion_is_discarded() {
 }
 
 #[test]
-fn llmsh_off_silences_suggestions() {
+fn aish_off_silences_suggestions() {
     let home = TempDir::new().unwrap();
     let m = suggest_mock();
     let mut p = with_config(&home, &m);
     p.expect("E> ").unwrap();
     settle();
-    p.send("llmsh off\r").unwrap();
+    p.send("aish off\r").unwrap();
     p.expect("выкл").unwrap();
     p.expect("E> ").unwrap();
     settle();
@@ -370,9 +370,9 @@ fn first_run_finds_llama_server() {
     let home = TempDir::new().unwrap();
     let m = Mock::start(|_, c| mock::json(c, 200, r#"{"data":[{"id":"gguf-model-7b"}]}"#));
     let mut cmd = base(&home);
-    cmd.env("LLMSH_PROBE_OLLAMA", "http://127.0.0.1:1/v1")
-        .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1")
-        .env("LLMSH_PROBE_LLAMACPP", m.url());
+    cmd.env("AISH_PROBE_OLLAMA", "http://127.0.0.1:1/v1")
+        .env("AISH_PROBE_LMSTUDIO", "http://127.0.0.1:1/v1")
+        .env("AISH_PROBE_LLAMACPP", m.url());
     let mut p = spawn(cmd);
     p.expect("chat: llamacpp/gguf-model-7b").unwrap();
     p.expect("E> ").unwrap();
@@ -397,7 +397,7 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
     p.expect("E> ").unwrap();
     settle();
     // the long form always works
-    p.send("llmsh on\r").unwrap();
+    p.send("aish on\r").unwrap();
     p.expect("подсказки: вкл").unwrap();
     p.expect("E> ").unwrap();
     settle();
@@ -412,7 +412,7 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
 }
 
 fn with_command(home: &TempDir, m: &Mock, command: &str) -> Session {
-    let dir = home.path().join(".config/llmsh");
+    let dir = home.path().join(".config/aish");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
@@ -431,7 +431,7 @@ fn ai_wins_even_over_an_executable_of_that_name() {
     let ai = bin.join("ai");
     std::fs::write(&ai, "#!/bin/sh\necho real-ai-ran\n").unwrap();
     std::fs::set_permissions(&ai, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let dir = home.path().join(".config/llmsh");
+    let dir = home.path().join(".config/aish");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
     let mut cmd = base(&home);
@@ -468,7 +468,7 @@ fn custom_command_name_works_and_ai_is_left_to_bash() {
 }
 
 #[test]
-fn command_off_leaves_ai_to_bash_but_llmsh_works() {
+fn command_off_leaves_ai_to_bash_but_aish_works() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
     let mut p = with_command(&home, &m, "off");
@@ -478,7 +478,7 @@ fn command_off_leaves_ai_to_bash_but_llmsh_works() {
     p.expect("ai: command not found").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    p.send("llmsh\r").unwrap();
+    p.send("aish\r").unwrap();
     p.expect("chat    mock/m · test · ok ").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
@@ -522,7 +522,7 @@ fn config_kind(url: &str, kind: &str) -> String {
 }
 
 fn with_kind(home: &TempDir, m: &Mock, kind: &str) -> Session {
-    let dir = home.path().join(".config/llmsh");
+    let dir = home.path().join(".config/aish");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.yaml"), config_kind(&m.url(), kind)).unwrap();
     spawn(base(home))
@@ -572,7 +572,7 @@ fn agent_flow(kind: &'static str) {
     p.expect("E> ").unwrap();
     settle();
     p.send("? собери проект\r").unwrap();
-    // read-only command ran by llmsh itself: dim line, no output shown
+    // read-only command ran by aish itself: dim line, no output shown
     p.expect("$ ls Cargo.toml · 1 строк").unwrap();
     // the mutating one waits in the input line
     p.expect("E> ").unwrap();
@@ -730,7 +730,7 @@ fn tools_rejected_with_400_falls_back_once_and_is_remembered() {
 fn tools_off_in_config_sends_no_tools() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
-    let dir = home.path().join(".config/llmsh");
+    let dir = home.path().join(".config/aish");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
@@ -887,19 +887,19 @@ fn a_different_command_with_the_same_program_does_not_continue_the_turn() {
     p.expect(Eof).unwrap();
 }
 
-// ---- llmsh init ----------------------------------------------------------
+// ---- aish init ----------------------------------------------------------
 
 fn init_cmd(home: &TempDir, args: &[&str], env: &[(&str, &str)]) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_aish"));
     c.arg("init")
         .args(args)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", home.path())
         // hermetic detection: nothing listens there
-        .env("LLMSH_PROBE_OLLAMA", "http://127.0.0.1:9/v1")
-        .env("LLMSH_PROBE_LMSTUDIO", "http://127.0.0.1:9/v1")
-        .env("LLMSH_PROBE_LLAMACPP", "http://127.0.0.1:9/v1")
+        .env("AISH_PROBE_OLLAMA", "http://127.0.0.1:9/v1")
+        .env("AISH_PROBE_LMSTUDIO", "http://127.0.0.1:9/v1")
+        .env("AISH_PROBE_LLAMACPP", "http://127.0.0.1:9/v1")
         .stdin(std::process::Stdio::null());
     for (k, v) in env {
         c.env(k, v);
@@ -936,7 +936,7 @@ fn init_without_a_terminal_changes_nothing_and_fails() {
         &[],
         &[
             ("DEEPSEEK_API_KEY", "sk-x"),
-            ("LLMSH_DEEPSEEK_URL", &m.url()),
+            ("AISH_DEEPSEEK_URL", &m.url()),
         ],
     ));
     assert_eq!(code, 1, "{out}{err}");
@@ -948,7 +948,7 @@ fn init_without_a_terminal_changes_nothing_and_fails() {
         std::fs::read_to_string(home.path().join(".bashrc")).unwrap(),
         "export A=1\n"
     );
-    assert!(!home.path().join(".config/llmsh/config.yaml").exists());
+    assert!(!home.path().join(".config/aish/config.yaml").exists());
 }
 
 #[test]
@@ -959,9 +959,9 @@ fn init_is_idempotent_backs_up_once_and_removes_cleanly() {
     let (code, out, err) = run_init(init_cmd(&home, &["--yes"], &[]));
     assert_eq!(code, 0, "{out}{err}");
     let once = std::fs::read_to_string(&bashrc).unwrap();
-    assert_eq!(once.matches("# >>> llmsh >>>").count(), 1);
-    assert!(once.contains("exec llmsh") && once.contains("-z ${LLMSH-}"));
-    let bak = home.path().join(".bashrc.llmsh-bak");
+    assert_eq!(once.matches("# >>> aish >>>").count(), 1);
+    assert!(once.contains("exec aish") && once.contains("-z ${AISH-}"));
+    let bak = home.path().join(".bashrc.aish-bak");
     assert_eq!(
         std::fs::read_to_string(&bak).unwrap(),
         "export A=1\nalias x=y\n"
@@ -995,7 +995,7 @@ fn init_is_idempotent_backs_up_once_and_removes_cleanly() {
 fn init_keeps_an_existing_config() {
     let home = TempDir::new().unwrap();
     let m = deepseek_mock();
-    let cfg = home.path().join(".config/llmsh/config.yaml");
+    let cfg = home.path().join(".config/aish/config.yaml");
     std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     std::fs::write(&cfg, "providers: []\n").unwrap();
     let (code, out, _) = run_init(init_cmd(
@@ -1003,7 +1003,7 @@ fn init_keeps_an_existing_config() {
         &["--yes"],
         &[
             ("DEEPSEEK_API_KEY", "sk-x"),
-            ("LLMSH_DEEPSEEK_URL", &m.url()),
+            ("AISH_DEEPSEEK_URL", &m.url()),
         ],
     ));
     assert_eq!(code, 0, "{out}");
@@ -1020,11 +1020,11 @@ fn init_writes_env_keys_as_references_never_literally() {
         &["--yes"],
         &[
             ("DEEPSEEK_API_KEY", "sk-very-secret-value"),
-            ("LLMSH_DEEPSEEK_URL", &m.url()),
+            ("AISH_DEEPSEEK_URL", &m.url()),
         ],
     ));
     assert_eq!(code, 0, "{out}");
-    let cfg = std::fs::read_to_string(home.path().join(".config/llmsh/config.yaml")).unwrap();
+    let cfg = std::fs::read_to_string(home.path().join(".config/aish/config.yaml")).unwrap();
     assert!(cfg.contains("$DEEPSEEK_API_KEY"), "{cfg}");
     assert!(!cfg.contains("sk-very-secret-value"), "{cfg}");
     assert!(
@@ -1039,11 +1039,11 @@ fn init_writes_env_keys_as_references_never_literally() {
 }
 
 #[test]
-fn bashrc_block_starts_llmsh_without_a_loop_and_has_an_escape_hatch() {
+fn bashrc_block_starts_aish_without_a_loop_and_has_an_escape_hatch() {
     let home = TempDir::new().unwrap();
     let bin = home.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_llmsh"), bin.join("llmsh")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_aish"), bin.join("aish")).unwrap();
     std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
     let (code, out, err) = run_init(init_cmd(&home, &["--yes"], &[]));
     assert_eq!(code, 0, "{out}{err}");
@@ -1058,16 +1058,16 @@ fn bashrc_block_starts_llmsh_without_a_loop_and_has_an_escape_hatch() {
             .env("XDG_STATE_HOME", home.path().join("state"))
             .env("TERM", "xterm");
         if disable {
-            c.env("LLMSH_DISABLE", "1");
+            c.env("AISH_DISABLE", "1");
         }
         spawn(c)
     };
-    // exec'd into llmsh (its OSC marks appear), once: no loop, exit ends it
+    // exec'd into aish (its OSC marks appear), once: no loop, exit ends it
     let mut p = shell(false);
     let f = p.expect("E> ").unwrap();
     assert!(
         String::from_utf8_lossy(f.before()).contains("133;A"),
-        "llmsh is running"
+        "aish is running"
     );
     settle();
     p.send("echo ok-$((6*7))\r").unwrap();
@@ -1086,12 +1086,12 @@ fn bashrc_block_starts_llmsh_without_a_loop_and_has_an_escape_hatch() {
 }
 
 #[test]
-fn the_completion_sidecar_sourcing_bashrc_is_not_replaced_by_llmsh() {
+fn the_completion_sidecar_sourcing_bashrc_is_not_replaced_by_aish() {
     let home = TempDir::new().unwrap();
     std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
     let (code, _, _) = run_init(init_cmd(&home, &["--yes"], &[]));
     assert_eq!(code, 0);
-    // like the sidecar: stdin is not a terminal, `exec` is a no-op function, LLMSH unset
+    // like the sidecar: stdin is not a terminal, `exec` is a no-op function, AISH unset
     let out = Command::new("bash")
         .args([
             "-c",
@@ -1110,7 +1110,7 @@ fn failed_start_falls_back_to_a_usable_bash_without_looping() {
     let home = TempDir::new().unwrap();
     let bin = home.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_llmsh"), bin.join("llmsh")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_aish"), bin.join("aish")).unwrap();
     std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
     let (code, out, err) = run_init(init_cmd(&home, &["--yes"], &[]));
     assert_eq!(code, 0, "{out}{err}");
@@ -1125,11 +1125,11 @@ fn failed_start_falls_back_to_a_usable_bash_without_looping() {
         .env("HISTFILE", home.path().join("hist"))
         .env("XDG_STATE_HOME", home.path().join("state"))
         .env("TERM", "xterm")
-        // every llmsh start fails; the block would exec llmsh forever without the guard
-        .env("LLMSH_TEST_FAIL_START", "1");
+        // every aish start fails; the block would exec aish forever without the guard
+        .env("AISH_TEST_FAIL_START", "1");
     let mut p = spawn(c);
     p.expect("E> ").unwrap();
-    p.send("echo ok-$((6*7)) $LLMSH_DISABLE\r").unwrap();
+    p.send("echo ok-$((6*7)) $AISH_DISABLE\r").unwrap();
     p.expect("ok-42 1").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();

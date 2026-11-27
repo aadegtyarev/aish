@@ -1,7 +1,7 @@
 //! Command blocks built from OSC 133 marks in the PTY output stream.
 //!
 //! Marks: A prompt start, B input start, C output start, D;<exit> finished.
-//! Private `1337;llmsh;{t,b}=<cmd>` (plain / base64) arrives just before D.
+//! Private `1337;aish;{t,b}=<cmd>` (plain / base64) arrives just before D.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime};
@@ -152,7 +152,7 @@ struct Run {
 
 #[derive(Default)]
 struct Collector {
-    /// When set, OSC 133 marks must carry `llmsh=<nonce>` (foreign shells' marks are ignored).
+    /// When set, OSC 133 marks must carry `aish=<nonce>` (foreign shells' marks are ignored).
     nonce: Option<String>,
     path: Option<String>,
     path_version: u64,
@@ -206,7 +206,7 @@ impl Collector {
     fn tagged(&self, params: &[&[u8]]) -> bool {
         match &self.nonce {
             None => true,
-            Some(n) => params.iter().any(|p| *p == format!("llmsh={n}").as_bytes()),
+            Some(n) => params.iter().any(|p| *p == format!("aish={n}").as_bytes()),
         }
     }
 }
@@ -259,9 +259,9 @@ impl Perform for Collector {
                     }
                 }
             }
-            [b"1337", b"llmsh", payload @ ..] => {
+            [b"1337", b"aish", payload @ ..] => {
                 // vte splits on ';', and plain commands may contain it.
-                debug_assert!(PRIVATE_PREFIX.ends_with(b"llmsh;"));
+                debug_assert!(PRIVATE_PREFIX.ends_with(b"aish;"));
                 let payload = payload.join(&b';');
                 if let Some(p) = payload.strip_prefix(b"jobs=") {
                     self.jobs = job_fields(p)
@@ -380,9 +380,9 @@ mod tests {
 
     const STREAM: &[u8] = b"\x1b]7;file://h/tmp/a%20b\x07\x1b]133;A\x07$ \x1b]133;B\x07\
 \x1b]133;C\x07\x1b[1mhi\x1b[0m\r\nline\ttwo\r\n\
-\x1b]1337;llmsh;p=echo%20hi;%20x\x07\x1b]133;D;3\x07\
+\x1b]1337;aish;p=echo%20hi;%20x\x07\x1b]133;D;3\x07\
 \x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;C\x07out\r\n\
-\x1b]1337;llmsh;p=ls%20-l%20%22%24%C3%A9%22\x07\x1b]133;D;0\x07\x1b]133;A\x07$ ";
+\x1b]1337;aish;p=ls%20-l%20%22%24%C3%A9%22\x07\x1b]133;D;0\x07\x1b]133;A\x07$ ";
 
     fn check(t: &BlockTracker) {
         let b: Vec<_> = t.blocks().last(10).collect();
@@ -463,12 +463,12 @@ mod tests {
         let mut t = BlockTracker::with_nonce("n1".into());
         // a foreign shell (ssh) inside the command: no block, no confusion
         t.feed(
-            b"\x1b]133;C;llmsh=n1\x07out\x1b]133;A\x07$ \x1b]133;D;5\x07\x1b]133;D;0;llmsh=n1\x07",
+            b"\x1b]133;C;aish=n1\x07out\x1b]133;A\x07$ \x1b]133;D;5\x07\x1b]133;D;0;aish=n1\x07",
         );
         let b: Vec<_> = t.blocks().last(10).collect();
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].exit_code, Some(0));
-        t.feed(b"\x1b]1337;llmsh;path=/a:/b%20c\x07");
+        t.feed(b"\x1b]1337;aish;path=/a:/b%20c\x07");
         assert_eq!(t.path(), (Some("/a:/b c"), 1));
     }
 }

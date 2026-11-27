@@ -1,7 +1,7 @@
 //! The read-only allowlist: which commands the agent may run by itself.
 //!
 //! A command line is tokenized like a shell would (quotes, escapes) and turned
-//! into a *plan*: a pipeline of argv vectors that llmsh executes itself with
+//! into a *plan*: a pipeline of argv vectors that aish executes itself with
 //! no shell involved, so quoting is only our tokenizer's job. Every simple
 //! command must be on the list and every option must be a known safe one
 //! (exact names: no GNU abbreviations). Anything not understood is "not
@@ -169,10 +169,10 @@ pub fn is_secret_path(p: &str) -> bool {
     {
         return true;
     }
-    // ~/.config/{gcloud,gh,aider,llmsh}/..
+    // ~/.config/{gcloud,gh,aider,aish}/..
     if parts
         .windows(2)
-        .any(|w| w[0] == ".config" && ["gcloud", "gh", "aider", "llmsh"].contains(&w[1].as_str()))
+        .any(|w| w[0] == ".config" && ["gcloud", "gh", "aider", "aish"].contains(&w[1].as_str()))
     {
         return true;
     }
@@ -207,7 +207,7 @@ pub fn is_secret_path(p: &str) -> bool {
         || (parts.first().map(String::as_str) == Some("proc")
             && ["environ", "cmdline", "mem", "maps"].contains(&base.as_str()))
         || (has(".docker") && base == "config.json")
-        || (e.ends_with(".config/llmsh/config.yaml"))
+        || (e.ends_with(".config/aish/config.yaml"))
 }
 
 /// Lexical normalisation (`.`/`..`), `~` expanded, relative to `cwd`.
@@ -251,7 +251,7 @@ fn root_too_wide(root: &Path) -> bool {
             ".config/gcloud",
             ".config/gh",
             ".config/aider",
-            ".config/llmsh",
+            ".config/aish",
         ] {
             dangerous.push(Path::new(&h).join(d));
         }
@@ -1526,7 +1526,7 @@ mod tests {
             "/etc/sudoers",
             "/etc/sudoers.d/x",
             "~/.config/aider/x",
-            "/h/.config/llmsh/config.yaml",
+            "/h/.config/aish/config.yaml",
             "any/dir/id_ed25519",
         ] {
             assert!(is_secret_path(p), "{p}");
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn round2_program_lookup_ignores_relative_and_cwd_entries() {
-        let d = std::env::temp_dir().join(format!("llmsh-pl-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aish-pl-{}", std::process::id()));
         let tree = d.join("proj");
         std::fs::create_dir_all(tree.join("bin")).unwrap();
         let fake = tree.join("bin/git");

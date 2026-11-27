@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/llmsh-editor", "crates/llmsh-llm"]
+members = [".", "crates/aish-editor", "crates/aish-llm"]
 resolver = "2"
 
 [workspace.package]
@@ -9,7 +9,7 @@ license = "MIT"
 authors = ["Degtyarev Aleksandr <adegtyarev.ap@gmail.com>"]
 
 [package]
-name = "llmsh"
+name = "aish"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -34,14 +34,14 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
-lineedit-wip = { path = "crates/llmsh-editor" }
-llmsh-llm = { path = "crates/llmsh-llm" }
+lineedit-wip = { path = "crates/aish-editor" }
+aish-llm = { path = "crates/aish-llm" }
 vte = "0.15"
 
 [dev-dependencies]
 expectrl = "0.7"
 tempfile = "3"
-llmsh-llm = { path = "crates/llmsh-llm", features = ["mock"] }
+aish-llm = { path = "crates/aish-llm", features = ["mock"] }
 
 # Static musl builds, see pack.sh. panic stays "unwind": main() relies on catch_unwind.
 [profile.release]
@@ -59,16 +59,16 @@ priority = "optional"
 depends = "bash (>= 4.4)"
 recommends = "bash-completion"
 extended-description = """\
-llmsh runs bash on a pty and adds LLM assistance on top: command blocks with \
+aish runs bash on a pty and adds LLM assistance on top: command blocks with \
 status lines, an inline editor, and an `ai` command for chat and agent \
 actions with any OpenAI-compatible backend. Without an LLM it behaves like \
 plain bash.
-Run `llmsh init` as your own user to set up your shell startup; the package \
+Run `aish init` as your own user to set up your shell startup; the package \
 never edits user files."""
 assets = [
-  ["target/release/llmsh", "usr/bin/llmsh", "755"],
-  ["README.md", "usr/share/doc/llmsh/README.md", "644"],
-  ["docs/UX.md", "usr/share/doc/llmsh/UX.md", "644"],
-  ["docs/config.example.yaml", "usr/share/doc/llmsh/config.example.yaml", "644"],
+  ["target/release/aish", "usr/bin/aish", "755"],
+  ["README.md", "usr/share/doc/aish/README.md", "644"],
+  ["docs/UX.md", "usr/share/doc/aish/UX.md", "644"],
+  ["docs/config.example.yaml", "usr/share/doc/aish/config.example.yaml", "644"],
 ]
 maintainer-scripts = "debian/"

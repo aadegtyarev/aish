@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use llmsh_llm::{Error, Event, Message, Request, Tool, ToolCall};
+use aish_llm::{Error, Event, Message, Request, Tool, ToolCall};
 use serde_json::{json, Value};
 
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
@@ -570,7 +570,7 @@ pub fn drive(
         };
         let mut r = Renderer::new(&task.theme, task.cols);
         let mut full = String::new();
-        let res = llmsh_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |Event::Delta(d)| {
+        let res = aish_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |Event::Delta(d)| {
             full.push_str(&d);
             let mut out = Vec::new();
             r.push(&d, &mut out);
@@ -867,7 +867,7 @@ mod tests {
         let (o, code, _) = run_plan(&pl("ls / | head -1"), "/", &c);
         assert_eq!((o.lines().count(), code), (1, Some(0)));
         // no inherited environment
-        std::env::set_var("LLMSH_SECRET_X", "1");
+        std::env::set_var("AISH_SECRET_X", "1");
         let (o, _, _) = run_plan(
             &Plan {
                 stages: vec![vec!["env".into()]],
@@ -876,7 +876,7 @@ mod tests {
             &c,
         );
         assert!(
-            !o.contains("LLMSH_SECRET_X") && o.contains("TERM=dumb"),
+            !o.contains("AISH_SECRET_X") && o.contains("TERM=dumb"),
             "{o}"
         );
         let stop = AtomicBool::new(true);

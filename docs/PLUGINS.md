@@ -2,7 +2,7 @@
 
 Two layers, both compile-time Rust traits today.
 
-## Editor plugins (`crates/llmsh-editor`, crate `lineedit-wip`)
+## Editor plugins (`crates/aish-editor`, crate `lineedit-wip`)
 
 `Editor::builder().with(plugin)...build()`. A `Plugin` has a `name`, a
 `priority` (higher first) and optional hooks:
@@ -24,12 +24,12 @@ results whose generation is stale and the host's `waker` is called so it can
 `Editor::poll`. Built-ins are plugins too: `HistorySuggest`, `HistorySearch`,
 `CompletionPager` (takes any `CompletionSource`), `SyntaxHighlight`, `Intercept`.
 
-## llmsh modules (`src/module.rs`, `src/modules/`)
+## aish modules (`src/module.rs`, `src/modules/`)
 
 `trait Module` hooks: `editor_plugins(env)` (once, returns plugins),
 `on_block_finished(block)`, `on_prompt()`, `on_intercept(line, out, task)` (a slow reply takes the `Task`: a worker thread streams rows to the terminal and calls `finish(prefill)`; meanwhile keys are buffered and Ctrl-C sets the task's cancel flag).
 Built-ins: `history`, `highlight`, `completion` (bash sidecar), `model`
-(`?` questions, `llmsh` command, model suggestions). Config `modules: [history, completion]` selects a
+(`?` questions, `aish` command, model suggestions). Config `modules: [history, completion]` selects a
 subset; absent means all.
 
 Lifecycle: startup (config, modules build editor plugins) -> output stream

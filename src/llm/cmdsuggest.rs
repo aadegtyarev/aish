@@ -1,4 +1,4 @@
-//! Instant, local ghost text for llmsh's own command (`ai` / `llmsh`):
+//! Instant, local ghost text for aish's own command (`ai` / `aish`):
 //! subcommands and model references. No model call; wins over history.
 
 use std::sync::atomic::Ordering;
@@ -10,7 +10,7 @@ use super::Llm;
 
 /// What the suggestions depend on.
 pub struct State {
-    /// Names the command goes by (`ai`, `llmsh`).
+    /// Names the command goes by (`ai`, `aish`).
     pub names: Vec<String>,
     pub suggest_on: bool,
     /// Every `provider/alias`, in config order.
@@ -100,7 +100,7 @@ impl CmdSuggest {
     }
 
     fn state(&self) -> State {
-        let mut names = vec!["llmsh".to_owned()];
+        let mut names = vec!["aish".to_owned()];
         names.extend(self.llm.command());
         State {
             names,
@@ -130,7 +130,7 @@ impl CmdSuggest {
         let ours = line
             .split(' ')
             .next()
-            .is_some_and(|f| f == "llmsh" || self.llm.command().as_deref() == Some(f));
+            .is_some_and(|f| f == "aish" || self.llm.command().as_deref() == Some(f));
         self.cur = if ours && line.contains(' ') {
             compute(&self.state(), line)
         } else {
@@ -172,7 +172,7 @@ mod tests {
 
     fn st(on: bool) -> State {
         State {
-            names: vec!["ai".into(), "llmsh".into()],
+            names: vec!["ai".into(), "aish".into()],
             suggest_on: on,
             models: vec![
                 "cloud/main".into(),
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(c(&s, "ai c").unwrap().0, "hat");
         assert_eq!(c(&s, "ai co").unwrap().0, "mplete");
         assert_eq!(c(&s, "ai con").unwrap().0, "fig");
-        assert_eq!(c(&s, "llmsh s").unwrap().0, "tatus");
+        assert_eq!(c(&s, "aish s").unwrap().0, "tatus");
         assert_eq!(c(&s, "ai x"), None);
         assert_eq!(c(&s, "ai status"), None);
         assert_eq!(c(&s, "ai"), None);

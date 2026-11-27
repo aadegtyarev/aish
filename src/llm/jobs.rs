@@ -1,4 +1,4 @@
-//! Background jobs of the shell, as far as llmsh knows them (reported by the
+//! Background jobs of the shell, as far as aish knows them (reported by the
 //! rc hook, see `rc.bash`), the logs of the ones the agent started, and the
 //! one-line notice when a job finishes.
 
@@ -15,7 +15,7 @@ pub struct Job {
     pub command: String,
     /// `Running`, `Stopped`.
     pub state: String,
-    /// When llmsh first saw the job.
+    /// When aish first saw the job.
     pub started: Instant,
 }
 

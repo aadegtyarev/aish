@@ -1,4 +1,4 @@
-//! `llmsh init`: set llmsh up without editing rc files by hand. Up to three
+//! `aish init`: set aish up without editing rc files by hand. Up to three
 //! questions (where to start it, which models, apply?), idempotent marked
 //! blocks in ~/.bashrc (and ~/.tmux.conf), a backup of each file once.
 
@@ -7,18 +7,18 @@ use std::path::{Path, PathBuf};
 
 use crate::llm::firstrun::{self, Detected};
 
-pub const START: &str = "# >>> llmsh >>>";
-pub const END: &str = "# <<< llmsh <<<";
+pub const START: &str = "# >>> aish >>>";
+pub const END: &str = "# <<< aish <<<";
 
-/// The `.bashrc` block. LLMSH is set while llmsh's own rc sources ~/.bashrc, so
-/// there is no exec loop; `LLMSH_DISABLE=1` is the escape hatch.
-pub const BASHRC_BLOCK: &str = "[[ $- == *i* && -t 0 && -z ${LLMSH-} && -z ${LLMSH_DISABLE-} ]] && command -v llmsh >/dev/null && exec llmsh";
+/// The `.bashrc` block. AISH is set while aish's own rc sources ~/.bashrc, so
+/// there is no exec loop; `AISH_DISABLE=1` is the escape hatch.
+pub const BASHRC_BLOCK: &str = "[[ $- == *i* && -t 0 && -z ${AISH-} && -z ${AISH_DISABLE-} ]] && command -v aish >/dev/null && exec aish";
 
 fn block(body: &str) -> String {
     format!("{START}\n{body}\n{END}\n")
 }
 
-/// `text` without any llmsh block (and the blank line before it).
+/// `text` without any aish block (and the blank line before it).
 pub fn without_block(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut skipping = false;
@@ -88,11 +88,11 @@ fn tmux_installed() -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("tmux").is_file()))
 }
 
-/// Write `path` (backing the original up once as `<name>.llmsh-bak`).
+/// Write `path` (backing the original up once as `<name>.aish-bak`).
 fn write_with_backup(path: &Path, content: &str) -> std::io::Result<()> {
     if path.exists() {
         let mut bak = path.as_os_str().to_owned();
-        bak.push(".llmsh-bak");
+        bak.push(".aish-bak");
         let bak = PathBuf::from(bak);
         if !bak.exists() {
             std::fs::copy(path, &bak)?;
@@ -138,20 +138,20 @@ fn yes(a: &str) -> bool {
     matches!(a.to_lowercase().as_str(), "y" | "yes" | "д" | "да" | "1")
 }
 
-/// `llmsh init [--remove] [--yes]`; the exit code.
+/// `aish init [--remove] [--yes]`; the exit code.
 pub fn run(args: &[std::ffi::OsString]) -> i32 {
     let flags: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if flags.iter().any(|f| f != "--remove" && f != "--yes") {
-        eprintln!("llmsh init [--remove] [--yes]");
+        eprintln!("aish init [--remove] [--yes]");
         return 2;
     }
     let remove = flags.iter().any(|f| f == "--remove");
     let yes_all = flags.iter().any(|f| f == "--yes");
     let Some(home) = home() else {
-        eprintln!("llmsh: no HOME");
+        eprintln!("aish: no HOME");
         return 1;
     };
     let bashrc = home.join(".bashrc");
@@ -171,13 +171,13 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
             " (tmux не найден)"
         };
         let a = ask(
-            &format!("Запускать llmsh: 1 — в каждом интерактивном bash, 2 — ещё и в tmux{tm}, 3 — только вручную"),
+            &format!("Запускать aish: 1 — в каждом интерактивном bash, 2 — ещё и в tmux{tm}, 3 — только вручную"),
             "1",
         );
         match a {
             Some(a) if matches!(a.as_str(), "1" | "2" | "3") => mode = a,
             Some(_) => {
-                eprintln!("llmsh: ожидалось 1, 2 или 3");
+                eprintln!("aish: ожидалось 1, 2 или 3");
                 return 1;
             }
             None => return 1,
@@ -257,7 +257,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     }
     if !interactive && !yes_all {
         eprintln!(
-            "llmsh init: ввод не из терминала — ничего не меняю (--yes применит это без вопросов)"
+            "aish init: ввод не из терминала — ничего не меняю (--yes применит это без вопросов)"
         );
         return 1;
     }
@@ -272,7 +272,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     }
     for c in &changes {
         if let Err(e) = write_with_backup(&c.path, &c.new) {
-            eprintln!("llmsh: {}: {e}", tilde(&c.path));
+            eprintln!("aish: {}: {e}", tilde(&c.path));
             return 1;
         }
     }
@@ -281,7 +281,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
             let mut bak = p.as_os_str().to_owned();
             bak.push(".bak");
             if let Err(e) = std::fs::copy(p, PathBuf::from(bak)) {
-                eprintln!("llmsh: backup: {e}");
+                eprintln!("aish: backup: {e}");
                 return 1;
             }
         }
@@ -289,16 +289,16 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
             let _ = std::fs::create_dir_all(d);
         }
         if let Err(e) = std::fs::write(p, yaml) {
-            eprintln!("llmsh: {}: {e}", tilde(p));
+            eprintln!("aish: {}: {e}", tilde(p));
             return 1;
         }
     }
     println!(
-        "{}готово. Новый bash запустит llmsh; отключить на раз: LLMSH_DISABLE=1 bash{}",
+        "{}готово. Новый bash запустит aish; отключить на раз: AISH_DISABLE=1 bash{}",
         st.dim, st.off
     );
     println!(
-        "{}логин-шелл: добавьте путь llmsh в /etc/shells и выполните chsh -s <путь>{}",
+        "{}логин-шелл: добавьте путь aish в /etc/shells и выполните chsh -s <путь>{}",
         st.dim, st.off
     );
     0
@@ -309,9 +309,9 @@ fn do_remove(files: &[PathBuf]) -> i32 {
     for f in files {
         match std::fs::read_to_string(f) {
             Ok(t) if has_block(&t) => match std::fs::write(f, without_block(&t)) {
-                Ok(()) => println!("{}: блок удалён (копия .llmsh-bak осталась)", tilde(f)),
+                Ok(()) => println!("{}: блок удалён (копия .aish-bak осталась)", tilde(f)),
                 Err(e) => {
-                    eprintln!("llmsh: {}: {e}", tilde(f));
+                    eprintln!("aish: {}: {e}", tilde(f));
                     code = 1;
                 }
             },
@@ -331,14 +331,14 @@ mod tests {
         let a = with_block(orig, "one");
         assert_eq!(
             a,
-            "export A=1\nalias x=y\n\n# >>> llmsh >>>\none\n# <<< llmsh <<<\n"
+            "export A=1\nalias x=y\n\n# >>> aish >>>\none\n# <<< aish <<<\n"
         );
         assert_eq!(with_block(&a, "one"), a, "idempotent");
         let b = with_block(&a, "two");
         assert!(b.contains("two") && !b.contains("one") && b.matches(START).count() == 1);
         assert_eq!(without_block(&b), orig);
         assert_eq!(without_block(orig), orig);
-        assert_eq!(with_block("", "x"), "# >>> llmsh >>>\nx\n# <<< llmsh <<<\n");
+        assert_eq!(with_block("", "x"), "# >>> aish >>>\nx\n# <<< aish <<<\n");
         assert_eq!(without_block(&with_block("", "x")), "");
         // text after the block survives
         let c = format!("{a}tail\n");

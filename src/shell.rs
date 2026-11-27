@@ -11,7 +11,7 @@ pub fn state_dir() -> Option<PathBuf> {
         Some(x) => PathBuf::from(x),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".local/state"),
     };
-    Some(base.join("llmsh"))
+    Some(base.join("aish"))
 }
 
 /// Write the rc file (atomically, only if changed) and return its path.
@@ -38,7 +38,7 @@ pub fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let dir = state_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let (w, guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::never(dir, "llmsh.log"));
+        tracing_appender::non_blocking(tracing_appender::rolling::never(dir, "aish.log"));
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()

@@ -144,7 +144,7 @@ impl Scan {
     fn end_osc(&mut self) {
         self.st = St::Ground;
         let o = &self.osc[..self.osc_n];
-        let tag = format!(";llmsh={}", self.nonce);
+        let tag = format!(";aish={}", self.nonce);
         let ours = self.nonce.is_empty() || o.ends_with(tag.as_bytes());
         if ours && o.len() >= 5 && &o[..4] == b"133;" && (o.len() == 5 || o[5] == b';') {
             match o[4] {
@@ -260,11 +260,11 @@ mod tests {
         let mut s = Scan::new("abc".into());
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07", 80); // untagged: ssh/docker/nested shell
         assert!(!s.b_seen && !s.saw_a && !s.saw_b);
-        s.feed(b"\x1b]133;B;llmsh=zzz\x07", 80);
+        s.feed(b"\x1b]133;B;aish=zzz\x07", 80);
         assert!(!s.b_seen);
-        s.feed(b"\x1b]133;A;llmsh=abc\x07$ \x1b]133;B;llmsh=abc\x07", 80);
+        s.feed(b"\x1b]133;A;aish=abc\x07$ \x1b]133;B;aish=abc\x07", 80);
         assert!(s.b_seen && s.saw_a);
-        s.feed(b"\x1b]133;D;130;llmsh=abc\x07", 80);
+        s.feed(b"\x1b]133;D;130;aish=abc\x07", 80);
         assert!(!s.b_seen && s.saw_cd);
     }
 

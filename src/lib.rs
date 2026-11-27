@@ -1,4 +1,4 @@
-//! llmsh: transparent PTY proxy around bash with command blocks.
+//! aish: transparent PTY proxy around bash with command blocks.
 
 pub mod blocks;
 pub mod complete;
@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-/// True for `-llmsh` style argv[0] (login shell).
+/// True for `-aish` style argv[0] (login shell).
 pub fn is_login() -> bool {
     std::env::args_os()
         .next()
@@ -39,16 +39,16 @@ pub fn exec_bash(args: &[std::ffi::OsString], interactive: bool) -> std::io::Err
         cmd.arg("-i");
     }
     if interactive {
-        // The fallback after a failed start: ~/.bashrc must not start llmsh again.
-        cmd.env("LLMSH_DISABLE", "1");
+        // The fallback after a failed start: ~/.bashrc must not start aish again.
+        cmd.env("AISH_DISABLE", "1");
     }
     cmd.args(args).exec()
 }
 
 /// Run the shell under the proxy; returns its exit code.
 pub fn run() -> Result<i32> {
-    if std::env::var_os("LLMSH_TEST_FAIL_START").is_some() {
-        anyhow::bail!("start failure requested by LLMSH_TEST_FAIL_START");
+    if std::env::var_os("AISH_TEST_FAIL_START").is_some() {
+        anyhow::bail!("start failure requested by AISH_TEST_FAIL_START");
     }
     let mut enabled_modules: Option<Vec<String>> = None;
     match config::load() {
@@ -78,10 +78,10 @@ pub fn run() -> Result<i32> {
     cmd.arg("--rcfile")
         .arg(&rc)
         .arg("-i")
-        .env("LLMSH", "1")
-        .env("LLMSH_NONCE", &nonce);
+        .env("AISH", "1")
+        .env("AISH_NONCE", &nonce);
     if is_login() {
-        cmd.env("LLMSH_LOGIN", "1");
+        cmd.env("AISH_LOGIN", "1");
     }
     let (mut child, master) = pty::spawn(cmd, &term::window_size())?;
 

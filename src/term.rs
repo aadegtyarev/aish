@@ -67,7 +67,7 @@ pub fn set_window_size(fd: RawFd, ws: &libc::winsize) {
     let _ = unsafe { tiocswinsz(fd, ws) };
 }
 
-/// Signals handled by llmsh itself. Register before spawning the shell so none
+/// Signals handled by aish itself. Register before spawning the shell so none
 /// is lost, then call [`Signals::watch`] once the child exists.
 pub struct Signals(signal_hook::iterator::Signals);
 

@@ -1,4 +1,4 @@
-//! The `llmsh` command inside a session (status, chat/complete, on/off,
+//! The `aish` command inside a session (status, chat/complete, on/off,
 //! config) and the same status as a real CLI subcommand.
 
 use std::sync::atomic::Ordering;
@@ -15,10 +15,10 @@ fn is_cmd_line(s: &str, name: &str) -> bool {
     w.next() == Some(name) && w.next().is_none_or(|x| SUBS.contains(&x))
 }
 
-/// `llmsh` or `llmsh <known subcommand> ...`; anything else (`llmsh -c ...`)
+/// `aish` or `aish <known subcommand> ...`; anything else (`aish -c ...`)
 /// is a real command.
-pub fn is_llmsh_line(s: &str) -> bool {
-    is_cmd_line(s, "llmsh")
+pub fn is_aish_line(s: &str) -> bool {
+    is_cmd_line(s, "aish")
 }
 
 /// The configured short form (`ai` by default), `<name> [<subcommand> ...]`.
@@ -87,7 +87,7 @@ pub fn apply(llm: &Llm, cmd: &Cmd) -> String {
             }
         }
         Cmd::Usage => {
-            "ai | llmsh [status | chat <провайдер/модель> | complete <…> | on | off | config | init]"
+            "ai | aish [status | chat <провайдер/модель> | complete <…> | on | off | config | init]"
                 .into()
         }
         Cmd::Status | Cmd::Config | Cmd::Init => String::new(),
@@ -96,9 +96,9 @@ pub fn apply(llm: &Llm, cmd: &Cmd) -> String {
 
 fn probe(t: &Target) -> String {
     let t0 = Instant::now();
-    match llmsh_llm::list_models(&t.ep.url, &t.ep.key, Duration::from_secs(1)) {
+    match aish_llm::list_models(&t.ep.url, &t.ep.key, Duration::from_secs(1)) {
         Ok(_) => format!("ok {}ms", t0.elapsed().as_millis()),
-        Err(llmsh_llm::Error::Http { status, .. }) => format!("{status}"),
+        Err(aish_llm::Error::Http { status, .. }) => format!("{status}"),
         Err(_) => "нет ответа".into(),
     }
 }
@@ -135,14 +135,14 @@ pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
     let a = args.first()?.to_str()?;
     match a {
         "--version" if args.len() == 1 => {
-            println!("llmsh {}", env!("CARGO_PKG_VERSION"));
+            println!("aish {}", env!("CARGO_PKG_VERSION"));
             // Probes that look for "GNU bash" keep working.
             let st = std::process::Command::new("bash").arg("--version").status();
             Some(st.ok().and_then(|s| s.code()).unwrap_or(0))
         }
         "--help" if args.len() == 1 => {
             println!(
-                "llmsh {}: bash with a line editor and LLM help\n\n  llmsh            start the shell\n  llmsh status     show models and whether they answer\n  llmsh config     edit the config (prints the path if not a terminal)\n  llmsh init       set up: start llmsh from ~/.bashrc, detect models (--remove undoes)\n\nOther arguments go to bash.",
+                "aish {}: bash with a line editor and LLM help\n\n  aish            start the shell\n  aish status     show models and whether they answer\n  aish config     edit the config (prints the path if not a terminal)\n  aish init       set up: start aish from ~/.bashrc, detect models (--remove undoes)\n\nOther arguments go to bash.",
                 env!("CARGO_PKG_VERSION")
             );
             Some(0)
@@ -153,7 +153,7 @@ pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
         "status" if args.len() == 1 => {
             let llm = Llm::new();
             if llm.config().is_none() {
-                println!("модель не настроена · llmsh config");
+                println!("модель не настроена · aish config");
                 return Some(1);
             }
             for l in status_lines(&llm) {
@@ -164,7 +164,7 @@ pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
         "config" if args.len() == 1 => {
             let llm = Llm::new();
             let Some(p) = llm.path() else {
-                eprintln!("llmsh: no HOME");
+                eprintln!("aish: no HOME");
                 return Some(1);
             };
             use std::io::IsTerminal;
@@ -196,23 +196,23 @@ mod tests {
     #[test]
     fn line_detection() {
         for t in [
-            "llmsh",
-            "llmsh status",
-            "llmsh chat a/b",
-            "llmsh off",
-            "llmsh  config",
+            "aish",
+            "aish status",
+            "aish chat a/b",
+            "aish off",
+            "aish  config",
         ] {
-            assert!(is_llmsh_line(t), "{t}");
+            assert!(is_aish_line(t), "{t}");
         }
         for t in [
             "llm",
             "llm chat x",
-            "llmsh -c ls",
-            "llmshx",
-            "echo llmsh",
-            "llmsh foo",
+            "aish -c ls",
+            "aishx",
+            "echo aish",
+            "aish foo",
         ] {
-            assert!(!is_llmsh_line(t), "{t}");
+            assert!(!is_aish_line(t), "{t}");
         }
         for t in ["ai", "ai chat a/b", "ai  off", "ai config"] {
             assert!(is_short_line(t, Some("ai")), "{t}");
@@ -224,9 +224,9 @@ mod tests {
 
     #[test]
     fn parsing() {
-        assert_eq!(parse("llmsh"), Cmd::Status);
-        assert_eq!(parse("llmsh chat a/b"), Cmd::Set("chat", "a/b".into()));
-        assert_eq!(parse("llmsh chat"), Cmd::Usage);
-        assert_eq!(parse("llmsh off"), Cmd::Suggest(false));
+        assert_eq!(parse("aish"), Cmd::Status);
+        assert_eq!(parse("aish chat a/b"), Cmd::Set("chat", "a/b".into()));
+        assert_eq!(parse("aish chat"), Cmd::Usage);
+        assert_eq!(parse("aish off"), Cmd::Suggest(false));
     }
 }

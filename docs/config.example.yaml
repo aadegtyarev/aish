@@ -28,7 +28,7 @@ roles:
     effort: low
 
 # Name of the in-session control command (status, chat, complete, on/off, config).
-# It always wins over any program of that name; `off` disables it (`llmsh ...` still works).
+# It always wins over any program of that name; `off` disables it (`aish ...` still works).
 # command: ai
 
 # Extra read-only command prefixes the agent (`?`) may run by itself, without

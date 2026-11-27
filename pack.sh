@@ -13,12 +13,12 @@ while (($#)); do
   shift
 done
 case $arch in all) arch="x86_64 aarch64" ;; x86_64|aarch64) ;; *) echo "pack.sh: bad arch $arch" >&2; exit 2 ;; esac
-docker build -q -t llmsh-pack build >/dev/null
+docker build -q -t aish-pack build >/dev/null
 user=(); docker info 2>/dev/null | grep -q rootless || user=(-u "$(id -u):$(id -g)")
 mkdir -p dist
 exec docker run --rm "${user[@]}" -v "$PWD":/src -w /src \
-  -v llmsh-cargo:/usr/local/cargo/registry \
-  -v llmsh-pack-target:/pack-target \
+  -v aish-cargo:/usr/local/cargo/registry \
+  -v aish-pack-target:/pack-target \
   -e CARGO_HOME=/usr/local/cargo -e CARGO_TARGET_DIR=/pack-target -e HOME=/tmp \
   -e XDG_CACHE_HOME=/pack-target/cache \
-  llmsh-pack ./build/pack-inner.sh $arch
+  aish-pack ./build/pack-inner.sh $arch

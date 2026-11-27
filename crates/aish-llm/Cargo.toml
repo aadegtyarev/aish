@@ -1,14 +1,14 @@
 [package]
-name = "llmsh-llm"
+name = "aish-llm"
 version.workspace = true
 edition.workspace = true
-description = "OpenAI-compatible streaming clients (chat completions, responses) for llmsh"
+description = "OpenAI-compatible streaming clients (chat completions, responses) for aish"
 license.workspace = true
 authors.workspace = true
 publish = false
 
 [features]
-# In-process mock HTTP server for tests of this crate and of llmsh.
+# In-process mock HTTP server for tests of this crate and of aish.
 mock = []
 
 [dependencies]

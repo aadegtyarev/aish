@@ -1,8 +1,8 @@
 //! Private OSC sequences emitted by the shell integration, and the filter that
 //! keeps them away from the user's terminal.
 
-/// Everything llmsh-private starts with this prefix.
-pub const PRIVATE_PREFIX: &[u8] = b"\x1b]1337;llmsh;";
+/// Everything aish-private starts with this prefix.
+pub const PRIVATE_PREFIX: &[u8] = b"\x1b]1337;aish;";
 
 #[derive(Clone, Copy)]
 enum State {
@@ -149,13 +149,13 @@ mod tests {
 
     #[test]
     fn strips_private_keeps_others() {
-        let s = b"a\x1b]133;A\x07b\x1b]1337;llmsh;t=ls\x07c\x1b[0md\x1b]1337;llmsh;b=eA==\x1b\\e";
+        let s = b"a\x1b]133;A\x07b\x1b]1337;aish;t=ls\x07c\x1b[0md\x1b]1337;aish;b=eA==\x1b\\e";
         assert_eq!(run(&[s]), b"a\x1b]133;A\x07bc\x1b[0mde");
     }
 
     #[test]
     fn split_at_every_byte() {
-        let s = b"x\x1b]1337;llmsh;t=ls\x07y\x1b]7;file:///\x07z\x1b[1m";
+        let s = b"x\x1b]1337;aish;t=ls\x07y\x1b]7;file:///\x07z\x1b[1m";
         let chunks: Vec<&[u8]> = s.chunks(1).collect();
         assert_eq!(run(&chunks), b"xy\x1b]7;file:///\x07z\x1b[1m");
     }
@@ -163,9 +163,9 @@ mod tests {
     #[test]
     fn unterminated_private_osc_is_released() {
         // CAN, ESC-reexamine and the length cap all end the swallowing.
-        assert_eq!(run(&[b"a\x1b]1337;llmsh;xx\x18b"]), b"ab");
-        assert_eq!(run(&[b"a\x1b]1337;llmsh;xx\x1b[0mb"]), b"a\x1b[0mb");
-        let mut big = b"\x1b]1337;llmsh;".to_vec();
+        assert_eq!(run(&[b"a\x1b]1337;aish;xx\x18b"]), b"ab");
+        assert_eq!(run(&[b"a\x1b]1337;aish;xx\x1b[0mb"]), b"a\x1b[0mb");
+        let mut big = b"\x1b]1337;aish;".to_vec();
         big.extend(vec![b'z'; 70 * 1024]);
         big.extend(b"tail");
         let out = run(&[&big]);

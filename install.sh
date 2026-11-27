@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build (or take a prebuilt binary), install to ~/.local/bin/llmsh, then run `llmsh init`.
+# Build (or take a prebuilt binary), install to ~/.local/bin/aish, then run `aish init`.
 #   ./install.sh [--no-init] [--bin PATH] [--prefix DIR]
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,17 +14,17 @@ while (($#)); do
   esac
   shift
 done
-if [[ -z $bin && -x ./llmsh && ! -d ./llmsh ]]; then bin=./llmsh; fi   # release tarball
+if [[ -z $bin && -x ./aish && ! -d ./aish ]]; then bin=./aish; fi   # release tarball
 if [[ -z $bin ]]; then
   if command -v cargo >/dev/null 2>&1; then cargo build --release
   else ./dev.sh build --release; fi
-  bin=target/release/llmsh
+  bin=target/release/aish
 fi
 [[ -x $bin ]] || { echo "install.sh: $bin is not an executable" >&2; exit 1; }
-dest=$prefix/bin/llmsh
+dest=$prefix/bin/aish
 mkdir -p "$prefix/bin"
 install -m 755 "$bin" "$dest"
-echo "llmsh -> $dest"
+echo "aish -> $dest"
 case ":$PATH:" in *":$prefix/bin:"*) ;; *) echo "warning: $prefix/bin is not on PATH" >&2 ;; esac
 if ((init)) && [[ -t 0 && -t 1 ]]; then
   PATH=$prefix/bin:$PATH exec "$dest" init

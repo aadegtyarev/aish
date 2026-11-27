@@ -176,7 +176,7 @@ impl Sidecar {
         use std::os::unix::process::CommandExt;
         let mut cmd = Command::new("bash");
         // No controlling terminal: an interactive bash would otherwise grab the
-        // foreground process group from llmsh.
+        // foreground process group from aish.
         // SAFETY: setsid is async-signal-safe.
         unsafe {
             cmd.pre_exec(|| {
@@ -192,7 +192,7 @@ impl Sidecar {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .env_remove("LLMSH")
+            .env_remove("AISH")
             .spawn();
         let Ok(mut child) = child else { return };
         let (tx, rx) = channel();

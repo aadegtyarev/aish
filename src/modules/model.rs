@@ -1,4 +1,4 @@
-//! `?` questions and the `llmsh` command: the line stays on screen, the reply
+//! `?` questions and the `aish` command: the line stays on screen, the reply
 //! follows (dim `│` rows) and nothing reaches the shell.
 
 use lineedit_wip::plugins::{HintText, Intercept, RightHint};
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::blocks::BlockTracker;
 use crate::llm::agent;
-use crate::llm::cmd::{self, is_llmsh_line, is_short_line, Cmd};
+use crate::llm::cmd::{self, is_aish_line, is_short_line, Cmd};
 use crate::llm::render::Renderer;
 use crate::llm::suggest::{LsCache, ModelSuggest};
 use crate::llm::{ask, Llm};
@@ -60,10 +60,10 @@ pub struct ModelModule {
     ls: Arc<LsCache>,
 }
 
-/// Lines the model module takes: `?`, `llmsh ...` and the configured short
+/// Lines the model module takes: `?`, `aish ...` and the configured short
 /// command (`ai`), which wins over anything of that name in the system.
 fn claims(line: &str, llm: &Llm) -> bool {
-    is_model_line(line) || is_llmsh_line(line) || is_short_line(line, llm.command().as_deref())
+    is_model_line(line) || is_aish_line(line) || is_short_line(line, llm.command().as_deref())
 }
 
 impl Module for ModelModule {
@@ -120,7 +120,7 @@ impl Module for ModelModule {
             return false;
         }
         if !is_model_line(line) {
-            return llmsh_command(&llm, line, out, task);
+            return aish_command(&llm, line, out, task);
         }
         let p = ask::parse(line);
         if let Ok(mut pend) = llm.pending.lock() {
@@ -148,7 +148,7 @@ impl Module for ModelModule {
     }
 }
 
-fn llmsh_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option<Task>) -> bool {
+fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option<Task>) -> bool {
     let cmd = cmd::parse(line);
     match cmd {
         Cmd::Status => {
@@ -165,7 +165,7 @@ fn llmsh_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Optio
             });
         }
         Cmd::Init => match task.take() {
-            Some(t) => t.finish(Some("llmsh init".into())),
+            Some(t) => t.finish(Some("aish init".into())),
             None => return false,
         },
         Cmd::Config => match task.take() {

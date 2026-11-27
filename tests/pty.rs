@@ -1,4 +1,4 @@
-//! Drives the llmsh binary under a real pty.
+//! Drives the aish binary under a real pty.
 
 use std::process::Command;
 use std::time::Duration;
@@ -8,13 +8,13 @@ use tempfile::TempDir;
 
 fn session(home: &TempDir) -> Session {
     std::fs::write(home.path().join(".bashrc"), "PS1='PROMPT> '\n").unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", home.path())
         .env("TERM", "xterm")
         .env("NO_COLOR", "1")
-        .env("RUST_LOG", "llmsh=debug")
+        .env("RUST_LOG", "aish=debug")
         .env("XDG_STATE_HOME", home.path().join("state"));
     let mut p = Session::spawn(cmd).unwrap();
     p.set_expect_timeout(Some(Duration::from_secs(10)));
@@ -49,7 +49,7 @@ fn status_line_blocks_and_exit_code() {
     );
 
     // Blocks were recorded (debug log of finished blocks).
-    let log = std::fs::read_to_string(home.path().join("state/llmsh/llmsh.log")).unwrap();
+    let log = std::fs::read_to_string(home.path().join("state/aish/aish.log")).unwrap();
     assert!(
         log.contains("cmd=echo hi; false") && log.contains("exit=Some(1)"),
         "{log}"
@@ -68,7 +68,7 @@ fn array_prompt_command_and_user_ps1_preserved() {
         "PS1='U> '\nPROMPT_COMMAND=('echo pc1' 'echo pc2')\n",
     )
     .unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", home.path())
@@ -84,12 +84,12 @@ fn array_prompt_command_and_user_ps1_preserved() {
 
 fn session_with_rc(home: &TempDir, bashrc: &str) -> Session {
     std::fs::write(home.path().join(".bashrc"), bashrc).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", home.path())
         .env("TERM", "xterm")
-        .env("RUST_LOG", "llmsh=debug")
+        .env("RUST_LOG", "aish=debug")
         .env("XDG_STATE_HOME", home.path().join("state"));
     let mut p = Session::spawn(cmd).unwrap();
     p.set_expect_timeout(Some(Duration::from_secs(10)));
@@ -107,7 +107,7 @@ fn set_u_in_bashrc() {
     assert!(out.contains('✗') && !out.contains("unbound"), "{out:?}");
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
-    let log = std::fs::read_to_string(home.path().join("state/llmsh/llmsh.log")).unwrap();
+    let log = std::fs::read_to_string(home.path().join("state/aish/aish.log")).unwrap();
     assert!(
         log.contains("cmd=false") && log.contains("exit=Some(1)"),
         "{log}"
@@ -119,7 +119,7 @@ fn no_leak_into_children() {
     let home = TempDir::new().unwrap();
     let mut p = session_with_rc(&home, "PS1='P> '\nexport PROMPT_COMMAND='true'\n");
     p.expect("P> ").unwrap();
-    p.send_line("env | grep -cE '^(PROMPT_COMMAND|PS0|LLMSH)=' ; bash -ic 'echo nested-ok' 2>&1")
+    p.send_line("env | grep -cE '^(PROMPT_COMMAND|PS0|AISH)=' ; bash -ic 'echo nested-ok' 2>&1")
         .unwrap();
     let m = p.expect("nested-ok").unwrap();
     let out = String::from_utf8_lossy(m.before()).into_owned();
@@ -131,14 +131,14 @@ fn no_leak_into_children() {
 
 #[test]
 fn args_and_non_tty_exec_plain_bash() {
-    let out = Command::new(env!("CARGO_BIN_EXE_llmsh"))
+    let out = Command::new(env!("CARGO_BIN_EXE_aish"))
         .args(["-c", "echo X; exit 5"])
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
     assert_eq!(out.stdout, b"X\n");
     assert_eq!(out.status.code(), Some(5));
-    let out = Command::new(env!("CARGO_BIN_EXE_llmsh"))
+    let out = Command::new(env!("CARGO_BIN_EXE_aish"))
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -155,7 +155,7 @@ fn editor_session(home: &TempDir, history: &str) -> Session {
 fn editor_session_rc(home: &TempDir, history: &str, bashrc: &str) -> Session {
     std::fs::write(home.path().join(".bashrc"), bashrc).unwrap();
     std::fs::write(home.path().join("hist"), history).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmsh"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", home.path())
@@ -215,7 +215,7 @@ fn model_line_does_not_reach_bash() {
     settle();
     p.send("? hello\r").unwrap();
     p.expect("модель не настроена · ").unwrap();
-    p.expect(expectrl::Regex("(ai|llmsh) config")).unwrap();
+    p.expect(expectrl::Regex("(ai|aish) config")).unwrap();
     p.expect("E> ").unwrap();
     settle();
     // A glob stays a shell command.

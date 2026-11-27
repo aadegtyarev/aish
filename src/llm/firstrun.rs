@@ -277,7 +277,7 @@ pub fn build_with(
 }
 
 /// Create `path` with `content` unless it exists (never overwrites, even in a
-/// race with the user or another llmsh). Returns whether it was written.
+/// race with the user or another aish). Returns whether it was written.
 pub fn write_new(path: &std::path::Path, content: &str) -> std::io::Result<bool> {
     use std::io::Write;
     if let Some(d) = path.parent() {
@@ -328,7 +328,7 @@ impl Detected {
         build_with(
             &self.found,
             self.openai,
-            &env_or("LLMSH_OPENAI_URL", OPENAI_URL),
+            &env_or("AISH_OPENAI_URL", OPENAI_URL),
             self.deepseek
                 .as_ref()
                 .map(|(u, m)| (u.as_str(), m.as_slice())),
@@ -352,22 +352,22 @@ pub fn detect() -> Detected {
     let urls = [
         (
             "ollama",
-            env_or("LLMSH_PROBE_OLLAMA", "http://localhost:11434/v1"),
+            env_or("AISH_PROBE_OLLAMA", "http://localhost:11434/v1"),
         ),
         (
             "lmstudio",
-            env_or("LLMSH_PROBE_LMSTUDIO", "http://localhost:1234/v1"),
+            env_or("AISH_PROBE_LMSTUDIO", "http://localhost:1234/v1"),
         ),
         (
             "llamacpp",
-            env_or("LLMSH_PROBE_LLAMACPP", "http://localhost:8080/v1"),
+            env_or("AISH_PROBE_LLAMACPP", "http://localhost:8080/v1"),
         ),
     ];
     let hs: Vec<_> = urls
         .into_iter()
         .map(|(id, url)| {
             std::thread::spawn(move || {
-                llmsh_llm::list_models(&url, &None, PROBE_TIMEOUT)
+                aish_llm::list_models(&url, &None, PROBE_TIMEOUT)
                     .ok()
                     .map(|models| Found { id, url, models })
             })
@@ -382,8 +382,8 @@ pub fn detect() -> Detected {
         .ok()
         .filter(|k| !k.is_empty())
         .and_then(|k| {
-            let url = env_or("LLMSH_DEEPSEEK_URL", DEEPSEEK_URL);
-            let models = llmsh_llm::list_models(&url, &Some(k), Duration::from_secs(3)).ok()?;
+            let url = env_or("AISH_DEEPSEEK_URL", DEEPSEEK_URL);
+            let models = aish_llm::list_models(&url, &Some(k), Duration::from_secs(3)).ok()?;
             Some((url, models))
         });
     Detected {
@@ -402,7 +402,7 @@ fn run(llm: &Llm) -> std::io::Result<()> {
         return Ok(()); // someone else created it first
     }
     llm.set_notice(format!(
-        "llmsh · chat: {chat} · complete: {comp} · {{cmd}} config — изменить"
+        "aish · chat: {chat} · complete: {comp} · {{cmd}} config — изменить"
     ));
     Ok(())
 }

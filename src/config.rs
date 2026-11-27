@@ -178,7 +178,7 @@ pub fn config_path() -> Option<PathBuf> {
         Some(x) => PathBuf::from(x),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
-    Some(base.join("llmsh/config.yaml"))
+    Some(base.join("aish/config.yaml"))
 }
 
 /// Missing file is fine (`Ok(None)`); a present but broken file is an error.
@@ -252,12 +252,12 @@ roles:
     #[test]
     fn api_key_env_and_literal() {
         let mut p = Config::parse(EXAMPLE).unwrap().providers.remove(1);
-        std::env::set_var("LLMSH_TEST_KEY", "secret");
-        p.key = Some("$LLMSH_TEST_KEY".into());
+        std::env::set_var("AISH_TEST_KEY", "secret");
+        p.key = Some("$AISH_TEST_KEY".into());
         assert_eq!(p.api_key().as_deref(), Some("secret"));
         p.key = Some("lit".into());
         assert_eq!(p.api_key().as_deref(), Some("lit"));
-        p.key = Some("$LLMSH_TEST_UNSET".into());
+        p.key = Some("$AISH_TEST_UNSET".into());
         assert_eq!(p.api_key(), None);
     }
 
