@@ -20,7 +20,12 @@ jobs:
           docker run --rm -v "$PWD":/src -w /src -e CARGO_HOME=/usr/local/cargo \
             -e CARGO_TARGET_DIR=/pack-target -e HOME=/tmp aish-pack \
             ./build/pack-inner.sh x86_64 aarch64
+      # Release notes: the CHANGELOG.md section for this tag.
+      - run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## \[/{f=index($0,"["v"]")>0; next} /^\[.*\]: /{f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md has no section for $v"; exit 1; }
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: notes.md
