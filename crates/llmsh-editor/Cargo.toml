@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 description = "Small embeddable emacs-style line editor with a plugin architecture"
 license.workspace = true
+authors.workspace = true
 publish = false
 readme = "README.md"
 

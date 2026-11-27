@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 description = "OpenAI-compatible streaming clients (chat completions, responses) for llmsh"
 license.workspace = true
+authors.workspace = true
 publish = false
 
 [features]

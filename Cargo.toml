@@ -6,12 +6,14 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+authors = ["Degtyarev Aleksandr <adegtyarev.ap@gmail.com>"]
 
 [package]
 name = "llmsh"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 readme = "README.md"
 description = "bash wrapper with LLM assistance"
 
@@ -49,8 +51,8 @@ strip = true
 panic = "unwind"
 
 [package.metadata.deb]
-maintainer = "llmsh authors <noreply@example.com>"
-copyright = "llmsh authors"
+maintainer = "Degtyarev Aleksandr <adegtyarev.ap@gmail.com>"
+copyright = "2026, Degtyarev Aleksandr <adegtyarev.ap@gmail.com>"
 license-file = ["LICENSE", "0"]
 section = "shells"
 priority = "optional"
