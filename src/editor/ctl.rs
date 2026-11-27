@@ -469,7 +469,8 @@ impl Controller {
         self.prompt = true;
         self.running_cmd = None;
         let w = width();
-        self.ed.reset_screen(self.scan.column(w));
+        let (col, soft) = self.scan.input_start(w);
+        self.ed.reset_screen_wrapped(col, soft, w);
         // A command from the model must wait for a fresh Enter: keys typed
         // while the answer streamed are dropped when there is one.
         if let Some(p) = self.pending_prefill.take() {
@@ -658,11 +659,12 @@ impl Controller {
         for ev in events.drain(..) {
             match ev {
                 Event::CursorReport(_, c) => {
-                    if self.dsr.take().is_some() && !left && c >= 1 {
+                    if self.dsr.take().is_some() && !left && c >= 1 && !self.scan.moved_after_b {
                         let col = (c - 1).min(width() - 1);
                         if col != self.ed.start_col() {
                             self.erase();
-                            self.ed.reset_screen(col);
+                            let soft = self.scan.soft_rows;
+                            self.ed.reset_screen_wrapped(col, soft, width());
                         }
                     }
                 }

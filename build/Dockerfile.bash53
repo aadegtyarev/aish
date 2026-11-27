@@ -1,0 +1,5 @@
+# Dev image with bash 5.3 (what current distros and CI runners ship): ./dev.sh with AISH_BASH53=1
+FROM debian:sid
+RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates build-essential ncurses-term && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.93.1 -c rustfmt,clippy && chmod -R a+rwX /usr/local/rustup /usr/local/cargo

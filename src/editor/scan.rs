@@ -23,6 +23,15 @@ pub struct Scan {
     /// Rows the cursor went down since the last prompt mark (a prompt wider
     /// than the terminal, or one with newlines, spans several rows).
     pub rows: u16,
+    /// How many of those rows the terminal wrapped by itself (no line feed):
+    /// they belong to one terminal line, which a resize reflows together.
+    pub soft_rows: u16,
+    /// Column and soft rows when 133;B arrived (the end of the prompt), and
+    /// whether the cursor was moved after it (readline puts it back with
+    /// backspaces after repainting on SIGWINCH, leaving it inside the prompt).
+    b_col: u16,
+    b_soft: u16,
+    pub moved_after_b: bool,
     /// A line feed just arrived; a CR right after it is readline's own wrap
     /// break (the row count goes on), anything else is a newline of the prompt
     /// string (readline repaints only the text after it).
@@ -73,6 +82,10 @@ impl Scan {
             nonce,
             col: 0,
             rows: 0,
+            soft_rows: 0,
+            b_col: 0,
+            b_soft: 0,
+            moved_after_b: false,
             lf_rows: None,
             space_after_b: false,
             st: St::Ground,
@@ -195,10 +208,14 @@ impl Scan {
             match o[4] {
                 b'A' => {
                     self.rows = 0;
+                    self.soft_rows = 0;
                     self.b_seen = false;
                     self.saw_a = true;
                 }
                 b'B' => {
+                    self.b_col = self.col;
+                    self.b_soft = self.soft_rows;
+                    self.moved_after_b = false;
                     self.b_seen = true;
                     self.saw_b = true;
                     self.printed_after_b = false;
@@ -222,6 +239,7 @@ impl Scan {
         }
         if self.col + w > width {
             self.rows = self.rows.saturating_add(1);
+            self.soft_rows = self.soft_rows.saturating_add(1);
             self.col = w;
         } else {
             self.col += w;
@@ -260,8 +278,12 @@ impl Scan {
             b'\n' | 0x0b | 0x0c => {
                 self.lf_rows = Some(self.rows.saturating_add(1));
                 self.rows = 0;
+                self.soft_rows = 0;
             }
-            0x08 => self.col = self.col.saturating_sub(1),
+            0x08 => {
+                self.moved_after_b |= self.b_seen;
+                self.col = self.col.saturating_sub(1);
+            }
             b'\t' => self.col = ((self.col / 8 + 1) * 8).min(width - 1),
             0x00..=0x1f | 0x7f => {}
             b' ' if self.b_seen && !self.printed_after_b => {
@@ -281,6 +303,19 @@ impl Scan {
         self.utf[0] = b;
         self.utf_n = 1;
         self.utf_need = need;
+    }
+
+    /// Where the input starts: column and soft-wrapped rows above it. The end
+    /// of the prompt, not the cursor, when something moved the cursor back.
+    pub fn input_start(&self, width: u16) -> (u16, u16) {
+        if self.b_seen && self.moved_after_b {
+            (
+                if self.b_col >= width { 0 } else { self.b_col },
+                self.b_soft,
+            )
+        } else {
+            (self.column(width), self.soft_rows)
+        }
     }
 
     /// Column on the current row after the last output (pending wrap = 0).

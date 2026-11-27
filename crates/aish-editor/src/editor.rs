@@ -464,6 +464,12 @@ impl Editor {
         self.rend.reset(col);
     }
 
+    /// Like [`reset_screen`](Editor::reset_screen) for a prompt whose last
+    /// line the terminal wrapped over `wrapped` full rows of `width` columns.
+    pub fn reset_screen_wrapped(&mut self, col: u16, wrapped: u16, width: u16) {
+        self.rend.reset_wrapped(col, wrapped, width);
+    }
+
     /// Column where the input area starts.
     pub fn start_col(&self) -> u16 {
         self.rend.start_col
@@ -614,8 +620,8 @@ impl Editor {
     /// Erase after the terminal was resized to `width` columns (assumes the
     /// terminal reflowed what we had drawn).
     ///
-    /// Returns true when the cursor was left at the top of a prompt that the
-    /// terminal wrapped: the shell is expected to repaint it, and drawing
+    /// Returns true when the cursor was left at the top of the prompt (always,
+    /// for now): the shell is expected to repaint it, and drawing
     /// before that would land on the wrong row.
     pub fn erase_resized(&mut self, out: &mut dyn Write, width: u16) -> std::io::Result<bool> {
         let mut buf = std::mem::take(&mut self.scratch);

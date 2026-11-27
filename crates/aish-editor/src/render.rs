@@ -113,6 +113,14 @@ fn emit(out: &mut Vec<u8>, lay: &mut Lay, g: &str, width: u16, rec: Option<&mut 
 }
 
 impl Renderer {
+    /// Like `reset`, for a prompt whose last line the terminal wrapped over
+    /// `wrapped` full rows of `width` columns before `start_col`.
+    pub(crate) fn reset_wrapped(&mut self, start_col: u16, wrapped: u16, width: u16) {
+        self.reset(start_col);
+        self.start_off += u32::from(wrapped) * u32::from(width);
+        self.cur_off = self.start_off;
+    }
+
     pub(crate) fn reset(&mut self, start_col: u16) {
         self.start_col = start_col;
         self.start_off = u32::from(start_col);
@@ -249,18 +257,18 @@ impl Renderer {
         }
         let col = (self.start_off % w) as u16;
         let _ = write!(out, "\x1b[{}G\x1b[J", col + 1);
-        // A prompt the terminal wrapped: readline repaints it from the row the
-        // cursor is on (it clears that row only), so wait for it at the top.
+        // readline repaints the prompt on SIGWINCH from the row the cursor is
+        // on (it clears that row only), so wait for it at the prompt's top
         let top = self.start_off / w;
         if top > 0 {
-            let _ = write!(out, "\x1b[{top}A\x1b[1G");
+            let _ = write!(out, "\x1b[{top}A");
         }
-        out.extend_from_slice(b"\x1b[?2026l");
+        out.extend_from_slice(b"\x1b[1G\x1b[?2026l");
         self.start_col = col;
         self.cur_row = 0;
         self.row_lens.clear();
         self.cur_off = self.start_off;
-        top > 0
+        true
     }
 }
 
