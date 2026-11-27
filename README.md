@@ -5,7 +5,19 @@ Spec: [docs/UX.md](docs/UX.md), [docs/config.example.yaml](docs/config.example.y
 
 ## Install
 
-Debian/Ubuntu (amd64, arm64) - the package registers `/usr/bin/aish` in `/etc/shells` and never touches
+One line (Debian/Ubuntu: adds the signed apt repository and installs the package, asks once before
+using sudo; elsewhere: verified release tarball into `~/.local/bin`; `--yes` skips the question):
+
+```
+curl -fsSL https://aadegtyarev.github.io/aish/install.sh | bash
+```
+
+Update: `sudo apt update && sudo apt install --only-upgrade aish` for the package, `aish update`
+(`--check` only looks) for a tarball/`~/.local/bin` install. aish also shows one dim line
+` ↑ aish X.Y.Z — aish update` at most once a day when a newer release exists (checked in the
+background; `update_check: off` in the config disables it).
+
+Debian/Ubuntu by hand (amd64, arm64) - the package registers `/usr/bin/aish` in `/etc/shells` and never touches
 user files; run `aish init` yourself afterwards:
 
 ```
@@ -13,7 +25,7 @@ sudo dpkg -i aish_<ver>_amd64.deb      # or: sudo apt install ./aish_<ver>_amd64
 aish init
 ```
 
-Static tarball (x86_64, aarch64; musl, no dependencies besides bash): unpack, then `./install.sh`
+Static tarball (from the GitHub release; x86_64, aarch64; musl, no dependencies besides bash): unpack, then `./install.sh`
 (installs the bundled binary to `~/.local/bin`, `--prefix DIR` to change, `--no-init` to skip setup).
 
 From source:

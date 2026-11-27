@@ -142,14 +142,15 @@ pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
         }
         "--help" if args.len() == 1 => {
             println!(
-                "aish {}: bash with a line editor and LLM help\n\n  aish            start the shell\n  aish status     show models and whether they answer\n  aish config     edit the config (prints the path if not a terminal)\n  aish init       set up: start aish from ~/.bashrc, detect models (--remove undoes)\n\nOther arguments go to bash.",
+                "aish {}: bash with a line editor and LLM help\n\n  aish            start the shell\n  aish status     show models and whether they answer\n  aish config     edit the config (prints the path if not a terminal)\n  aish init       set up: start aish from ~/.bashrc, detect models (--remove undoes)\n  aish update     install the latest release (--check: only look)\n\nOther arguments go to bash.",
                 env!("CARGO_PKG_VERSION")
             );
             Some(0)
         }
         // A file of that name in the cwd means bash semantics (`bash status`).
-        "status" | "config" | "init" if std::path::Path::new(a).exists() => None,
+        "status" | "config" | "init" | "update" if std::path::Path::new(a).exists() => None,
         "init" => Some(crate::init::run(&args[1..])),
+        "update" => Some(crate::update::run(&args[1..])),
         "status" if args.len() == 1 => {
             let llm = Llm::new();
             if llm.config().is_none() {

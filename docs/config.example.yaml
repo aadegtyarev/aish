@@ -57,3 +57,6 @@ roles:
 #   brave_key: $BRAVE_API_KEY
 #   jina_key: $JINA_API_KEY
 # web: off                                  # no web tools at all
+
+# Daily background check for a newer release (one dim line); off disables.
+# update_check: off

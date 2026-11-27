@@ -248,9 +248,27 @@ $ ai off / ai on          ← выключить/включить подсказ
 $ ai config                ← кладёт `${EDITOR:-vi} ~/.config/aish/config.yaml` в строку ввода (Enter — открыть)
 ```
 
+## Обновление: `aish update`
+
+`aish update` — установка из tarball/`install.sh` (`~/.local/bin`): берёт последний релиз
+с GitHub, проверяет sha256 и атомарно заменяет бинарь, одной строкой:
+`aish 0.1.0 → 0.2.0` или `aish 0.2.0 — последняя версия` (`--check` только сообщает).
+Если бинарь от dpkg, печатает `sudo apt update && sudo apt install --only-upgrade aish`
+и выходит; sudo сам не запускает.
+
+Тихая подсказка: не чаще раза в сутки, в фоне (на старте сети нет, кэш в
+`~/.local/state/aish/update-check`), одна тусклая строка после завершения команды:
+
+```
+ ↑ aish 0.2.0 — aish update
+```
+
+Без конфига (первый запуск) молчит: тогда говорит только строка первого запуска.
+`update_check: off` в конфиге отключает проверку.
+
 ## Установка: `aish init`
 
-`./install.sh` собирает и кладёт `aish` в `~/.local/bin`, затем запускает `aish init`
+`./install.sh` (или `curl -fsSL https://aadegtyarev.github.io/aish/install.sh | bash`: apt или tarball) собирает и кладёт `aish` в `~/.local/bin`, затем запускает `aish init`
 (в сессии то же: `ai init`). Не больше трёх вопросов, по одной строке, Enter берёт
 значение по умолчанию (оно тусклое):
 

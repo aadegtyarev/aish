@@ -10,6 +10,12 @@ version and date, and the release notes on GitHub are taken from it.
 ## [Unreleased]
 
 ### Added
+- Install and update straight from GitHub: a signed apt repository on GitHub Pages
+  (`https://aadegtyarev.github.io/aish`), `curl -fsSL .../install.sh | bash`
+  (apt on Debian/Ubuntu, else a checksum-verified tarball into `~/.local/bin`), and
+  `aish update [--check]` for tarball installs (a package install prints the apt command).
+- A quiet once-a-day background check for a newer release: one dim line
+  ` ↑ aish X.Y.Z — aish update`; `update_check: off` disables it.
 - Web tools for the agent: `web_search` and `web_read`, each with a configurable
   chain of backends (provider's own search, DuckDuckGo, Brave; direct fetch with
   SSRF protection, Jina Reader). Read-only, run without asking, also in the

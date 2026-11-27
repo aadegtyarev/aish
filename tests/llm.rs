@@ -22,7 +22,9 @@ fn base(home: &TempDir) -> Command {
         .env("HOME", home.path())
         .env("HISTFILE", home.path().join("hist"))
         .env("TERM", "xterm")
-        .env("XDG_STATE_HOME", home.path().join("state"));
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        // never reach the real release API from tests (refused at once)
+        .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
     cmd
 }
 

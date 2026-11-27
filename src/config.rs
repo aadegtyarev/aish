@@ -132,6 +132,9 @@ pub struct Config {
     pub keys: Keys,
     #[serde(default)]
     pub web: Setting<WebCfg>,
+    /// `update_check: off` — no daily check for a newer release.
+    #[serde(default)]
+    pub update_check: Setting<String>,
 }
 
 /// Key bindings (`keys:` in the config).

@@ -12,6 +12,7 @@ pub mod osc;
 pub mod pty;
 pub mod shell;
 pub mod term;
+pub mod update;
 
 use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
@@ -63,6 +64,7 @@ pub fn run() -> Result<i32> {
     }
     let llm = llm::Llm::new();
     llm::firstrun::spawn(llm.clone());
+    update::spawn_check(llm.clone());
     pty::clear_nonblock(0);
     pty::clear_nonblock(1);
     let rc = shell::install_rc()?;

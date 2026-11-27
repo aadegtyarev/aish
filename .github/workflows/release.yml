@@ -29,3 +29,31 @@ jobs:
         with:
           files: dist/*
           body_path: notes.md
+      # Signed apt repository on GitHub Pages (branch gh-pages). Skipped without the key.
+      - name: Publish apt repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::warning::APT_SIGNING_KEY is not set, apt repository not updated"
+            exit 0
+          fi
+          git init -q pages
+          git -C pages remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git -C pages fetch -q --depth 1 origin gh-pages; then
+            git -C pages checkout -q -B gh-pages FETCH_HEAD
+          else
+            git -C pages checkout -q --orphan gh-pages
+          fi
+          docker run --rm -e APT_SIGNING_KEY -v "$PWD":/w -w /w debian:bookworm bash -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq apt-utils gnupg >/dev/null
+            build/apt-repo.sh pages dist/*.deb
+            chown -R "$0" pages' "$(id -u):$(id -g)"
+          cd pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "apt repo: ${GITHUB_REF_NAME}" || { echo "nothing to publish"; exit 0; }
+          git push origin HEAD:gh-pages
