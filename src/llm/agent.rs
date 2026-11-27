@@ -34,6 +34,20 @@ they decide whether to run it, and you get the result afterwards. For long-runni
 run with background=true and check on them with jobs/job_output. Explain briefly what you are doing and why. \
 Stop (answer without a tool call) as soon as the task is done. Do not put the command in a ```bash block when you use run.";
 
+/// Guide for the Ctrl-Q overlay: a program is running, possibly on another host.
+pub const OVERLAY_GUIDE: &str = "\n\nA program is running in the user's terminal right now (maybe a shell over ssh, a container, a REPL or a full-screen app); \
+the context holds the tail of its output. You cannot run commands or read files for the user: they may be on another machine. \
+Tools: read_block, jobs, job_output (the local shell's history and jobs only). Answer from the context. \
+If a command helps, put it in a final ```bash block: it is typed into the running program's input without Enter, \
+so write it for the program the user is typing into (the remote shell, or the REPL's own syntax).";
+
+/// Tools offered in the overlay: nothing that touches the local machine.
+pub fn overlay_tool_defs() -> Vec<Tool> {
+    let mut t = tool_defs();
+    t.retain(|d| matches!(d.name.as_str(), "read_block" | "jobs" | "job_output"));
+    t
+}
+
 pub fn tool_defs() -> Vec<Tool> {
     let t = |name: &str, description: &str, parameters: Value| Tool {
         name: name.into(),
@@ -88,6 +102,8 @@ pub struct Turn {
     /// The bare question (what is remembered instead of the context).
     pub q: String,
     pub steps: usize,
+    /// Asked from the Ctrl-Q overlay: read-only history tools only.
+    pub overlay: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +136,7 @@ struct Env<'a> {
     llm: &'a Llm,
     tracker: &'a Arc<Mutex<BlockTracker>>,
     cancel: &'a AtomicBool,
+    overlay: bool,
 }
 
 fn cwd_of(tracker: &Arc<Mutex<BlockTracker>>) -> String {
@@ -418,6 +435,12 @@ fn shell_path(p: &std::path::Path) -> String {
 fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
     let v: Value = serde_json::from_str(&call.arguments).unwrap_or_default();
     let done = |result: String, shown: String| ToolOut::Done { result, shown };
+    if env.overlay && matches!(call.name.as_str(), "run" | "read_file") {
+        return done(
+            "error: not available now: a program is running, possibly on another machine".into(),
+            format!("{} недоступен", call.name),
+        );
+    }
     match call.name.as_str() {
         "run" => {
             let Some(cmd) = arg_str(&v, "command").filter(|c| !c.trim().is_empty()) else {
@@ -548,6 +571,7 @@ pub fn drive(
         llm,
         tracker,
         cancel: &task.shared.cancel,
+        overlay: turn.overlay,
     };
     loop {
         if task.cancelled() {
@@ -558,12 +582,16 @@ pub fn drive(
         all.extend(turn.msgs.iter().cloned());
         let req = Request {
             max_tokens: 2048,
-            tools: if use_tools { tool_defs() } else { Vec::new() },
+            tools: match (use_tools, turn.overlay) {
+                (false, _) => Vec::new(),
+                (true, false) => tool_defs(),
+                (true, true) => overlay_tool_defs(),
+            },
             ..Request::chat(
-                if use_tools {
-                    format!("{SYSTEM}{AGENT_GUIDE}")
-                } else {
-                    SYSTEM.to_owned()
+                match (use_tools, turn.overlay) {
+                    (_, true) => format!("{SYSTEM}{OVERLAY_GUIDE}"),
+                    (true, false) => format!("{SYSTEM}{AGENT_GUIDE}"),
+                    (false, false) => SYSTEM.to_owned(),
                 },
                 masked_history(&all, t.local),
             )
@@ -795,6 +823,7 @@ pub fn start_turn(history: Vec<Message>, user_msg: String, q: String) -> Turn {
         msgs: vec![Message::user(user_msg)],
         q,
         steps: 0,
+        overlay: false,
     }
 }
 

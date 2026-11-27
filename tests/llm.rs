@@ -1134,3 +1134,164 @@ fn failed_start_falls_back_to_a_usable_bash_without_looping() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- Ctrl-Q overlay (ask while a command runs) ----
+
+fn overlay_mock(answer: &'static str) -> Mock {
+    Mock::start(move |r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else {
+            mock::chat_stream(c, &[answer], Duration::from_millis(10));
+        }
+    })
+}
+
+fn chat_body(m: &Mock) -> String {
+    m.requests()
+        .into_iter()
+        .find(|r| r.body.contains("A program is running"))
+        .map(|r| r.body)
+        .unwrap_or_default()
+}
+
+#[test]
+fn overlay_asks_shows_command_and_inserts_it_without_newline() {
+    let home = TempDir::new().unwrap();
+    let m = overlay_mock("Try this:\n```bash\nINSERTED-TEXT\n```\n");
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("cat\r").unwrap();
+    settle();
+    p.send("\x11").unwrap(); // Ctrl-Q while cat runs
+    let f = p.expect("вывода нет").unwrap(); // dim context line
+    assert!(
+        String::from_utf8_lossy(f.before()).contains("\x1b[?1049h"),
+        "alternate screen entered"
+    );
+    p.send("why\r").unwrap();
+    p.expect("Try this:").unwrap();
+    p.expect("Enter — вставить · Esc — закрыть").unwrap();
+    // the model got the context but no local tools
+    let body = chat_body(&m);
+    assert!(
+        body.contains("running command: cat") && body.contains("read_block"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("\"read_file\"") && !body.contains("\"name\":\"run\""),
+        "{body}"
+    );
+    p.send("\r").unwrap(); // insert
+    let f = p.expect("INSERTED-TEXT").unwrap(); // echoed by the tty after the overlay closed
+    assert!(String::from_utf8_lossy(f.before()).contains("\x1b[?1049l"));
+    settle();
+    // Ctrl-D flushes cat's partial line; a newline would have sent it already
+    p.send("\x04").unwrap();
+    let f = p.expect("INSERTED-TEXT").unwrap();
+    // cat's copy follows the echo on the same line: no newline was typed
+    assert!(!String::from_utf8_lossy(f.before()).contains('\n'));
+    p.send("\x04").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn overlay_holds_back_output_until_it_closes() {
+    let home = TempDir::new().unwrap();
+    let m = overlay_mock("ok\n");
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("sleep 1.2; echo LATE-OUTPUT-XYZ; cat\r").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    p.send("\x11").unwrap();
+    p.expect("вывода нет").unwrap();
+    std::thread::sleep(Duration::from_millis(1800)); // the echo happens meanwhile
+    p.send("\x1b").unwrap(); // Esc closes
+    let f = p.expect("LATE-OUTPUT-XYZ").unwrap();
+    let before = String::from_utf8_lossy(f.before()).into_owned();
+    assert!(
+        before.contains("\x1b[?1049l"),
+        "shown only after close: {before:?}"
+    );
+    p.send("\x04").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn double_ctrl_q_sends_a_literal_ctrl_q() {
+    let home = TempDir::new().unwrap();
+    let m = overlay_mock("ok\n");
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("stty -ixon; cat -v\r").unwrap();
+    settle();
+    p.send("\x11").unwrap();
+    p.expect("вывода нет").unwrap();
+    p.send("\x11").unwrap(); // empty input: close and pass the key on
+    p.expect("\x1b[?1049l").unwrap();
+    settle();
+    p.send("\r").unwrap();
+    p.expect("^Q").unwrap();
+    p.send("\x04").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn overlay_multiline_command_is_not_offered_without_bracketed_paste() {
+    let home = TempDir::new().unwrap();
+    let m = overlay_mock("Two steps:\n```bash\nLINE-ONE \\\n  LINE-TWO\n```\n");
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("cat\r").unwrap();
+    settle();
+    p.send("\x11").unwrap();
+    p.expect("вывода нет").unwrap();
+    p.send("\r").unwrap(); // empty Enter = bare `?`
+    p.expect("LINE-ONE").unwrap(); // shown
+    let f = p.expect("Esc — закрыть").unwrap();
+    assert!(!String::from_utf8_lossy(f.before()).contains("вставить"));
+    p.send("\r").unwrap(); // nothing to insert: Enter does nothing
+    std::thread::sleep(Duration::from_millis(200));
+    p.send("\x1b").unwrap();
+    p.expect("\x1b[?1049l").unwrap();
+    p.send("\x04").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn overlay_over_an_alternate_screen_app_redraws_it_by_resizing() {
+    let home = TempDir::new().unwrap();
+    let m = overlay_mock("ok\n");
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    // a "full-screen" app: enters the alternate screen, reports window changes
+    p.send(
+        "bash -c 'trap \"echo WINCH-$((3+4))\" WINCH; printf \"\\033[?1049h\"; echo APP-$((20+2)); read -t 20 x'\r",
+    )
+    .unwrap();
+    p.expect("APP-22").unwrap();
+    settle();
+    p.send("\x11").unwrap();
+    let f = p.expect("полноэкранное приложение").unwrap();
+    let before = String::from_utf8_lossy(f.before()).into_owned();
+    assert!(!before.contains("\x1b[?1049h"), "already in it: {before:?}");
+    p.send("\x1b").unwrap();
+    p.expect("WINCH-7").unwrap(); // the size was nudged on close
+    p.send("\r").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

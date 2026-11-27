@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use lineedit_wip::plugins::SharedHistory;
-use lineedit_wip::{CursorReportFilter, Editor, Event, MemHistory, Theme};
+use lineedit_wip::{CursorReportFilter, Editor, Event, Keymap, MemHistory, Theme};
 
+use super::overlay::{self, AskKey, AskReq, Detector, Gate};
 use super::resolve::Resolver;
 use super::scan::Scan;
 use crate::blocks::{Block, BlockTracker};
@@ -79,6 +80,9 @@ pub enum Input {
     ForwardOwned(Vec<u8>),
     /// Consumed; the flag says a partial key is pending (wait `ESC_WAIT`).
     Handled(bool),
+    /// The ask key was pressed while a command runs: send `before` to the
+    /// program, then open the overlay (the caller does it without the lock).
+    Ask(Box<AskReq>),
 }
 
 pub struct Controller {
@@ -108,6 +112,13 @@ pub struct Controller {
     prefill_watch: bool,
     job_lines: crate::llm::jobs::LineStripper,
     typeahead: Vec<u8>,
+    /// The key that asks the model (None = off).
+    ask: Option<AskKey>,
+    detect: Detector,
+    gate: Arc<Gate>,
+    tracker: Arc<Mutex<BlockTracker>>,
+    /// The line we last typed into bash: the command that runs now.
+    running_cmd: Option<String>,
 }
 
 /// While background jobs exist: notice when one of their pids dies (cheap
@@ -143,6 +154,7 @@ impl Controller {
         nonce: String,
         wake: File,
         llm: Arc<Llm>,
+        ask: Option<AskKey>,
     ) -> Shared {
         let wake = Arc::new(wake);
         let tasks = TaskMaker {
@@ -154,16 +166,23 @@ impl Controller {
         let env = Env {
             llm: llm.clone(),
             tasks: tasks.clone(),
-            tracker,
+            tracker: tracker.clone(),
             resolver: resolver.clone(),
             history: SharedHistory::new(Box::new(MemHistory::default())),
         };
         let mut modules = module::builtin(enabled);
         // A late plugin result writes a byte to the wake pipe; the input thread
         // polls it next to stdin and calls `poll_plugins` (no lock taken here).
-        let mut b = Editor::builder().theme(Theme::from_env()).waker(move || {
-            let _ = (&*wake).write(&[1]);
-        });
+        let mut keys = Keymap::emacs();
+        if let Some(k) = ask {
+            keys.bind_action(k.editor_key(), crate::modules::model::ASK_TOGGLE);
+        }
+        let mut b = Editor::builder()
+            .theme(Theme::from_env())
+            .keymap(keys)
+            .waker(move || {
+                let _ = (&*wake).write(&[1]);
+            });
         for m in &mut modules {
             for p in m.editor_plugins(&env) {
                 b = b.with_boxed(p);
@@ -192,7 +211,63 @@ impl Controller {
             prefill_watch: false,
             job_lines: Default::default(),
             typeahead: Vec::new(),
+            ask,
+            detect: Detector::default(),
+            gate: Arc::new(Gate::default()),
+            tracker,
+            running_cmd: None,
         }))
+    }
+
+    /// Gate that parks the output thread while the overlay is open.
+    pub fn gate(&self) -> Arc<Gate> {
+        self.gate.clone()
+    }
+
+    /// The ask key is live: a command is running and nothing else owns the keys.
+    fn ask_ready(&self) -> bool {
+        self.ask.is_some()
+            && !self.disabled
+            && !self.prompt
+            && self.task.is_none()
+            && !self.scan.b_seen
+    }
+
+    /// State for the overlay, taken once the output thread is parked. `None`
+    /// if the moment passed (the prompt came back meanwhile).
+    pub fn overlay_setup(&mut self) -> Option<overlay::Setup> {
+        if !self.ask_ready() {
+            return None;
+        }
+        let (cwd, raw) = self
+            .tracker
+            .lock()
+            .ok()
+            .map(|t| (t.cwd().to_owned(), t.running_output().unwrap_or_default()))?;
+        let (tail, _) =
+            crate::llm::ask::tail_lines(&raw, crate::llm::ask::OVERLAY_LINES, usize::MAX);
+        Some(overlay::Setup {
+            key: self.ask?,
+            llm: self.llm.clone(),
+            tracker: self.tracker.clone(),
+            tasks: self.tasks.clone(),
+            theme: self.ed.theme().clone(),
+            stdout: self.stdout.try_clone().ok()?,
+            gate: self.gate.clone(),
+            alt: self.scan.alt,
+            bracketed: self.scan.bracketed,
+            screen: crate::llm::ask::Screen {
+                cmd: self.running_cmd.clone(),
+                cwd,
+                alt: self.scan.alt,
+                tail,
+            },
+        })
+    }
+
+    /// The key was pressed but the overlay could not open: the program gets it.
+    pub fn send_raw(&mut self, b: &[u8]) {
+        self.send(b);
     }
 
     pub fn in_prompt(&self) -> bool {
@@ -376,6 +451,7 @@ impl Controller {
             m.on_prompt();
         }
         self.prompt = true;
+        self.running_cmd = None;
         let w = width();
         self.ed.reset_screen(self.scan.column(w));
         // A command from the model must wait for a fresh Enter: keys typed
@@ -434,9 +510,24 @@ impl Controller {
             return Input::Handled(false);
         }
         if !self.prompt {
+            let mut held_out: Option<Vec<u8>> = None;
+            match self.ask.filter(|_| self.ask_ready()) {
+                Some(k) => match self.detect.scan(k, &buf[..n]) {
+                    overlay::Scan::Clear => {}
+                    overlay::Scan::Hit(r) => return Input::Ask(Box::new(r)),
+                    overlay::Scan::Forward(v) => held_out = Some(v),
+                },
+                None if !self.detect.is_empty() => {
+                    let mut v = self.detect.take_held();
+                    v.extend_from_slice(&buf[..n]);
+                    held_out = Some(v);
+                }
+                None => {}
+            }
+            let src: &[u8] = held_out.as_deref().unwrap_or(&buf[..n]);
             if let Some(t) = self.dsr {
-                let mut out = Vec::with_capacity(n);
-                let found = self.dsr_filter.filter(&buf[..n], &mut out);
+                let mut out = Vec::with_capacity(src.len());
+                let found = self.dsr_filter.filter(src, &mut out);
                 if found || t.elapsed() > DSR_TTL {
                     self.dsr = None;
                     out.extend(self.dsr_filter.take_held());
@@ -446,13 +537,27 @@ impl Controller {
                 }
                 return Input::ForwardOwned(out);
             }
+            if let Some(v) = held_out {
+                // part of a possible CSI-u key waits for the next read (or ESC_WAIT)
+                self.send(&v);
+                return Input::Handled(!self.detect.is_empty());
+            }
             if self.scan.b_seen && n > 0 {
                 self.dirty = buf[n - 1] != 0x03;
             }
             return Input::Forward(n);
         }
         let mut ev = std::mem::take(&mut self.events);
-        self.ed.input(&buf[..n], &mut ev);
+        // the kitty form of the ask key is the plain control key for the editor
+        let normal;
+        let data: &[u8] = match self.ask.and_then(|k| k.find(&buf[..n]).map(|r| (k, r))) {
+            Some((k, (s, e))) if e - s > 1 => {
+                normal = [&buf[..s], &[k.byte()], &buf[e..n]].concat();
+                &normal
+            }
+            _ => &buf[..n],
+        };
+        self.ed.input(data, &mut ev);
         self.ed.poll(&mut ev);
         self.handle_events(&mut ev);
         self.events = ev;
@@ -461,6 +566,13 @@ impl Controller {
 
     /// Input went quiet while a partial key was pending.
     pub fn flush_keys(&mut self) {
+        if !self.prompt {
+            let held = self.detect.take_held();
+            if !held.is_empty() {
+                self.send(&held);
+                return;
+            }
+        }
         let mut ev = std::mem::take(&mut self.events);
         self.ed.flush_input(&mut ev);
         if self.prompt {
@@ -590,6 +702,7 @@ impl Controller {
     /// the line goes in as one paste (newlines stay literal, so a multi-line
     /// line is one history entry); otherwise control characters are ^V-quoted.
     fn send_line(&mut self, line: &str) {
+        self.running_cmd = Some(line.to_owned());
         let mut b = Vec::with_capacity(line.len() + 16);
         if self.scan.bracketed {
             b.extend_from_slice(b"\x1b[200~");
@@ -618,6 +731,12 @@ impl Controller {
         if self.prompt {
             self.draw();
         }
+        if self.gate.is_open() {
+            self.gate
+                .resized
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = (&*self.tasks.wake).write(&[1]);
+        }
     }
 }
 
@@ -636,6 +755,7 @@ mod tests {
             "n1".into(),
             null(),
             Llm::new(),
+            Some(AskKey::DEFAULT),
         )
     }
 

@@ -91,7 +91,7 @@ impl Blocks {
 }
 
 /// Output accumulator that keeps the first HEAD_CAP and last TAIL_CAP bytes.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Capped {
     head: String,
     tail: String,
@@ -349,6 +349,12 @@ impl BlockTracker {
         &self.state.cwd
     }
 
+    /// Plain-text output of the command that is running now (None when no
+    /// command has started since the last prompt).
+    pub fn running_output(&self) -> Option<String> {
+        self.state.run.as_ref().map(|r| r.out.clone().finish())
+    }
+
     /// The job table and finished jobs, if the shell reported news since the last call.
     pub fn take_job_update(&mut self) -> Option<(Vec<JobRow>, Vec<JobEnd>)> {
         if !std::mem::take(&mut self.state.jobs_changed) {
@@ -447,6 +453,16 @@ mod tests {
             .unwrap()
             .output
             .contains("visible"));
+    }
+
+    #[test]
+    fn running_output_is_visible_before_the_block_ends() {
+        let mut t = BlockTracker::default();
+        assert_eq!(t.running_output(), None);
+        t.feed(b"\x1b]133;C\x07\x1b[1mone\x1b[0m\r\ntwo");
+        assert_eq!(t.running_output().as_deref(), Some("one\ntwo"));
+        t.feed(b"\r\n\x1b]133;D;0\x07");
+        assert_eq!(t.running_output(), None);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use aish_llm::{Error, Message, Part};
 use super::agent;
 use super::context;
 use super::mask::mask;
+use super::render::Renderer;
 use super::{Llm, Target};
 use crate::blocks::BlockTracker;
 use crate::module::Task;
@@ -161,6 +162,94 @@ fn answer(
     agent::drive(llm, tracker, t, turn, task)
 }
 
+/// Lines of the running program's output the overlay sends at most.
+pub const OVERLAY_LINES: usize = 200;
+
+/// What the Ctrl-Q overlay knows about the running program.
+#[derive(Debug, Clone, Default)]
+pub struct Screen {
+    /// The command line that was started (unknown if bash ran it natively).
+    pub cmd: Option<String>,
+    pub cwd: String,
+    /// The program is in the alternate screen: the output stream does not
+    /// tell what is on the screen.
+    pub alt: bool,
+    /// Tail of the output stream (at most `OVERLAY_LINES` lines).
+    pub tail: String,
+}
+
+/// The last `lines` lines of `s` within `max_chars` (cut at a line start where
+/// possible), and how many lines that is.
+pub fn tail_lines(s: &str, lines: usize, max_chars: usize) -> (String, usize) {
+    let all: Vec<&str> = s.trim_end().lines().collect();
+    let mut from = all.len().saturating_sub(lines);
+    let mut total: usize = all[from..].iter().map(|l| l.chars().count() + 1).sum();
+    while total > max_chars && from + 1 < all.len() {
+        total -= all[from].chars().count() + 1;
+        from += 1;
+    }
+    let mut t = all[from..].join("\n");
+    let n = t.chars().count();
+    if n > max_chars {
+        t = t.chars().skip(n - max_chars).collect();
+    }
+    (t, all.len() - from)
+}
+
+/// The context text of an overlay question (unmasked).
+pub fn overlay_context(s: &Screen, window: Option<u64>) -> String {
+    let max = context::budget_tokens(window) * 4;
+    let (tail, _) = tail_lines(&s.tail, OVERLAY_LINES, max);
+    let mut c = format!(
+        "A program is running in the terminal.\nrunning command: {}\nlocal shell cwd: {}\n",
+        s.cmd.as_deref().unwrap_or("(unknown)"),
+        s.cwd
+    );
+    if s.alt {
+        c.push_str(
+            "The program is in the alternate screen (full-screen/TUI): the text below is the raw output stream \
+             and may not match what is on the screen now.\n",
+        );
+    }
+    if tail.is_empty() {
+        c.push_str("output: (none yet)\n");
+    } else {
+        c.push_str(&format!("last output:\n{tail}\n"));
+    }
+    c
+}
+
+/// Answer a question from the overlay (worker thread). Returns the command
+/// of a final bash block, already shown under the answer.
+pub fn overlay_answer(
+    llm: &Llm,
+    tracker: &Arc<Mutex<BlockTracker>>,
+    t: &Target,
+    screen: &Screen,
+    question: &str,
+    task: &Task,
+) -> Option<String> {
+    let mut ctx = overlay_context(screen, t.window);
+    if !t.local {
+        ctx = mask(&ctx);
+    }
+    let q = if question.is_empty() {
+        "Explain what is happening in the output above and what to do next, briefly.".to_owned()
+    } else if t.local {
+        question.to_owned()
+    } else {
+        mask(question)
+    };
+    let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
+    let mut turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
+    turn.overlay = true;
+    let cmd = agent::drive(llm, tracker, t, turn, task)?;
+    let mut out = Vec::new();
+    Renderer::new(&task.theme, task.cols).code_block(&cmd, &mut out);
+    task.write(&out);
+    Some(cmd)
+}
+
 /// Keep a finished turn: the bare question, the tool traffic, the answer.
 pub fn remember_turn(llm: &Llm, turn: &agent::Turn) {
     let Ok(mut c) = llm.convo.lock() else { return };
@@ -195,6 +284,36 @@ mod tests {
         assert_eq!(m[1].text(), "use https://u:***@h/x");
         assert_eq!(masked_history(&h, true), h);
         assert_eq!(h[0].text(), "export API_KEY=abc123 why"); // stored copy intact
+    }
+
+    #[test]
+    fn tail_keeps_the_end_within_limits() {
+        let s: String = (1..=300).map(|i| format!("line{i}\n")).collect();
+        let (t, n) = tail_lines(&s, 200, 100_000);
+        assert_eq!(n, 200);
+        assert!(t.starts_with("line101\n") && t.ends_with("line300"));
+        let (t, n) = tail_lines(&s, 200, 40);
+        assert!(
+            t.chars().count() <= 40 && n < 10 && t.ends_with("line300"),
+            "{t:?}"
+        );
+        assert_eq!(tail_lines("", 200, 100), (String::new(), 0));
+    }
+
+    #[test]
+    fn overlay_context_says_when_the_screen_is_unreliable() {
+        let mut s = Screen {
+            cmd: Some("vim x".into()),
+            cwd: "/h".into(),
+            alt: true,
+            tail: "text".into(),
+        };
+        let c = overlay_context(&s, None);
+        assert!(c.contains("vim x") && c.contains("alternate screen") && c.contains("text"));
+        s.alt = false;
+        s.tail.clear();
+        let c = overlay_context(&s, None);
+        assert!(!c.contains("alternate") && c.contains("none yet"));
     }
 
     #[test]

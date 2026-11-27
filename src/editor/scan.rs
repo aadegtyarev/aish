@@ -20,7 +20,7 @@ pub struct Scan {
     st: St,
     osc: [u8; 64],
     osc_n: usize,
-    csi: [u8; 8],
+    csi: [u8; 24],
     csi_n: usize,
     /// Our session nonce; OSC 133 marks without it (foreign shells) are ignored.
     nonce: String,
@@ -38,8 +38,10 @@ pub struct Scan {
     /// Something printable was written after the last B: bash's line is not
     /// empty (type-ahead echoed by readline) or it is still drawing.
     pub printed_after_b: bool,
-    /// bash has bracketed paste on (it sent `CSI ? 2004 h`).
+    /// The running program enabled bracketed paste (`CSI ? 2004 h`).
     pub bracketed: bool,
+    /// The program is in the alternate screen (`CSI ? 1049 / 1047 / 47 h`).
+    pub alt: bool,
 }
 
 impl Default for Scan {
@@ -56,7 +58,7 @@ impl Scan {
             st: St::Ground,
             osc: [0; 64],
             osc_n: 0,
-            csi: [0; 8],
+            csi: [0; 24],
             csi_n: 0,
             utf: [0; 4],
             utf_n: 0,
@@ -67,6 +69,7 @@ impl Scan {
             saw_b: false,
             printed_after_b: false,
             bracketed: false,
+            alt: false,
         }
     }
 
@@ -95,12 +98,9 @@ impl Scan {
                 }
                 St::Csi => {
                     if (0x40..=0x7e).contains(&b) || b == 0x18 || b == 0x1a {
-                        if &self.csi[..self.csi_n] == b"?2004" {
-                            match b {
-                                b'h' => self.bracketed = true,
-                                b'l' => self.bracketed = false,
-                                _ => {}
-                            }
+                        if matches!(b, b'h' | b'l') && self.csi[..self.csi_n].first() == Some(&b'?')
+                        {
+                            self.private_mode(b == b'h');
                         }
                         self.st = St::Ground;
                     } else if b == 0x1b {
@@ -141,6 +141,17 @@ impl Scan {
         }
     }
 
+    /// `CSI ? Pm h|l`: remember the modes the overlay needs to know about.
+    fn private_mode(&mut self, on: bool) {
+        for p in self.csi[1..self.csi_n].split(|&c| c == b';') {
+            match p {
+                b"2004" => self.bracketed = on,
+                b"1049" | b"1047" | b"47" => self.alt = on,
+                _ => {}
+            }
+        }
+    }
+
     fn end_osc(&mut self) {
         self.st = St::Ground;
         let o = &self.osc[..self.osc_n];
@@ -160,6 +171,7 @@ impl Scan {
                 b'C' | b'D' => {
                     self.b_seen = false;
                     self.saw_cd = true;
+                    self.alt = false; // a new command starts on the main screen
                 }
                 _ => {}
             }
@@ -279,6 +291,35 @@ mod tests {
         assert!(!s.printed_after_b);
         s.feed(b"\x1b[?2004l", 80);
         assert!(!s.bracketed);
+    }
+
+    #[test]
+    fn alt_screen_and_bracketed_paste_tracking() {
+        let mut s = Scan::default();
+        s.feed(b"\x1b[?1049h", 80);
+        assert!(s.alt && !s.bracketed);
+        s.feed(b"\x1b[?2004h", 80);
+        assert!(s.alt && s.bracketed);
+        s.feed(b"\x1b[?1049l\x1b[?2004l", 80);
+        assert!(!s.alt && !s.bracketed);
+        // old forms, combined parameters, other modes ignored
+        for (on, off) in [("1047", "1047"), ("47", "47")] {
+            s.feed(format!("\x1b[?{on}h").as_bytes(), 80);
+            assert!(s.alt, "{on}");
+            s.feed(format!("\x1b[?{off}l").as_bytes(), 80);
+            assert!(!s.alt, "{off}");
+        }
+        s.feed(b"\x1b[?25l\x1b[?1h\x1b[4h", 80);
+        assert!(!s.alt && !s.bracketed);
+        s.feed(b"\x1b[?1049;2004h", 80);
+        assert!(s.alt && s.bracketed);
+        // split across reads
+        s.feed(b"\x1b[?10", 80);
+        s.feed(b"49l", 80);
+        assert!(!s.alt);
+        // a new command starts on the main screen again
+        s.feed(b"\x1b[?1049h\x1b]133;D\x07", 80);
+        assert!(!s.alt);
     }
 
     #[test]

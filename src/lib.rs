@@ -51,9 +51,11 @@ pub fn run() -> Result<i32> {
         anyhow::bail!("start failure requested by AISH_TEST_FAIL_START");
     }
     let mut enabled_modules: Option<Vec<String>> = None;
+    let mut ask_key = Some(editor::overlay::AskKey::DEFAULT);
     match config::load() {
         Ok(Some(c)) => {
             tracing::info!(providers = c.providers.len(), "config loaded");
+            ask_key = editor::overlay::AskKey::from_config(&c.keys.ask);
             enabled_modules = c.modules;
         }
         Ok(None) => tracing::info!("no config"),
@@ -116,11 +118,13 @@ pub fn run() -> Result<i32> {
             nonce,
             std::fs::File::from(w),
             llm,
+            ask_key,
         );
         (Some(ctl), Some(std::fs::File::from(r)))
     } else {
         (None, None)
     };
+    let gate = ed.as_ref().map(|c| editor::ctl::lock(c).gate());
     signals.watch(m_sig, child.id(), ed.clone());
     let ed_in = ed.clone().zip(wake_r);
     std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty, ed_in));
@@ -133,6 +137,9 @@ pub fn run() -> Result<i32> {
     let status = child.wait()?;
     // Drain remaining output, but don't hang if a background job holds the pty.
     let _ = done_rx.recv_timeout(Duration::from_millis(300));
+    if let Some(g) = gate {
+        g.emergency_restore(); // the shell ended with the overlay open
+    }
     drop(raw);
     Ok(status
         .code()

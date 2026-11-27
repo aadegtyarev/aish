@@ -298,3 +298,22 @@ fn completion_function_reading_stdin_does_not_desync_sidecar() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+#[test]
+fn ctrl_q_at_the_prompt_toggles_the_question_marker() {
+    let home = TempDir::new().unwrap();
+    let mut p = editor_session(&home, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo zz").unwrap();
+    p.send("\x11").unwrap();
+    // the (accent-colored) marker is in front of the line now
+    p.expect("\x1b[0;36m?\x1b[0;m echo zz").unwrap();
+    p.send("\x11").unwrap(); // and gone again
+    settle();
+    p.send("\r").unwrap();
+    p.expect("\x07zz\r\n").unwrap(); // the line ran as a plain command
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

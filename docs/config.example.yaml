@@ -31,6 +31,12 @@ roles:
 # It always wins over any program of that name; `off` disables it (`aish ...` still works).
 # command: ai
 
+# Keys. `ask` asks the model from anywhere, also while a command runs (an overlay
+# over ssh, REPLs, ...); at the prompt it toggles a `? ` in front of the line.
+# `ctrl-<letter>` or `off`; the default is ctrl-q.
+# keys:
+#   ask: ctrl-q
+
 # Extra read-only command prefixes the agent (`?`) may run by itself, without
 # asking. Everything else is put into your input line for Enter.
 # allow:

@@ -94,6 +94,9 @@ impl Signals {
                     }
                     continue;
                 }
+                if let Some(Ok(g)) = ed.as_ref().map(|c| c.try_lock()) {
+                    g.gate().emergency_restore(); // overlay open: give the screen back
+                }
                 let _ = crossterm::terminal::disable_raw_mode();
                 // SAFETY: plain kill(2) on our own child.
                 unsafe { libc::kill(child_pid as i32, SIGHUP) };

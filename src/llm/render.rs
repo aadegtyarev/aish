@@ -235,6 +235,13 @@ impl Renderer {
         self.route(buf, out);
     }
 
+    /// A command shown as accent-colored rows under the bar (the overlay shows
+    /// the command before it is inserted).
+    pub fn code_block(&self, cmd: &str, out: &mut Vec<u8>) {
+        let lines: Vec<String> = cmd.lines().map(str::to_owned).collect();
+        self.code_rows(&lines, out);
+    }
+
     fn code_rows(&self, lines: &[String], buf: &mut Vec<u8>) {
         let w = self.cols.saturating_sub(2).max(1);
         for l in lines {

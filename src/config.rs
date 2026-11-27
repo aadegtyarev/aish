@@ -106,6 +106,16 @@ pub struct Config {
     /// Extra command prefixes the agent may run by itself (read-only ones).
     #[serde(default)]
     pub allow: Vec<String>,
+    #[serde(default)]
+    pub keys: Keys,
+}
+
+/// Key bindings (`keys:` in the config).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Keys {
+    /// `ctrl-<letter>` or `off`; asks the model from anywhere (default ctrl-q).
+    #[serde(default)]
+    pub ask: Setting<String>,
 }
 
 /// A role resolved to concrete provider/model/effort.
@@ -259,6 +269,17 @@ roles:
         assert_eq!(p.api_key().as_deref(), Some("lit"));
         p.key = Some("$AISH_TEST_UNSET".into());
         assert_eq!(p.api_key(), None);
+    }
+
+    #[test]
+    fn keys_section() {
+        let c = Config::parse("keys: {ask: ctrl-g}").unwrap();
+        assert_eq!(c.keys.ask, Setting::Value("ctrl-g".into()));
+        assert_eq!(
+            Config::parse("keys: {ask: off}").unwrap().keys.ask,
+            Setting::Off
+        );
+        assert_eq!(Config::parse("{}").unwrap().keys.ask, Setting::Unset);
     }
 
     #[test]

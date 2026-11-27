@@ -9,6 +9,12 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- Ctrl-Q asks the model from anywhere, also in the middle of a running command
+  (ssh, REPLs, docker exec): an overlay with the command's recent output that
+  can type the answer's command into the program (never pressing Enter).
+  Configurable with `keys: {ask: ...}`; at the prompt it toggles `? `.
+
 ## [0.1.0] - 2026-11-27
 
 First public release.

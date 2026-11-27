@@ -2,11 +2,12 @@
 //! follows (dim `│` rows) and nothing reaches the shell.
 
 use lineedit_wip::plugins::{HintText, Intercept, RightHint};
-use lineedit_wip::{Class, Plugin, Span};
+use lineedit_wip::{Class, Ctx, Handled, Plugin, Span};
 
 use std::sync::{Arc, Mutex};
 
 use crate::blocks::BlockTracker;
+use crate::editor::overlay::toggle_prefix;
 use crate::llm::agent;
 use crate::llm::cmd::{self, is_aish_line, is_short_line, Cmd};
 use crate::llm::render::Renderer;
@@ -54,6 +55,27 @@ impl Plugin for Accent {
     }
 }
 
+/// Editor action bound to the ask key (see `keys.ask`): Ctrl-Q at the prompt
+/// puts a `? ` in front of the line, or takes it away again.
+pub const ASK_TOGGLE: &str = "ask-toggle";
+
+struct AskToggle;
+
+impl Plugin for AskToggle {
+    fn name(&self) -> &'static str {
+        ASK_TOGGLE
+    }
+    fn on_action(&mut self, ctx: &mut Ctx, action: &str) -> Handled {
+        if action != ASK_TOGGLE {
+            return Handled::Pass;
+        }
+        let (text, cursor) = toggle_prefix(ctx.text(), ctx.cursor());
+        ctx.set_text(&text);
+        ctx.set_cursor(cursor);
+        Handled::Yes
+    }
+}
+
 #[derive(Default)]
 pub struct ModelModule {
     env: Option<(Arc<Llm>, Arc<Mutex<BlockTracker>>)>,
@@ -83,6 +105,7 @@ impl Module for ModelModule {
             Box::new(Intercept::new(move |l| claims(l, &llm))),
             Box::new(RightHint::new(hint)),
             Box::new(Accent),
+            Box::new(AskToggle),
             Box::new(crate::llm::cmdsuggest::CmdSuggest::new(env.llm.clone())),
             Box::new(ModelSuggest::new(
                 env.llm.clone(),

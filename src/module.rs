@@ -29,6 +29,8 @@ pub struct TaskShared {
     /// `Some(prefill)` once the task is finished.
     done: Mutex<Option<Option<String>>>,
     finished: AtomicBool,
+    /// Output is dropped (the screen it was meant for is gone).
+    pub muted: AtomicBool,
     wake: Arc<File>,
 }
 
@@ -57,6 +59,9 @@ impl Task {
     }
 
     pub fn write(&self, bytes: &[u8]) {
+        if self.shared.muted.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let _ = (&*self.out).write_all(bytes);
     }
 
@@ -107,6 +112,7 @@ impl TaskMaker {
                 cancel: AtomicBool::new(false),
                 done: Mutex::new(None),
                 finished: AtomicBool::new(false),
+                muted: AtomicBool::new(false),
                 wake: self.wake.clone(),
             }),
         }

@@ -14,6 +14,7 @@ use nix::pty::openpty;
 
 use crate::blocks::BlockTracker;
 use crate::editor::ctl::{self, Input, Shared, ESC_WAIT, QUIET};
+use crate::editor::overlay;
 use crate::osc::Filter;
 
 /// Spawn `cmd` on a fresh pty as session leader with the pty as controlling
@@ -82,6 +83,7 @@ fn write_out(master: &mut File, bytes: &[u8]) -> bool {
 pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<(Shared, File)>) {
     let mut buf = [0u8; 4096];
     let mut pending = false;
+    let gate = ed.as_ref().map(|(c, _)| ctl::lock(c).gate());
     loop {
         if let Some((c, wake)) = &ed {
             let timeout = pending.then_some(ESC_WAIT);
@@ -133,6 +135,27 @@ pub fn pump_input(mut stdin: File, mut master: File, is_tty: bool, ed: Option<(S
                             pending = p;
                             true
                         }
+                        Input::Ask(req) => {
+                            pending = false;
+                            let (Some(g), Some((_, wake))) = (&gate, &ed) else {
+                                continue;
+                            };
+                            if !write_out(&mut master, &req.before) {
+                                return;
+                            }
+                            // The output thread parks; the state is read after it did.
+                            g.open();
+                            let (setup, ob) = ctl::with(c, None, |g| g.overlay_setup());
+                            let mut ok = write_out(&mut master, &ob);
+                            ok &= match setup {
+                                Some(s) => overlay::run(s, &req, &stdin, wake, &mut master),
+                                None => {
+                                    g.close();
+                                    write_out(&mut master, &req.key)
+                                }
+                            };
+                            ok
+                        }
                     };
                     if !ok || !write_out(&mut master, &out) {
                         return;
@@ -158,6 +181,7 @@ pub fn pump_output(
     let mut buf = vec![0u8; 64 * 1024];
     let mut out = Vec::with_capacity(buf.len());
     let mut filter = Filter::default();
+    let gate = ed.as_ref().map(|c| ctl::lock(c).gate());
     loop {
         if let (true, Some(c)) = (armed, &ed) {
             if !readable(&master, QUIET) {
@@ -173,6 +197,9 @@ pub fn pump_output(
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return, // EIO: shell gone
         };
+        // While the overlay is open the chunk waits here (the app blocks on
+        // its next write); nothing is lost.
+        let _busy = gate.as_ref().map(|g| g.enter());
         out.clear();
         filter.filter(&buf[..n], &mut out);
         if let Some(c) = &ed {
