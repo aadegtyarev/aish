@@ -171,12 +171,15 @@ the user's input line, you get the result if they run it. "
             "Asked how to do something, explain briefly and offer to do it with run; the user approves \
 each changing command (one at a time); if declined, adapt instead of retrying. "
         }
-        None => NO_RUN,
+        None => "Asked how to do something, explain briefly and hand the command over with insert. ",
     });
     if run.is_some() {
-        g.push_str("Long jobs: run with background=true, then jobs/job_output. If something is unclear or risky, ask with ask. To hand the user a command to run or edit themselves, use insert; never rely on ```bash blocks. ");
+        g.push_str("Long jobs: run with background=true, then jobs/job_output. ");
     }
-    g.push_str("Stop calling tools once done.");
+    g.push_str(
+        "Another host: `ssh host cmd`. If something is unclear or risky, ask with ask. To hand the user \
+a command to run or edit themselves, use insert; never rely on ```bash blocks. Stop calling tools once done.",
+    );
     g
 }
 
@@ -1773,7 +1776,7 @@ mod tests {
         assert!(sys.contains("```bash") && tools.is_empty());
         llm.set_tool("run", false);
         let (sys, tools) = request_parts(&llm, false, &on);
-        assert!(sys.contains("You cannot run") && tools.iter().all(|t| t.name != "run"));
+        assert!(sys.contains("over with insert") && tools.iter().all(|t| t.name != "run"));
     }
 
     #[test]

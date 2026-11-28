@@ -103,9 +103,9 @@ struct Stage {
     hard: bool,
 }
 
-/// Programs that are hard whatever their arguments: privilege changes, disk
-/// tools, power, code evaluators and shell state (later prompts and lines run
-/// what is put there).
+/// Programs that are hard whatever their arguments: privilege changes, other
+/// hosts, disk tools, power, code evaluators and shell state (later prompts and
+/// lines run what is put there).
 const ALWAYS_HARD: &[&str] = &[
     "sudo",
     "doas",
@@ -115,6 +115,9 @@ const ALWAYS_HARD: &[&str] = &[
     "sg",
     "runuser",
     "newgrp",
+    "ssh",
+    "scp",
+    "sftp",
     "dd",
     "mke2fs",
     "mkswap",
@@ -495,6 +498,9 @@ mod tests {
     fn the_hard_list_always_asks() {
         for c in [
             "sudo ls",
+            "ssh ad-pc df -h",
+            "env ssh h ls",
+            "scp a h:b",
             "doas reboot",
             "su -c id",
             "rm -rf build",

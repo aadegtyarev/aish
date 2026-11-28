@@ -17,6 +17,7 @@ version and date, and the release notes on GitHub are taken from it.
 ### Changed
 - With tools on, the final ```bash block of an answer is no longer put into
   the input line; the model hands commands over with `insert`.
+- In judge mode `ssh`, `scp` and `sftp` always ask you, whatever the judge says.
 
 ## [0.4.1] - 2026-11-28
 
