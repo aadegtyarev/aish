@@ -16,9 +16,9 @@ use aish_llm::{Message, Request};
 
 use super::cmd::is_aish_line;
 use super::mask::mask;
+use super::prefix::is_model_line;
 use super::{Llm, Target};
 use crate::blocks::BlockTracker;
-use crate::modules::model::is_model_line;
 
 pub const DEBOUNCE: Duration = Duration::from_millis(150);
 const CACHE: usize = 256;

@@ -21,8 +21,7 @@ use super::web::{self, Web};
 use super::{Llm, Target};
 use crate::blocks::{Block, BlockTracker};
 use crate::config::RunMode;
-use crate::module::Key;
-use crate::module::Task;
+use crate::task::{Key, Task};
 
 pub const MAX_STEPS: usize = 12;
 const RUN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -814,7 +813,7 @@ pub fn drive(
         let mut full = String::new();
         let mut searches: Vec<String> = Vec::new();
         let mut got_output = false;
-        let mut waiter = crate::editor::wait::Waiter::start(task, t.local.then(|| t.ep.clone()));
+        let mut waiter = super::wait::Waiter::start(task, t.local.then(|| t.ep.clone()));
         let res = aish_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |e| {
             waiter.event(&e);
             match e {
@@ -1045,7 +1044,7 @@ fn approve(llm: &Llm, task: &Task, cmd: &str, listed: bool, question: &str, cwd:
     let grant = mode == RunMode::Ask;
     let mut reason: Option<String> = None;
     if mode == RunMode::Judge {
-        let w = crate::editor::wait::Waiter::start_judging(task);
+        let w = super::wait::Waiter::start_judging(task);
         let v = super::judge::judge(llm, task, cmd, cwd, question);
         drop(w);
         if task.cancelled() {

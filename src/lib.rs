@@ -1,6 +1,7 @@
 //! aish: transparent PTY proxy around bash with command blocks.
 
 mod blocks;
+mod cli;
 mod complete;
 mod config;
 mod config_edit;
@@ -13,10 +14,11 @@ mod modules;
 mod osc;
 mod pty;
 mod shell;
+mod task;
 mod term;
 mod update;
 
-pub use llm::cmd::cli;
+pub use cli::dispatch;
 pub use shell::init_logging;
 
 use std::os::fd::AsRawFd;
@@ -56,18 +58,16 @@ pub fn run() -> Result<i32> {
     if std::env::var_os("AISH_TEST_FAIL_START").is_some() {
         anyhow::bail!("start failure requested by AISH_TEST_FAIL_START");
     }
-    let mut enabled_modules: Option<Vec<String>> = None;
-    let mut ask_key = Some(editor::overlay::AskKey::DEFAULT);
-    match config::load() {
-        Ok(Some(c)) => {
-            tracing::info!(providers = c.providers.len(), "config loaded");
-            ask_key = editor::overlay::AskKey::from_config(&c.keys.ask);
-            enabled_modules = c.modules;
-        }
-        Ok(None) => tracing::info!("no config"),
-        Err(e) => tracing::warn!("config: {e:#}"),
-    }
     let llm = llm::Llm::new();
+    let cfg = llm.config();
+    let ask_key = match &cfg {
+        Some(c) => {
+            tracing::info!(providers = c.providers.len(), "config loaded");
+            editor::overlay::AskKey::from_config(&c.keys.ask)
+        }
+        None => Some(editor::overlay::AskKey::DEFAULT),
+    };
+    let enabled_modules = cfg.and_then(|c| c.modules.clone());
     llm::firstrun::spawn(llm.clone());
     update::spawn_check(llm.clone());
     pty::clear_nonblock(0);
@@ -132,7 +132,24 @@ pub fn run() -> Result<i32> {
         (None, None)
     };
     let gate = ed.as_ref().map(|c| editor::ctl::lock(c).gate());
-    signals.watch(m_sig, child.id(), ed.clone(), gate.clone());
+    let (ed_w, gate_w) = (ed.clone(), gate.clone());
+    signals.watch(
+        child.id(),
+        move || {
+            let apply = || term::set_window_size(m_sig.as_raw_fd(), &term::window_size());
+            match &ed_w {
+                Some(c) => {
+                    editor::ctl::with(c, (), |g| g.resize(apply));
+                }
+                None => apply(),
+            }
+        },
+        move || {
+            if let Some(g) = &gate_w {
+                g.emergency_restore(); // overlay open: give the screen back
+            }
+        },
+    );
     let ed_in = ed.clone().zip(wake_r);
     std::thread::spawn(move || pty::pump_input(stdin, m_in, is_tty, ed_in));
     let (done_tx, done_rx) = mpsc::channel();

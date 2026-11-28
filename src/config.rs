@@ -327,6 +327,24 @@ impl<'de> Deserialize<'de> for RunCfg {
     }
 }
 
+/// Characters with no meaning at the start of a bash line. See docs/UX.md.
+pub const ALLOWED: &[char] = &['?', ',', '@', '#', ';'];
+
+/// The config value as a prefix character.
+fn parse_prefix(s: &str) -> Result<char, String> {
+    let mut it = s.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) if ALLOWED.contains(&c) => Ok(c),
+        _ => {
+            let list: Vec<String> = ALLOWED.iter().map(char::to_string).collect();
+            Err(format!(
+                "prefix must be one of: {} (got '{s}')",
+                list.join(" ")
+            ))
+        }
+    }
+}
+
 /// Switchable tools (`tools:` in the config).
 pub const SWITCHABLE_TOOLS: &[&str] = &["run", "files", "web"];
 
@@ -477,7 +495,7 @@ impl Config {
             }
         }
         if let Some(p) = &self.prefix {
-            crate::llm::prefix::from_config(p).map_err(|e| anyhow!(e))?;
+            parse_prefix(p).map_err(|e| anyhow!(e))?;
         }
         if let Some(c) = &self.compact {
             let at = c.at.map_or(COMPACT_AT, |p| p.0);
@@ -519,7 +537,7 @@ impl Config {
     pub fn prefix(&self) -> char {
         self.prefix
             .as_deref()
-            .and_then(|p| crate::llm::prefix::from_config(p).ok())
+            .and_then(|p| parse_prefix(p).ok())
             .unwrap_or('?')
     }
 
@@ -649,13 +667,6 @@ pub fn config_path() -> Option<PathBuf> {
 }
 
 /// Missing file is fine (`Ok(None)`); a present but broken file is an error.
-pub fn load() -> Result<Option<Config>> {
-    match config_path() {
-        Some(p) => load_from(&p),
-        None => Ok(None),
-    }
-}
-
 pub fn load_from(path: &std::path::Path) -> Result<Option<Config>> {
     match std::fs::read_to_string(path) {
         Ok(s) => Config::parse(&s)
@@ -844,5 +855,18 @@ roles:
         assert!(p("compact: {at: 20%, size: 30%}").is_err());
         assert!(p("compact: {at: lots}").is_err());
         assert!(p("compact: {model: nope}").is_err());
+    }
+
+    #[test]
+    fn config_value() {
+        for &p in ALLOWED {
+            assert_eq!(parse_prefix(&p.to_string()), Ok(p));
+        }
+        for bad in [
+            "", "??", ".", "/", "~", "!", "%", "^", ":", "-", "*", "\\", "$", "&", "a",
+        ] {
+            let e = parse_prefix(bad).unwrap_err();
+            assert!(e.contains("? , @ # ;"), "{e}");
+        }
     }
 }

@@ -23,7 +23,7 @@ use crate::config::Setting;
 use crate::llm::ask::{self, Screen};
 use crate::llm::render::{sanitize, unsafe_cmd, Renderer};
 use crate::llm::Llm;
-use crate::module::{TaskMaker, TaskShared};
+use crate::task::{TaskMaker, TaskShared};
 
 /// The key that asks the model: Ctrl plus a letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,12 +664,7 @@ impl Overlay {
                 let h = self.header_row();
                 let mut o =
                     format!("\x1b[0m\x1b[2J\x1b[H{h}\r\n? {}", sanitize(&self.last_q)).into_bytes();
-                let text = self.s.llm.convo.lock().ok().and_then(|c| {
-                    c.last()
-                        .filter(|m| m.role == aish_llm::Role::Assistant)
-                        .map(|m| m.text())
-                });
-                if let Some(t) = text {
+                if let Some(t) = self.s.llm.last_answer() {
                     let mut r = Renderer::new(&self.s.theme, cols());
                     r.push(&t, &mut o);
                     if let Some(c) = r.finish(&mut o, true) {

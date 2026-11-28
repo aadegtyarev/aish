@@ -13,7 +13,7 @@ use super::mask::mask;
 use super::render::sanitize;
 use super::{Llm, Target};
 use crate::config::{Config, JudgePrompt, Setting};
-use crate::module::Task;
+use crate::task::Task;
 
 /// Characters of the user's question the judge sees.
 const MAX_QUESTION: usize = 500;

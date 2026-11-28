@@ -1,8 +1,7 @@
 //! Host terminal: raw mode, window size, SIGWINCH.
 
-use std::fs::File;
 use std::io::IsTerminal;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::RawFd;
 
 use nix::libc;
 use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg, Termios};
@@ -93,32 +92,24 @@ impl Signals {
         signal_hook::iterator::Signals::new([SIGWINCH, SIGTERM, SIGQUIT, SIGHUP]).map(Signals)
     }
 
-    /// WINCH resizes the pty (and is re-synced once now, closing the race with
-    /// startup); TERM/QUIT/HUP restore the terminal, hang up the shell, exit.
+    /// `on_winch` runs at once (closing the race with startup) and on every
+    /// WINCH; TERM/QUIT/HUP run `on_exit`, restore the terminal, hang up the
+    /// shell and exit.
     pub fn watch(
         mut self,
-        master: File,
         child_pid: u32,
-        ed: Option<crate::editor::ctl::Shared>,
-        gate: Option<std::sync::Arc<crate::editor::overlay::Gate>>,
+        on_winch: impl Fn() + Send + 'static,
+        on_exit: impl Fn() + Send + 'static,
     ) {
         std::thread::spawn(move || {
             use signal_hook::consts::*;
-            set_window_size(master.as_raw_fd(), &window_size());
+            on_winch();
             for sig in self.0.forever() {
                 if sig == SIGWINCH {
-                    let apply = || set_window_size(master.as_raw_fd(), &window_size());
-                    match &ed {
-                        Some(c) => {
-                            crate::editor::ctl::with(c, (), |g| g.resize(apply));
-                        }
-                        None => apply(),
-                    }
+                    on_winch();
                     continue;
                 }
-                if let Some(g) = &gate {
-                    g.emergency_restore(); // overlay open: give the screen back
-                }
+                on_exit();
                 restore();
                 // SAFETY: plain kill(2) on our own child.
                 unsafe { libc::kill(child_pid as i32, SIGHUP) };

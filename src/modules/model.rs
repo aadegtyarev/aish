@@ -10,13 +10,12 @@ use crate::blocks::BlockTracker;
 use crate::editor::overlay::toggle_prefix;
 use crate::llm::agent;
 use crate::llm::cmd::{self, is_aish_line, is_short_line, Cmd};
-use crate::llm::prefix::{self, Form};
+use crate::llm::prefix::{self, is_model_line, Form};
 use crate::llm::render::{fit_line, Renderer};
 use crate::llm::suggest::{LsCache, ModelSuggest};
 use crate::llm::{ask, compact, Llm};
-use crate::module::{Env, Module, Task};
-
-pub use crate::llm::prefix::is_model_line;
+use crate::module::{Env, Module};
+use crate::task::Task;
 
 /// Paints the prefix in the accent color and the rest as plain text.
 struct Accent(char);

@@ -1,28 +1,4 @@
-//! The question prefix (`?` by default) and the forms a line may take with it.
-
-/// Characters with no meaning at the start of a bash line. See docs/UX.md.
-pub const ALLOWED: &[char] = &['?', ',', '@', '#', ';'];
-
-/// `? , @ # ;` for messages.
-pub fn allowed_list() -> String {
-    ALLOWED
-        .iter()
-        .map(char::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// The config value as a prefix character.
-pub fn from_config(s: &str) -> Result<char, String> {
-    let mut it = s.chars();
-    match (it.next(), it.next()) {
-        (Some(c), None) if ALLOWED.contains(&c) => Ok(c),
-        _ => Err(format!(
-            "prefix must be one of: {} (got '{s}')",
-            allowed_list()
-        )),
-    }
-}
+//! The forms a line may take with the question prefix (`?` by default).
 
 /// A line that starts with the prefix, understood.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +64,7 @@ pub fn forms(p: char) -> Vec<(String, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ALLOWED;
 
     fn q(blocks: usize, text: &str) -> Option<Form> {
         Some(Form::Question {
@@ -168,18 +145,5 @@ mod tests {
         assert_eq!(parse("?0", '?'), q(1, ""));
         assert_eq!(parse("?99 x", '?'), q(20, "x"));
         assert_eq!(parse("?99999999999999999999", '?'), q(20, ""));
-    }
-
-    #[test]
-    fn config_value() {
-        for &p in ALLOWED {
-            assert_eq!(from_config(&p.to_string()), Ok(p));
-        }
-        for bad in [
-            "", "??", ".", "/", "~", "!", "%", "^", ":", "-", "*", "\\", "$", "&", "a",
-        ] {
-            let e = from_config(bad).unwrap_err();
-            assert!(e.contains("? , @ # ;"), "{e}");
-        }
     }
 }

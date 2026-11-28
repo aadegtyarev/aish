@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use aish_llm::{Endpoint, Event};
 
-use crate::llm::render::fit_line;
-use crate::module::{StatusWriter, Task};
+use super::render::fit_line;
+use crate::task::{StatusWriter, Task};
 
 const TICK: Duration = Duration::from_millis(125);
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -180,7 +180,7 @@ fn ticker(
         if let Some(ep) = &probe {
             if el >= next_probe && matches!(p, Phase::Waiting | Phase::Loading) {
                 next_probe = el + PROBE_EVERY;
-                match model_state(ep) {
+                match aish_llm::model_loading(ep) {
                     Some(true) => phase.store(Phase::Loading as u8, Relaxed),
                     Some(false) if p == Phase::Loading => {
                         phase.store(Phase::Waiting as u8, Relaxed)
@@ -210,23 +210,6 @@ fn ticker(
         tick += 1;
         std::thread::sleep(TICK);
     }
-}
-
-/// llama.cpp router mode: is the target model `unloaded`/`loading`? None when
-/// the server does not say (the field is absent, or it cannot be asked).
-fn model_state(ep: &Endpoint) -> Option<bool> {
-    let url = format!("{}/models", ep.url.trim_end_matches('/'));
-    let mut r = ureq::get(&url).timeout(Duration::from_secs(2));
-    if let Some(k) = &ep.key {
-        r = r.set("Authorization", &format!("Bearer {k}"));
-    }
-    let v: serde_json::Value = serde_json::from_str(&r.call().ok()?.into_string().ok()?).ok()?;
-    let m = v["data"]
-        .as_array()?
-        .iter()
-        .find(|m| m["id"].as_str() == Some(ep.model.as_str()))?;
-    let s = m["status"]["value"].as_str()?;
-    Some(matches!(s, "unloaded" | "loading"))
 }
 
 #[cfg(test)]

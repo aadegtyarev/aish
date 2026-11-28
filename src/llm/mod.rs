@@ -19,6 +19,7 @@ pub mod prefix;
 pub mod render;
 pub mod status;
 pub mod suggest;
+pub mod wait;
 pub mod web;
 
 use std::collections::HashMap;
@@ -124,6 +125,13 @@ impl Llm {
             .get_or_init(|| self.config().map_or('?', |c| c.prefix()))
     }
 
+    /// The text of the last answer, if the conversation ends with one.
+    pub fn last_answer(&self) -> Option<String> {
+        let c = self.convo.lock().ok()?;
+        let m = c.last()?;
+        (m.role == aish_llm::Role::Assistant).then(|| m.text())
+    }
+
     /// `?n`: forget the conversation. False (nothing changed) while a turn
     /// or a compaction is running.
     pub fn reset_memory(&self) -> bool {
@@ -151,7 +159,7 @@ impl Llm {
             let n_ctx = match known {
                 Some(n) => n,
                 None => {
-                    let n = compact::fetch_n_ctx(&t.ep.url, &t.ep.key);
+                    let n = aish_llm::fetch_n_ctx(&t.ep.url, &t.ep.key);
                     if let Ok(mut w) = self.windows.lock() {
                         w.insert(key, n);
                     }

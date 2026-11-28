@@ -10,7 +10,7 @@ use super::mask::mask;
 use super::render::Renderer;
 use super::{Llm, Target};
 use crate::blocks::BlockTracker;
-use crate::module::Task;
+use crate::task::Task;
 
 pub(crate) const SYSTEM: &str = "You are a terse, practical assistant inside aish, an AI wrapper around the user's bash terminal. \
 Answer in the language of the user's question. Use light markdown only (**bold**, `code`, short lists). \

@@ -4,7 +4,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     // Only these exact subcommands are ours; everything else is bash's.
-    if let Some(code) = aish::cli(&args) {
+    if let Some(code) = aish::dispatch(&args) {
         return ExitCode::from(code as u8);
     }
     // Scripts, `-c`, pipes: nothing to proxy, behave exactly like bash.

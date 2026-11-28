@@ -9,6 +9,8 @@ mod chat;
 #[cfg(feature = "mock")]
 pub mod mock;
 mod responses;
+mod server;
+pub use server::{fetch_n_ctx, model_loading};
 
 use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};

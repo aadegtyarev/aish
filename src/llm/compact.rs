@@ -1,16 +1,14 @@
 //! Conversation memory management: the context window, the size estimate,
 //! and compaction (a model-written summary replaces the old turns).
 
-use std::time::Duration;
-
 use aish_llm::{Error, Event, Message, Part, Request, Role};
 
 use super::ask::{convo_chars, masked_history, short_reason};
 use super::context::{trim_middle, CHARS_PER_TOKEN};
 use super::render::{fit_line, Renderer};
+use super::wait::Waiter;
 use super::{Llm, Target};
-use crate::editor::wait::Waiter;
-use crate::module::Task;
+use crate::task::Task;
 
 /// The window assumed when neither the config nor the server says.
 pub const DEFAULT_WINDOW: u64 = 8192;
@@ -99,32 +97,6 @@ pub fn secure_memory(llm: &Llm, target_local: bool) {
             *m = Message::user(super::mask::mask(&m.text()));
         }
     }
-}
-
-/// `n_ctx` from a llama.cpp `/props` answer.
-pub fn parse_props(body: &str) -> Option<u64> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    v["default_generation_settings"]["n_ctx"]
-        .as_u64()
-        .or_else(|| v["n_ctx"].as_u64())
-        .filter(|n| *n > 0)
-        .map(|n| n.clamp(2048, 4_000_000))
-}
-
-/// `GET <base>/props` for the provider URL `http://host:port/v1`.
-pub fn props_url(url: &str) -> String {
-    let u = url.trim_end_matches('/');
-    let u = u.strip_suffix("/v1").unwrap_or(u);
-    format!("{u}/props")
-}
-
-/// Ask a llama.cpp server for its context size; any failure is `None`.
-pub fn fetch_n_ctx(url: &str, key: &Option<String>) -> Option<u64> {
-    let mut r = ureq::get(&props_url(url)).timeout(Duration::from_millis(1500));
-    if let Some(k) = key {
-        r = r.set("Authorization", &format!("Bearer {k}"));
-    }
-    parse_props(&r.call().ok()?.into_string().ok()?)
 }
 
 /// `12.4k` for 12400, `850` for 850.
@@ -361,21 +333,6 @@ mod tests {
         assert_eq!(summary_tokens(8192, 0.1, 8192), 819);
         assert_eq!(summary_tokens(32768, 0.1, 4096), 1024);
         assert_eq!(summary_tokens(1000, 0.1, 8192), 100);
-    }
-
-    #[test]
-    fn props_parsing() {
-        let p = r#"{"default_generation_settings":{"n_ctx":32768,"x":1},"total_slots":1}"#;
-        assert_eq!(parse_props(p), Some(32768));
-        assert_eq!(parse_props(r#"{"n_ctx":4096}"#), Some(4096));
-        assert_eq!(parse_props(r#"{"n_ctx":0}"#), None);
-        assert_eq!(parse_props(r#"{"n_ctx":512}"#), Some(2048));
-        assert_eq!(parse_props(r#"{"n_ctx":99999999}"#), Some(4_000_000));
-        assert_eq!(parse_props("not json"), None);
-        assert_eq!(parse_props("{}"), None);
-        assert_eq!(props_url("http://h:8080/v1"), "http://h:8080/props");
-        assert_eq!(props_url("http://h:8080/v1/"), "http://h:8080/props");
-        assert_eq!(props_url("http://h:8080"), "http://h:8080/props");
     }
 
     #[test]

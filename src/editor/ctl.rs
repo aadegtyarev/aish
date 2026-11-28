@@ -23,7 +23,8 @@ use super::resolve::Resolver;
 use super::scan::Scan;
 use crate::blocks::{Block, BlockTracker};
 use crate::llm::Llm;
-use crate::module::{self, Env, Module, TaskMaker, TaskShared};
+use crate::module::{self, Env, Module};
+use crate::task::{TaskMaker, TaskShared};
 
 /// Output silence after OSC 133;B before we take over the input line.
 pub const QUIET: Duration = Duration::from_millis(10);
