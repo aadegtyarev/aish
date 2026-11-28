@@ -142,6 +142,8 @@ pub struct Request {
     pub tools: Vec<Tool>,
     /// Give up if nothing at all (not even reasoning) arrives within this time.
     pub first_token_timeout: Duration,
+    /// Give up (as cancelled) when this moment passes, whatever arrives.
+    pub deadline: Option<Instant>,
     /// Responses API: also offer the provider's built-in web search.
     pub native_search: bool,
     /// GBNF grammar that constrains the answer (llama.cpp style chat servers).
@@ -158,6 +160,7 @@ impl Request {
             stop: Vec::new(),
             tools: Vec::new(),
             first_token_timeout: FIRST_TOKEN_CHAT,
+            deadline: None,
             native_search: false,
             grammar: None,
         }
@@ -361,7 +364,7 @@ pub fn stream_tools(
     let mut first = true;
     let mut calls = Vec::new();
     let out = loop {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) || req.deadline.is_some_and(|d| Instant::now() >= d) {
             break Err(Error::Cancelled);
         }
         let limit = if first {

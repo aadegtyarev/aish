@@ -75,40 +75,6 @@ pub fn decode_entities(s: &str) -> String {
     out
 }
 
-pub fn url_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'%' if i + 2 < b.len() => {
-                let h = std::str::from_utf8(&b[i + 1..i + 3])
-                    .ok()
-                    .and_then(|h| u8::from_str_radix(h, 16).ok());
-                match h {
-                    Some(v) => {
-                        out.push(v);
-                        i += 3;
-                    }
-                    None => {
-                        out.push(b'%');
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// Attribute `name` of a tag's attribute text (`class="x" href=y`).
 pub fn attr(attrs: &str, name: &str) -> Option<String> {
     let b = attrs.as_bytes();

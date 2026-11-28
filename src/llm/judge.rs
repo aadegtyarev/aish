@@ -3,8 +3,6 @@
 //! the judge sees only the command, the cwd and the user's last question.
 //! Whatever is not a clean verdict (garbage, timeout, error) means ASK.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aish_llm::{Error, Kind, Message, Request};
@@ -125,23 +123,8 @@ fn one(t: &Target, system: &str, user: &str, task: &Task, grammar: bool) -> Resu
     if grammar {
         req.grammar = Some(GRAMMAR.to_owned());
     }
-    let stop = Arc::new(AtomicBool::new(false));
-    let done = Arc::new(AtomicBool::new(false));
-    let (s2, d2, shared) = (stop.clone(), done.clone(), task.shared.clone());
-    let limit = timeout();
-    std::thread::spawn(move || {
-        let t0 = Instant::now();
-        while !d2.load(Ordering::Relaxed) {
-            if t0.elapsed() >= limit || shared.cancel.load(Ordering::Relaxed) {
-                s2.store(true, Ordering::Relaxed);
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    });
-    let r = aish_llm::complete(&t.ep, &req, &stop);
-    done.store(true, Ordering::Relaxed);
-    r
+    req.deadline = Some(Instant::now() + timeout());
+    aish_llm::complete(&t.ep, &req, &task.shared.cancel)
 }
 
 /// Ask the judge. Never fails: no clean verdict is `Ask` without a reason.

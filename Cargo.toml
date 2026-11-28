@@ -39,6 +39,7 @@ vte = "0.15"
 # Web tools (web_read): own fetch with a vetted resolver, no cookies.
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2"
+percent-encoding = "2"
 # Release checksums for `aish update`.
 sha2 = "0.10"
 

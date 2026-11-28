@@ -119,33 +119,43 @@ pub fn spawn(
     p: Parsed,
     task: Task,
 ) {
-    run_task(task, move |task| answer(&llm, &tracker, &target, &p, task));
+    run_task(task, move |task| {
+        let q = match p.question.as_str() {
+            "" => "Explain what went wrong or what the last output means, briefly.",
+            q => q,
+        };
+        let ctx = answer_context(&llm, &tracker, &target, &p);
+        run_turn(&llm, &tracker, &target, task, ctx, q.to_owned(), false)
+    });
 }
 
-fn answer(
-    llm: &Llm,
-    tracker: &Arc<Mutex<BlockTracker>>,
-    t: &Target,
-    p: &Parsed,
-    task: &Task,
-) -> Option<String> {
+fn answer_context(llm: &Llm, tracker: &Arc<Mutex<BlockTracker>>, t: &Target, p: &Parsed) -> String {
     let mut ctx = context::build(tracker, p.blocks, t.window);
     let jobs = llm.jobs.lock().map(|j| j.describe()).unwrap_or_default();
     if !jobs.starts_with("no ") {
         ctx.push_str(&format!("background jobs:\n{jobs}\n"));
     }
     // (masking happens per request, for the model that actually answers)
-    let q = if p.question.is_empty() {
-        "Explain what went wrong or what the last output means, briefly.".to_owned()
-    } else {
-        p.question.clone()
-    };
+    ctx
+}
+
+/// One question: compact if needed, start the turn with `ctx`, drive it.
+fn run_turn(
+    llm: &Llm,
+    tracker: &Arc<Mutex<BlockTracker>>,
+    t: &Target,
+    task: &Task,
+    ctx: String,
+    q: String,
+    overlay: bool,
+) -> Option<String> {
     let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
     if !super::compact::before_turn(llm, t, task) {
         return None;
     }
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
-    let turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
+    let mut turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
+    turn.overlay = overlay;
     agent::drive(llm, tracker, t, turn, task)
 }
 
@@ -216,20 +226,12 @@ pub fn overlay_answer(
     question: &str,
     task: &Task,
 ) -> Option<String> {
-    let ctx = overlay_context(screen, t.window);
-    let q = if question.is_empty() {
-        "Explain what is happening in the output above and what to do next, briefly.".to_owned()
-    } else {
-        question.to_owned()
+    let q = match question {
+        "" => "Explain what is happening in the output above and what to do next, briefly.",
+        q => q,
     };
-    let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
-    if !super::compact::before_turn(llm, t, task) {
-        return None;
-    }
-    let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
-    let mut turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
-    turn.overlay = true;
-    let cmd = agent::drive(llm, tracker, t, turn, task)?;
+    let ctx = overlay_context(screen, t.window);
+    let cmd = run_turn(llm, tracker, t, task, ctx, q.to_owned(), true)?;
     let mut out = Vec::new();
     Renderer::new(&task.theme, task.cols).code_block(&cmd, &mut out);
     task.write(&out);
@@ -237,24 +239,13 @@ pub fn overlay_answer(
 }
 
 /// Keep a finished turn: the bare question, the tool traffic, the answer.
-/// (The memory is cut to `cap_chars` as a last resort; compaction normally
+/// (The memory is cut to `cap_tokens` as a last resort; compaction normally
 /// acts long before.)
-pub fn remember_turn(llm: &Llm, turn: &agent::Turn, cap_chars: usize) {
+pub fn remember_turn(llm: &Llm, turn: &agent::Turn, cap_tokens: usize) {
     let Ok(mut c) = llm.convo.lock() else { return };
     c.push(Message::user(turn.q.clone()));
     c.extend(turn.msgs.iter().skip(1).cloned());
-    // drop whole old turns (up to the next plain question), never half of one
-    while c.len() > 2 && convo_chars(&c) > cap_chars {
-        let next = c.iter().skip(1).position(|m| {
-            m.role == aish_llm::Role::User && matches!(m.parts.first(), Some(Part::Text(_)))
-        });
-        match next {
-            Some(i) => {
-                c.drain(..=i);
-            }
-            None => break,
-        }
-    }
+    super::compact::drop_oldest(&mut c, cap_tokens);
 }
 
 #[cfg(test)]
@@ -310,7 +301,7 @@ mod tests {
         for i in 0..5 {
             let mut turn = agent::start_turn(Vec::new(), "ctx".into(), format!("q{i}"));
             turn.msgs.push(Message::assistant("a".repeat(100)));
-            remember_turn(&llm, &turn, 450);
+            remember_turn(&llm, &turn, 112);
         }
         let c = llm.convo.lock().unwrap();
         assert!(

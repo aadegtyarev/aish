@@ -10,7 +10,7 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsRawFd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -798,7 +798,7 @@ impl Overlay {
             if self.s.gate.closing.load(Ordering::SeqCst) {
                 return Some(Vec::new()); // the shell is gone
             }
-            let (inp, woke) = wait2(stdin, wake);
+            let (inp, woke) = crate::pty::wait_input(stdin, wake, None);
             if woke {
                 let mut sink = [0u8; 64];
                 let _ = (&*wake).read(&mut sink);
@@ -830,26 +830,6 @@ impl Overlay {
             self.w(&r);
         }
         self.s.gate.close();
-    }
-}
-
-/// Wait for the keyboard or the wake pipe, retrying on signals.
-fn wait2(a: &File, b: &File) -> (bool, bool) {
-    use nix::errno::Errno;
-    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-    loop {
-        let mut fds = [
-            PollFd::new(a.as_fd(), PollFlags::POLLIN),
-            PollFd::new(b.as_fd(), PollFlags::POLLIN),
-        ];
-        match poll(&mut fds, PollTimeout::NONE) {
-            Ok(n) if n > 0 => {
-                let ready = |f: &PollFd| f.revents().is_some_and(|r| !r.is_empty());
-                return (ready(&fds[0]), ready(&fds[1]));
-            }
-            Ok(_) | Err(Errno::EINTR) => {}
-            Err(_) => return (true, false),
-        }
     }
 }
 

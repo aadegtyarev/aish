@@ -271,21 +271,7 @@ impl Llm {
     }
 
     pub fn targets_at(&self, role: &str, now: Instant) -> Vec<Target> {
-        let Some(cfg) = self.config() else {
-            return Vec::new();
-        };
-        let over = self.over.lock().ok().and_then(|o| o.get(role).cloned());
-        let all: Vec<Target> = match over {
-            Some(id) => cfg
-                .resolve_ref(&id, &Setting::Unset)
-                .ok()
-                .map(|r| vec![self.make_target(&r)])
-                .unwrap_or_default(),
-            None => cfg
-                .resolve_all(role)
-                .map(|v| v.iter().map(|r| self.make_target(r)).collect())
-                .unwrap_or_default(),
-        };
+        let all = self.resolved(role, |r| self.make_target(r));
         let (down, up): (Vec<_>, Vec<_>) = all
             .into_iter()
             .partition(|t| self.is_down(role, &t.label, now));
@@ -355,6 +341,12 @@ impl Llm {
     /// `provider/alias` of every model of the role, configured order (a
     /// session override replaces them).
     pub fn labels(&self, role: &str) -> Vec<String> {
+        self.resolved(role, |r| format!("{}/{}", r.provider.id, r.alias))
+    }
+
+    /// `f` of each model of the role in configured order (a session override
+    /// replaces them).
+    fn resolved<T>(&self, role: &str, f: impl Fn(&config::Resolved<'_>) -> T) -> Vec<T> {
         let Some(cfg) = self.config() else {
             return Vec::new();
         };
@@ -362,15 +354,11 @@ impl Llm {
         match over {
             Some(id) => cfg
                 .resolve_ref(&id, &Setting::Unset)
-                .map(|r| vec![format!("{}/{}", r.provider.id, r.alias)])
+                .map(|r| vec![f(&r)])
                 .unwrap_or_default(),
             None => cfg
                 .resolve_all(role)
-                .map(|v| {
-                    v.iter()
-                        .map(|r| format!("{}/{}", r.provider.id, r.alias))
-                        .collect()
-                })
+                .map(|v| v.iter().map(f).collect())
                 .unwrap_or_default(),
         }
     }
@@ -483,30 +471,21 @@ pub fn failover(e: &aish_llm::Error) -> bool {
 
 /// localhost / loopback / private LAN host in a URL.
 pub fn is_local(url: &str) -> bool {
-    let rest = url.split_once("://").map_or(url, |x| x.1);
-    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let auth = auth.rsplit_once('@').map_or(auth, |x| x.1);
-    let host = if let Some(h) = auth.strip_prefix('[') {
-        h.split(']').next().unwrap_or("")
-    } else {
-        auth.split(':').next().unwrap_or("")
-    };
-    let h = host.to_ascii_lowercase();
-    let h = h.trim_end_matches('.');
-    if h == "localhost" || h == "::1" || h.ends_with(".local") || h.ends_with(".localhost") {
-        return true;
+    use url::Host;
+    match url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host().map(|h| h.to_owned()))
+    {
+        Some(Host::Domain(d)) => {
+            let d = d.trim_end_matches('.');
+            d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost")
+        }
+        Some(Host::Ipv4(a)) => {
+            a.octets()[0] == 0 || a.is_loopback() || a.is_private() || a.is_link_local()
+        }
+        Some(Host::Ipv6(a)) => a.is_loopback() || a.is_unique_local() || a.is_unicast_link_local(),
+        None => false,
     }
-    let o: Vec<u8> = h.split('.').filter_map(|p| p.parse().ok()).collect();
-    if o.len() != 4 || h.split('.').count() != 4 {
-        return h.contains(':')
-            && (h.starts_with("fe80:") || h.starts_with("fc") || h.starts_with("fd"));
-    }
-    o[0] == 127
-        || o[0] == 0
-        || o[0] == 10
-        || (o[0] == 192 && o[1] == 168)
-        || (o[0] == 172 && (16..32).contains(&o[1]))
-        || (o[0] == 169 && o[1] == 254)
 }
 
 #[cfg(test)]

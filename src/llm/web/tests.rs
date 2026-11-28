@@ -419,6 +419,4 @@ fn credentials_refused_and_fragment_stripped() {
 fn control_chars_are_stripped_and_percent_decoding_edges() {
     let t = wrap("x", "y", "a\u{1b}[31mb\u{85}c\td\ne\u{7}");
     assert!(t.ends_with("a[31mbc\td\ne"), "{t:?}");
-    assert_eq!(html::url_decode("a%41%4"), "aA%4");
-    assert_eq!(html::url_decode("%41"), "A");
 }

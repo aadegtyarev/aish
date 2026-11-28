@@ -890,11 +890,7 @@ impl Drive<'_> {
                 task.write(&out);
                 self.turn.msgs.push(Message::assistant(s.full));
                 let window = self.llm.window_known(&self.t) as usize;
-                remember_turn(
-                    self.llm,
-                    &self.turn,
-                    window.saturating_mul(context::CHARS_PER_TOKEN),
-                );
+                remember_turn(self.llm, &self.turn, window);
                 return cmd;
             }
             s.r.finish(&mut out, false);

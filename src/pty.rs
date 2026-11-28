@@ -49,25 +49,29 @@ fn readable(f: &File, d: std::time::Duration) -> bool {
     !matches!(poll(&mut fds, ms), Ok(0))
 }
 
-/// Wait for stdin or the wake pipe; (stdin ready, wake ready). `None`
-/// timeout waits forever; a timeout returns (false, false).
-fn wait_input(stdin: &File, wake: &File, timeout: Option<std::time::Duration>) -> (bool, bool) {
+/// Wait for stdin or the wake pipe, retrying on signals; (stdin ready, wake
+/// ready). `None` timeout waits forever; a timeout returns (false, false).
+pub fn wait_input(stdin: &File, wake: &File, timeout: Option<std::time::Duration>) -> (bool, bool) {
+    use nix::errno::Errno;
     use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
     let ms = match timeout {
         Some(d) => PollTimeout::try_from(d).unwrap_or(PollTimeout::MAX),
         None => PollTimeout::NONE,
     };
-    let mut fds = [
-        PollFd::new(stdin.as_fd(), PollFlags::POLLIN),
-        PollFd::new(wake.as_fd(), PollFlags::POLLIN),
-    ];
-    match poll(&mut fds, ms) {
-        Ok(n) if n > 0 => {
-            let ready = |f: &PollFd| f.revents().is_some_and(|r| !r.is_empty());
-            (ready(&fds[0]), ready(&fds[1]))
+    loop {
+        let mut fds = [
+            PollFd::new(stdin.as_fd(), PollFlags::POLLIN),
+            PollFd::new(wake.as_fd(), PollFlags::POLLIN),
+        ];
+        match poll(&mut fds, ms) {
+            Ok(n) if n > 0 => {
+                let ready = |f: &PollFd| f.revents().is_some_and(|r| !r.is_empty());
+                return (ready(&fds[0]), ready(&fds[1]));
+            }
+            Ok(_) => return (false, false),
+            Err(Errno::EINTR) => {}
+            Err(_) => return (true, false), // let read() sort it out
         }
-        Ok(_) => (false, false),
-        Err(_) => (true, false), // EINTR etc.: let read() sort it out
     }
 }
 

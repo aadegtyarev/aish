@@ -1,19 +1,20 @@
 //! DuckDuckGo HTML endpoint (keyless).
 
-use super::html::{attr, decode_entities, strip_tags, url_decode};
+use super::html::{attr, decode_entities, strip_tags};
 use super::{agent, read_text, Hit};
 
 /// The real target of a result link: `//duckduckgo.com/l/?uddg=<enc>&...`.
 fn unwrap_link(href: &str) -> Option<String> {
-    if let Some(p) = href.find("uddg=") {
-        let enc = href[p + 5..].split('&').next().unwrap_or("");
-        let u = url_decode(enc);
-        return u.starts_with("http").then_some(u);
+    let abs = match href.strip_prefix("//") {
+        Some(h) => format!("https://{h}"),
+        None => href.to_owned(),
+    };
+    if href.contains("uddg=") {
+        let u = url::Url::parse(&abs).ok()?;
+        let (_, v) = u.query_pairs().find(|(k, _)| k == "uddg")?;
+        return v.starts_with("http").then(|| v.into_owned());
     }
-    if href.starts_with("//") {
-        return Some(format!("https:{href}"));
-    }
-    href.starts_with("http").then(|| href.to_owned())
+    abs.starts_with("http").then_some(abs)
 }
 
 /// Content of the element opened by the tag around `class_at` (up to `</a>`).
