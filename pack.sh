@@ -16,6 +16,7 @@ case $arch in all) arch="x86_64 aarch64" ;; x86_64|aarch64) ;; *) echo "pack.sh:
 docker build -q -t aish-pack build >/dev/null
 user=(); docker info 2>/dev/null | grep -q rootless || user=(-u "$(id -u):$(id -g)")
 mkdir -p dist
+# shellcheck disable=SC2086 # $arch is a word list
 exec docker run --rm "${user[@]}" -v "$PWD":/src -w /src \
   -v aish-cargo:/usr/local/cargo/registry \
   -v aish-pack-target:/pack-target \

@@ -18,4 +18,4 @@ for a in "$@"; do
   tar -C /tmp -czf "dist/$d.tar.gz" "$d"
   ls -l "$bin"
 done
-(cd dist && sha256sum * > SHA256SUMS)
+(cd dist && sha256sum -- * > SHA256SUMS)

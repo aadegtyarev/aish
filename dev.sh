@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 # Rootless docker maps container root to the host user; otherwise run as the host user.
+tty=(); [ -t 0 ] && tty=(-t)
 user=(); docker info 2>/dev/null | grep -q rootless || user=(-u "$(id -u):$(id -g)")
 # AISH_BASH53=1: same, in an image with bash 5.3 (own target dir), to match CI and
 # current distros: AISH_BASH53=1 ./dev.sh test --workspace
@@ -12,7 +13,7 @@ if [ -n "${AISH_BASH53:-}" ]; then
   docker image inspect "$image" >/dev/null 2>&1 \
     || docker build -q -t "$image" -f build/Dockerfile.bash53 build >&2
 fi
-exec docker run --rm -i $([ -t 0 ] && echo -t) \
+exec docker run --rm -i "${tty[@]}" \
   "${user[@]}" \
   -v "$PWD":/src -w /src \
   -v aish-cargo:/usr/local/cargo/registry \
