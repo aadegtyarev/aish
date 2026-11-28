@@ -1,0 +1,66 @@
+Package: aish
+Architecture: arm64
+Version: 0.2.0-1
+Priority: optional
+Section: shells
+Maintainer: Degtyarev Aleksandr <adegtyarev.ap@gmail.com>
+Installed-Size: 4374
+Depends: bash (>= 4.4)
+Recommends: bash-completion
+Filename: pool/main/a/aish/aish_0.2.0_arm64.deb
+Size: 1672720
+MD5sum: d233c03bd08d92eb9f3d4de0dcead378
+SHA1: 979f257314a38e3bf62c0a9570e5382335679a71
+SHA256: 8201816c79013a588098ff872aaf1c3933b84f8dc9d51d903e8c432ce334fb9c
+SHA512: 8cc445ba73c6e614cae212327adfbce9a61619e3b9723fabe3f948146c5ba75fbc5ed0108e40cc4cf953b46e30cf1c241fa626c80edb0f221b4f8a4e5e6fc4c3
+Description: bash wrapper with LLM assistance
+ aish runs bash on a pty and adds LLM assistance on top: command blocks with
+ status lines, an inline editor, and an `ai` command for chat and agent actions
+ with any OpenAI-compatible backend. Without an LLM it behaves like plain bash.
+ Run `aish init` as your own user to set up your shell startup; the package
+ never edits user files.
+
+Package: aish
+Architecture: arm64
+Version: 0.2.1-1
+Priority: optional
+Section: shells
+Maintainer: Degtyarev Aleksandr <adegtyarev.ap@gmail.com>
+Installed-Size: 4384
+Depends: bash (>= 4.4)
+Recommends: bash-completion
+Filename: pool/main/a/aish/aish_0.2.1_arm64.deb
+Size: 1676236
+MD5sum: 0eea50f6d88e5559289b42dc258dc954
+SHA1: c79bb181c8610871420af66eda35d62cfb94f743
+SHA256: a0b4ce714f297da071e84d1db5b387f0288d08fc4521a79bd8c5e9a92d12c130
+SHA512: 996c24323c38beb5fd4f6644154adb7de24d314ac60c64a9b61e3c1ae3a92ff7f9e865f66acd2ecaccbbaf2f083fc96738857525e253d4df525c071e6513d885
+Description: bash wrapper with LLM assistance
+ aish runs bash on a pty and adds LLM assistance on top: command blocks with
+ status lines, an inline editor, and an `ai` command for chat and agent actions
+ with any OpenAI-compatible backend. Without an LLM it behaves like plain bash.
+ Run `aish init` as your own user to set up your shell startup; the package
+ never edits user files.
+
+Package: aish
+Architecture: arm64
+Version: 0.3.0-1
+Priority: optional
+Section: shells
+Maintainer: Degtyarev Aleksandr <adegtyarev.ap@gmail.com>
+Installed-Size: 4695
+Depends: bash (>= 4.4)
+Recommends: bash-completion
+Filename: pool/main/a/aish/aish_0.3.0_arm64.deb
+Size: 1786952
+MD5sum: 5cc3bd0c8fa1b51a862f69ce9545c1b2
+SHA1: 6cce713286b5a2a3d304d412d86f9e8af1d4ec4b
+SHA256: b4e0aa63041e46124b447029a3a315d7cd5e7ffe217ba08a5d1ae95a2d3c18be
+SHA512: aee3c95b9224c3a24650d5582d7b6eef73b6238de8466b316978eb491ed880c3af981e61997d1e98e583eee52bc62316eedeb9213999c9c49db56821c248adfb
+Description: bash wrapper with LLM assistance
+ aish runs bash on a pty and adds LLM assistance on top: command blocks with
+ status lines, an inline editor, and an `ai` command for chat and agent actions
+ with any OpenAI-compatible backend. Without an LLM it behaves like plain bash.
+ Run `aish init` as your own user to set up your shell startup; the package
+ never edits user files.
+
