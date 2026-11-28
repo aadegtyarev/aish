@@ -218,3 +218,25 @@ Description: bash wrapper with LLM assistance
  Run `aish init` as your own user to set up your shell startup; the package
  never edits user files.
 
+Package: aish
+Architecture: amd64
+Version: 0.4.4-1
+Priority: optional
+Section: shells
+Maintainer: Degtyarev Aleksandr <adegtyarev.ap@gmail.com>
+Installed-Size: 4600
+Depends: bash (>= 4.4)
+Recommends: bash-completion
+Filename: pool/main/a/aish/aish_0.4.4_amd64.deb
+Size: 1781920
+MD5sum: d6571b42be029ac50fb33474b33ecc55
+SHA1: 82d283768e23c2c9089b35046b6833373c76f7d6
+SHA256: fa105410b0eacdfc707edaef21b27eb7cd86f1050329cd247d592afa06509676
+SHA512: 5b9c4c4354d82ccdb11eefc3351ebbb95d3f83f53aa1e9c1bae26c03600f98ecd89a50654b930cefa47852bce91f6de3e24793fe0a2a364a9e3bb7bfb3319f0d
+Description: bash wrapper with LLM assistance
+ aish runs bash on a pty and adds LLM assistance on top: command blocks with
+ status lines, an inline editor, and an `ai` command for chat and agent actions
+ with any OpenAI-compatible backend. Without an LLM it behaves like plain bash.
+ Run `aish init` as your own user to set up your shell startup; the package
+ never edits user files.
+
