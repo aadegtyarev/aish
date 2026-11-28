@@ -13,6 +13,7 @@ pub mod firstrun;
 pub mod hard;
 pub mod jobs;
 pub mod judge;
+mod lex;
 pub mod mask;
 pub mod opts;
 pub mod prefix;

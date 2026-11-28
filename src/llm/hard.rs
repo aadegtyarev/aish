@@ -4,220 +4,7 @@
 //! `nohup`, `timeout`, `xargs`, `sh -c '...'` ...) are looked through. Whatever
 //! is not understood counts as hard: a false positive costs one Enter.
 
-/// A word with its quoting facts.
-#[derive(Debug, Clone)]
-struct W {
-    text: String,
-    /// `$` outside single quotes: the real value is not known.
-    expands: bool,
-}
-
-enum Tok {
-    Word(W),
-    /// `|` or `|&`
-    Pipe,
-    /// `;` `&&` `||` `&` newline, grouping
-    Sep,
-    /// `>` `>>` `>|` `&>` `<>`; `dup` for `>&`
-    Out {
-        dup: bool,
-    },
-    /// `<` `<<` `<<<` `<&`: the next word is read, never written
-    In,
-}
-
-/// Split into tokens; `None` = not understood (command substitution, an
-/// unterminated quote, a function definition ...).
-fn tokenize(s: &str) -> Option<Vec<Tok>> {
-    let cs: Vec<char> = s.chars().collect();
-    let mut toks = Vec::new();
-    let mut cur: Option<W> = None;
-    let mut i = 0;
-    fn flush(cur: &mut Option<W>, toks: &mut Vec<Tok>) {
-        if let Some(w) = cur.take() {
-            toks.push(Tok::Word(w));
-        }
-    }
-    fn word(cur: &mut Option<W>) -> &mut W {
-        cur.get_or_insert(W {
-            text: String::new(),
-            expands: false,
-        })
-    }
-    while i < cs.len() {
-        let c = cs[i];
-        let next = cs.get(i + 1).copied();
-        match c {
-            '\'' => {
-                let w = word(&mut cur);
-                i += 1;
-                loop {
-                    match *cs.get(i)? {
-                        '\'' => break,
-                        x => w.text.push(x),
-                    }
-                    i += 1;
-                }
-            }
-            '"' => {
-                let w = word(&mut cur);
-                i += 1;
-                loop {
-                    match *cs.get(i)? {
-                        '"' => break,
-                        '`' => return None,
-                        '$' => {
-                            if cs.get(i + 1) == Some(&'(') {
-                                return None;
-                            }
-                            w.expands = true;
-                            w.text.push('$');
-                        }
-                        '\\' => {
-                            i += 1;
-                            match *cs.get(i)? {
-                                x @ ('"' | '\\' | '$' | '`') => w.text.push(x),
-                                '\n' => {}
-                                x => {
-                                    w.text.push('\\');
-                                    w.text.push(x);
-                                }
-                            }
-                        }
-                        x => w.text.push(x),
-                    }
-                    i += 1;
-                }
-            }
-            '\\' => {
-                i += 1;
-                match *cs.get(i)? {
-                    '\n' => {}
-                    x => word(&mut cur).text.push(x),
-                }
-            }
-            '`' => return None,
-            '$' => {
-                if next == Some('(') {
-                    return None;
-                }
-                let w = word(&mut cur);
-                w.expands = true;
-                w.text.push('$');
-            }
-            ' ' | '\t' | '\r' => flush(&mut cur, &mut toks),
-            '\n' | ';' => {
-                flush(&mut cur, &mut toks);
-                toks.push(Tok::Sep);
-            }
-            '#' if cur.is_none() => {
-                while i < cs.len() && cs[i] != '\n' {
-                    i += 1;
-                }
-                continue;
-            }
-            '(' => {
-                // `name()` is a function definition: not understood
-                if cur.is_some() && cs[i + 1..].iter().find(|c| !c.is_whitespace()) == Some(&')') {
-                    return None;
-                }
-                flush(&mut cur, &mut toks);
-                toks.push(Tok::Sep);
-            }
-            ')' => {
-                flush(&mut cur, &mut toks);
-                toks.push(Tok::Sep);
-            }
-            '{' | '}' if cur.is_none() && next.is_none_or(|n| n.is_whitespace() || n == ';') => {
-                toks.push(Tok::Sep);
-            }
-            // brace expansion: the real words are not known
-            '{' | '}' => {
-                let w = word(&mut cur);
-                w.expands = true;
-                w.text.push(c);
-            }
-            '|' => {
-                flush(&mut cur, &mut toks);
-                match next {
-                    Some('|') => {
-                        i += 1;
-                        toks.push(Tok::Sep);
-                    }
-                    Some('&') => {
-                        i += 1;
-                        toks.push(Tok::Pipe);
-                    }
-                    _ => toks.push(Tok::Pipe),
-                }
-            }
-            '&' => {
-                flush(&mut cur, &mut toks);
-                match next {
-                    Some('&') => {
-                        i += 1;
-                        toks.push(Tok::Sep);
-                    }
-                    Some('>') => {
-                        i += 1;
-                        if cs.get(i + 1) == Some(&'>') {
-                            i += 1;
-                        }
-                        toks.push(Tok::Out { dup: false });
-                    }
-                    _ => toks.push(Tok::Sep),
-                }
-            }
-            '>' | '<' => {
-                if next == Some('(') {
-                    return None;
-                }
-                // a number right before is the file descriptor, not a word
-                match &cur {
-                    Some(w) if !w.expands && w.text.chars().all(|d| d.is_ascii_digit()) => {
-                        cur = None;
-                    }
-                    _ => flush(&mut cur, &mut toks),
-                }
-                if c == '>' {
-                    let mut dup = false;
-                    match next {
-                        Some('>' | '|') => i += 1,
-                        Some('&') => {
-                            i += 1;
-                            dup = true;
-                        }
-                        _ => {}
-                    }
-                    toks.push(Tok::Out { dup });
-                } else {
-                    match next {
-                        Some('>') => {
-                            i += 1;
-                            toks.push(Tok::Out { dup: false });
-                        }
-                        Some('<') => {
-                            i += 1;
-                            if cs.get(i + 1) == Some(&'<') || cs.get(i + 1) == Some(&'-') {
-                                i += 1;
-                            }
-                            toks.push(Tok::In);
-                        }
-                        Some('&') => {
-                            i += 1;
-                            toks.push(Tok::In);
-                        }
-                        _ => toks.push(Tok::In),
-                    }
-                }
-            }
-            x => word(&mut cur).text.push(x),
-        }
-        i += 1;
-    }
-    flush(&mut cur, &mut toks);
-    Some(toks)
-}
+use super::lex::{lex, Tok, Word as W};
 
 /// Pipelines of simple commands (words only: redirections are checked and
 /// removed here). `None` = hard.
@@ -229,12 +16,12 @@ fn pipelines(toks: Vec<Tok>) -> Option<Vec<Vec<Vec<W>>>> {
     while let Some(t) = it.next() {
         match t {
             Tok::Word(w) => cmd.push(w),
-            Tok::Pipe => pipe.push(std::mem::take(&mut cmd)),
+            Tok::Pipe { .. } => pipe.push(std::mem::take(&mut cmd)),
             Tok::Sep => {
                 pipe.push(std::mem::take(&mut cmd));
                 out.push(std::mem::take(&mut pipe));
             }
-            Tok::Out { dup } => {
+            Tok::Out { dup, .. } => {
                 let Some(Tok::Word(target)) = it.next() else {
                     return None;
                 };
@@ -639,7 +426,7 @@ fn git_hard(args: Vec<&str>) -> bool {
 }
 
 fn needs_ask_depth(cmd: &str, depth: usize) -> bool {
-    let Some(toks) = tokenize(cmd) else {
+    let Some((toks, _)) = lex(cmd) else {
         return true;
     };
     let Some(pls) = pipelines(toks) else {

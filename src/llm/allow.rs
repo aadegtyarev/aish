@@ -1,6 +1,6 @@
 //! The read-only allowlist: which commands the agent may run by itself.
 //!
-//! A command line is tokenized like a shell would (quotes, escapes) and turned
+//! A command line is lexed like a shell would (quotes, escapes) and turned
 //! into a *plan*: a pipeline of argv vectors that aish executes itself with
 //! no shell involved, so quoting is only our tokenizer's job. Every simple
 //! command must be on the list and every option must be a known safe one
@@ -8,133 +8,13 @@
 //! read-only": the caller then hands the command to the user instead.
 //! When in doubt: refuse. A false negative costs one Enter.
 
+use super::lex::{lex, Tok};
 use std::path::{Component, Path, PathBuf};
 
 /// What to execute: stages joined by pipes, argv each.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     pub stages: Vec<Vec<String>>,
-}
-
-/// A word with its quoting facts.
-#[derive(Debug)]
-struct Word {
-    text: String,
-    /// Unquoted `*?[`.
-    glob: bool,
-    /// Starts with an unquoted `~`.
-    tilde: bool,
-}
-
-enum Tok {
-    Word(Word),
-    Pipe,
-}
-
-/// Tokenize; `None` = something we refuse to reason about: any `$` outside
-/// single quotes (expansions, `$'..'`), backticks, `;`, `&`, newlines,
-/// subshells, unquoted braces, redirections (but `2>&1`), `&&`/`||`.
-fn tokenize(s: &str) -> Option<Vec<Tok>> {
-    let cs: Vec<char> = s.chars().collect();
-    let mut toks = Vec::new();
-    let mut w: Option<Word> = None;
-    let mut i = 0;
-    fn cur(w: &mut Option<Word>) -> &mut Word {
-        w.get_or_insert(Word {
-            text: String::new(),
-            glob: false,
-            tilde: false,
-        })
-    }
-    while i < cs.len() {
-        let c = cs[i];
-        match c {
-            '\'' => {
-                let word = cur(&mut w);
-                i += 1;
-                loop {
-                    match cs.get(i)? {
-                        '\'' => break,
-                        &x => word.text.push(x),
-                    }
-                    i += 1;
-                }
-            }
-            '"' => {
-                let word = cur(&mut w);
-                i += 1;
-                loop {
-                    match cs.get(i)? {
-                        '"' => break,
-                        '`' | '$' => return None,
-                        '\\' => {
-                            i += 1;
-                            match *cs.get(i)? {
-                                x @ ('"' | '\\') => word.text.push(x),
-                                x => {
-                                    word.text.push('\\');
-                                    word.text.push(x);
-                                }
-                            }
-                        }
-                        &x => word.text.push(x),
-                    }
-                    i += 1;
-                }
-            }
-            '\\' => {
-                i += 1;
-                let x = *cs.get(i)?;
-                if x == '\n' {
-                    return None;
-                }
-                cur(&mut w).text.push(x);
-            }
-            '`' | '$' | '\n' | ';' | '(' | ')' | '{' | '}' | '<' => return None,
-            ' ' | '\t' => {
-                if let Some(x) = w.take() {
-                    toks.push(Tok::Word(x));
-                }
-            }
-            '|' => {
-                if cs.get(i + 1) == Some(&'|') || cs.get(i + 1) == Some(&'&') {
-                    return None;
-                }
-                if let Some(x) = w.take() {
-                    toks.push(Tok::Word(x));
-                }
-                toks.push(Tok::Pipe);
-            }
-            '&' => return None,
-            '>' => {
-                // only `2>&1` (stderr is merged into the output anyway)
-                let is_fd = w.as_ref().is_some_and(|x| x.text == "2");
-                let rest: String = cs[i..].iter().take(3).collect();
-                if is_fd && rest == ">&1" && cs.get(i + 3).is_none_or(|x| x.is_whitespace()) {
-                    w = None;
-                    i += 3;
-                    continue;
-                }
-                return None;
-            }
-            '*' | '?' | '[' => {
-                let x = cur(&mut w);
-                x.glob = true;
-                x.text.push(c);
-            }
-            '~' if w.is_none() => {
-                let x = cur(&mut w);
-                x.tilde = true;
-                x.text.push(c);
-            }
-            _ => cur(&mut w).text.push(c),
-        }
-        i += 1;
-    }
-    if let Some(x) = w.take() {
-        toks.push(Tok::Word(x));
-    }
-    Some(toks)
 }
 
 fn home() -> String {
@@ -150,6 +30,21 @@ fn expand_tilde(p: &str) -> String {
     }
 }
 
+/// Directories (under `~`) whose content must never go to a model by our own
+/// hand: matched as path components, walked by no search, excluded by name.
+const SECRET_DIRS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".password-store",
+    ".kube",
+    ".docker",
+    ".config/gcloud",
+    ".config/gh",
+    ".config/aider",
+    ".config/aish",
+];
+
 /// Files whose content must never go to a model by our own hand.
 pub fn is_secret_path(p: &str) -> bool {
     let e = expand_tilde(p);
@@ -162,18 +57,10 @@ pub fn is_secret_path(p: &str) -> bool {
         return false;
     };
     let dirs = &parts[..parts.len() - 1];
-    let has = |d: &str| parts.iter().any(|x| x == d);
-    if [".ssh", ".gnupg", ".aws", ".password-store", ".kube"]
-        .iter()
-        .any(|d| has(d))
-    {
-        return true;
-    }
-    // ~/.config/{gcloud,gh,aider,aish}/..
-    if parts
-        .windows(2)
-        .any(|w| w[0] == ".config" && ["gcloud", "gh", "aider", "aish"].contains(&w[1].as_str()))
-    {
+    if SECRET_DIRS.iter().any(|d| {
+        let want: Vec<&str> = d.split('/').collect();
+        parts.windows(want.len()).any(|w| w == want)
+    }) {
         return true;
     }
     base.starts_with(".env")
@@ -206,7 +93,6 @@ pub fn is_secret_path(p: &str) -> bool {
                 || dirs.iter().any(|d| d.starts_with("sudoers"))))
         || (parts.first().map(String::as_str) == Some("proc")
             && ["environ", "cmdline", "mem", "maps"].contains(&base.as_str()))
-        || (has(".docker") && base == "config.json")
         || (e.ends_with(".config/aish/config.yaml"))
 }
 
@@ -258,20 +144,7 @@ fn root_too_wide(root: &Path) -> bool {
     ];
     if !h.is_empty() {
         dangerous.push(PathBuf::from(&h));
-        for d in [
-            ".ssh",
-            ".gnupg",
-            ".aws",
-            ".kube",
-            ".password-store",
-            ".docker",
-            ".config/gcloud",
-            ".config/gh",
-            ".config/aider",
-            ".config/aish",
-        ] {
-            dangerous.push(Path::new(&h).join(d));
-        }
+        dangerous.extend(SECRET_DIRS.iter().map(|d| Path::new(&h).join(d)));
     }
     // the root itself, or any ancestor of a dangerous directory
     in_proc_pid(root)
@@ -418,21 +291,6 @@ fn git_plan(args: &[String]) -> Option<Vec<String>> {
 }
 
 fn ps_ok(args: &[String]) -> bool {
-    let spec = Spec {
-        short: "eAaxfFjlLmMuwTvVHhcCNZ",
-        short_val: "opUtgGqs",
-        long: &[
-            "forest",
-            "no-headers",
-            "headers",
-            "cols",
-            "columns",
-            "lines",
-            "width",
-        ],
-        long_val: &["format", "pid", "user", "sort", "ppid", "tty"],
-        digits: false,
-    };
     // BSD-style first word (`aux`): letters only, never `e` (environment)
     let mut rest = args;
     if let Some(f) = args.first() {
@@ -443,7 +301,7 @@ fn ps_ok(args: &[String]) -> bool {
             rest = &args[1..];
         }
     }
-    let Some(p) = parse(&spec, rest) else {
+    let Some(p) = parse(&PS, rest) else {
         return false;
     };
     let fmt_bad = |s: &str| {
@@ -492,16 +350,6 @@ const SECRET_NAMES: &[&str] = &[
     "sudoers*",
     "hosts.yml",
 ];
-const SECRET_DIR_NAMES: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".password-store",
-    ".kube",
-    ".docker",
-    "gcloud",
-    "aider",
-];
 
 /// `argv` with exclusions for every secret pattern, placed last (before a
 /// `--`) so they win over any `--include`/`-g` the user gave.
@@ -514,7 +362,7 @@ fn with_excludes(argv: &[String], rg: bool) -> Vec<String> {
             format!("--exclude={n}")
         });
     }
-    for d in SECRET_DIR_NAMES {
+    for d in SECRET_DIRS.iter().filter_map(|d| d.rsplit('/').next()) {
         extra.push(if rg {
             format!("--glob=!{d}")
         } else {
@@ -560,324 +408,342 @@ fn safe_dirs_in(path: &std::ffi::OsStr, cwd_real: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+const LS: Spec = Spec {
+    short: "aAbcdfFghHiklLmnNopqrRsStuUvxX1",
+    long: &[
+        "all",
+        "almost-all",
+        "human-readable",
+        "si",
+        "classify",
+        "directory",
+        "recursive",
+        "reverse",
+        "inode",
+        "size",
+        "dereference",
+        "group-directories-first",
+        "color",
+        "full-time",
+        "numeric-uid-gid",
+        "literal",
+        "hide-control-chars",
+        "no-group",
+        "sort",
+        "time",
+        "format",
+    ],
+    ..NONE
+};
+
+const CAT: Spec = Spec {
+    short: "AbeEnstTuv",
+    long: &[
+        "show-all",
+        "number-nonblank",
+        "show-ends",
+        "number",
+        "squeeze-blank",
+        "show-tabs",
+        "show-nonprinting",
+    ],
+    ..NONE
+};
+
+const HEAD: Spec = Spec {
+    short: "qvz",
+    short_val: "nc",
+    long: &["quiet", "silent", "verbose", "zero-terminated"],
+    long_val: &["lines", "bytes"],
+    digits: true,
+};
+
+const WC: Spec = Spec {
+    short: "clmwL",
+    long: &["lines", "words", "chars", "bytes", "max-line-length"],
+    ..NONE
+};
+
+const STAT: Spec = Spec {
+    short: "LfFt",
+    short_val: "c",
+    long: &["dereference", "file-system", "terse"],
+    long_val: &["format", "printf"],
+    digits: false,
+};
+
+const FILE: Spec = Spec {
+    short: "bhiLnNsp",
+    long: &[
+        "brief",
+        "mime",
+        "mime-type",
+        "mime-encoding",
+        "dereference",
+        "no-dereference",
+    ],
+    ..NONE
+};
+
+const DU: Spec = Spec {
+    short: "abchHkmsxS",
+    short_val: "dt",
+    long: &[
+        "all",
+        "apparent-size",
+        "bytes",
+        "total",
+        "human-readable",
+        "si",
+        "summarize",
+        "one-file-system",
+        "separate-dirs",
+        "dereference",
+        "count-links",
+    ],
+    long_val: &["max-depth", "threshold", "block-size"],
+    digits: false,
+};
+
+const DF: Spec = Spec {
+    short: "aHhikPTlm",
+    short_val: "tx",
+    long: &[
+        "all",
+        "human-readable",
+        "si",
+        "inodes",
+        "local",
+        "portability",
+        "print-type",
+        "total",
+        "output",
+    ],
+    long_val: &["type", "exclude-type", "block-size"],
+    digits: false,
+};
+
+const FREE: Spec = Spec {
+    short: "bkmgthlLw",
+    long: &[
+        "bytes", "kilo", "mega", "giga", "tera", "human", "si", "lohi", "total", "wide",
+    ],
+    ..NONE
+};
+
+const UNAME: Spec = Spec {
+    short: "asnrvmpio",
+    long: &[
+        "all",
+        "kernel-name",
+        "nodename",
+        "kernel-release",
+        "kernel-version",
+        "machine",
+        "processor",
+        "hardware-platform",
+        "operating-system",
+    ],
+    ..NONE
+};
+
+const PWD: Spec = Spec {
+    short: "LP",
+    ..NONE
+};
+
+const ID: Spec = Spec {
+    short: "agGnruZ",
+    long: &["group", "groups", "name", "real", "user", "context"],
+    ..NONE
+};
+
+const WHICH: Spec = Spec {
+    short: "a",
+    long: &["all"],
+    ..NONE
+};
+
+const DATE: Spec = Spec {
+    short: "uR",
+    short_val: "dr",
+    long: &["utc", "universal", "rfc-email", "iso-8601"],
+    long_val: &["date", "reference"],
+    digits: false,
+};
+
+const GREP: Spec = Spec {
+    short: "EFGiIvwxcLlonbHhqsaTUr",
+    short_val: "eAmBCf",
+    long: &[
+        "extended-regexp",
+        "fixed-strings",
+        "basic-regexp",
+        "ignore-case",
+        "no-ignore-case",
+        "invert-match",
+        "word-regexp",
+        "line-regexp",
+        "count",
+        "files-with-matches",
+        "files-without-match",
+        "only-matching",
+        "line-number",
+        "byte-offset",
+        "with-filename",
+        "no-filename",
+        "quiet",
+        "no-messages",
+        "text",
+        "recursive",
+        "color",
+        "colour",
+        "null",
+        "initial-tab",
+        "binary-files",
+    ],
+    long_val: &[
+        "regexp",
+        "max-count",
+        "after-context",
+        "before-context",
+        "context",
+        "include",
+        "exclude",
+        "exclude-dir",
+        "file",
+    ],
+    digits: false,
+};
+
+const RG: Spec = Spec {
+    short: "iIsSvwxclnNHhqFuU",
+    short_val: "eAmBCtgj",
+    long: &[
+        "ignore-case",
+        "smart-case",
+        "case-sensitive",
+        "invert-match",
+        "word-regexp",
+        "line-regexp",
+        "count",
+        "files-with-matches",
+        "files-without-match",
+        "files",
+        "only-matching",
+        "line-number",
+        "no-line-number",
+        "with-filename",
+        "no-filename",
+        "fixed-strings",
+        "hidden",
+        "no-ignore",
+        "quiet",
+        "heading",
+        "no-heading",
+        "color",
+        "no-messages",
+        "column",
+        "json",
+    ],
+    long_val: &[
+        "regexp",
+        "glob",
+        "type",
+        "max-count",
+        "after-context",
+        "before-context",
+        "context",
+        "max-depth",
+        "threads",
+    ],
+    digits: false,
+};
+
+const PS: Spec = Spec {
+    short: "eAaxfFjlLmMuwTvVHhcCNZ",
+    short_val: "opUtgGqs",
+    long: &[
+        "forest",
+        "no-headers",
+        "headers",
+        "cols",
+        "columns",
+        "lines",
+        "width",
+    ],
+    long_val: &["format", "pid", "user", "sort", "ppid", "tty"],
+    digits: false,
+};
+
+const SYSTEMCTL: Spec = Spec {
+    short: "la",
+    short_val: "n",
+    long: &["full", "all", "no-pager", "no-legend", "user", "system"],
+    long_val: &["lines", "output"],
+    digits: false,
+};
+
+/// `status` of systemd, after the `--user`/`--system`/`--no-pager` words.
+fn systemctl_ok(args: &[String]) -> bool {
+    let n = args
+        .iter()
+        .take_while(|x| matches!(x.as_str(), "--user" | "--system" | "--no-pager"))
+        .count();
+    args.get(n).map(String::as_str) == Some("status") && parse(&SYSTEMCTL, &args[n + 1..]).is_some()
+}
+
 fn stage_plan(w: &[String]) -> Option<Stage> {
     let name = w.first()?.as_str();
     let args = &w[1..];
-    let simple = |spec: &Spec| -> Option<Parsed> { parse(spec, args) };
-    let plain = |p: Option<Parsed>| -> Option<Stage> {
-        p.map(|_| Stage {
-            argv: w.to_vec(),
-            roots: None,
-        })
+    let spec = match name {
+        "ls" => &LS,
+        "cat" => &CAT,
+        "head" | "tail" => &HEAD,
+        "wc" => &WC,
+        "stat" => &STAT,
+        "file" => &FILE,
+        "du" => &DU,
+        "df" => &DF,
+        "free" => &FREE,
+        "uname" => &UNAME,
+        "whoami" => &NONE,
+        "pwd" => &PWD,
+        "id" => &ID,
+        "which" => &WHICH,
+        "date" => &DATE,
+        "grep" => &GREP,
+        "rg" => &RG,
+        "ps" => return ps_ok(args).then(|| plain(w, None)),
+        "find" => return find_stage(w),
+        "git" => return Some(plain(&git_plan(args)?, None)),
+        "systemctl" => return systemctl_ok(args).then(|| plain(w, None)),
+        _ => return None,
     };
-    match name {
-        "ls" => {
-            let p = simple(&Spec {
-                short: "aAbcdfFghHiklLmnNopqrRsStuUvxX1",
-                long: &[
-                    "all",
-                    "almost-all",
-                    "human-readable",
-                    "si",
-                    "classify",
-                    "directory",
-                    "recursive",
-                    "reverse",
-                    "inode",
-                    "size",
-                    "dereference",
-                    "group-directories-first",
-                    "color",
-                    "full-time",
-                    "numeric-uid-gid",
-                    "literal",
-                    "hide-control-chars",
-                    "no-group",
-                    "sort",
-                    "time",
-                    "format",
-                ],
-                ..NONE
-            })?;
-            let rec = p.has("R") || p.has("recursive");
-            Some(Stage {
-                argv: w.to_vec(),
-                roots: rec.then(|| p.pos.clone()),
-            })
-        }
-        "cat" => plain(simple(&Spec {
-            short: "AbeEnstTuv",
-            long: &[
-                "show-all",
-                "number-nonblank",
-                "show-ends",
-                "number",
-                "squeeze-blank",
-                "show-tabs",
-                "show-nonprinting",
-            ],
-            ..NONE
-        })),
-        "head" | "tail" => plain(simple(&Spec {
-            short: "qvz",
-            short_val: "nc",
-            long: &["quiet", "silent", "verbose", "zero-terminated"],
-            long_val: &["lines", "bytes"],
-            digits: true,
-        })),
-        "wc" => plain(simple(&Spec {
-            short: "clmwL",
-            long: &["lines", "words", "chars", "bytes", "max-line-length"],
-            ..NONE
-        })),
-        "stat" => plain(simple(&Spec {
-            short: "LfFt",
-            short_val: "c",
-            long: &["dereference", "file-system", "terse"],
-            long_val: &["format", "printf"],
-            digits: false,
-        })),
-        "file" => plain(simple(&Spec {
-            short: "bhiLnNsp",
-            long: &[
-                "brief",
-                "mime",
-                "mime-type",
-                "mime-encoding",
-                "dereference",
-                "no-dereference",
-            ],
-            ..NONE
-        })),
-        "du" => {
-            let p = simple(&Spec {
-                short: "abchHkmsxS",
-                short_val: "dt",
-                long: &[
-                    "all",
-                    "apparent-size",
-                    "bytes",
-                    "total",
-                    "human-readable",
-                    "si",
-                    "summarize",
-                    "one-file-system",
-                    "separate-dirs",
-                    "dereference",
-                    "count-links",
-                ],
-                long_val: &["max-depth", "threshold", "block-size"],
-                digits: false,
-            })?;
-            Some(Stage {
-                argv: w.to_vec(),
-                roots: Some(p.pos),
-            })
-        }
-        "df" => plain(simple(&Spec {
-            short: "aHhikPTlm",
-            short_val: "tx",
-            long: &[
-                "all",
-                "human-readable",
-                "si",
-                "inodes",
-                "local",
-                "portability",
-                "print-type",
-                "total",
-                "output",
-            ],
-            long_val: &["type", "exclude-type", "block-size"],
-            digits: false,
-        })),
-        "free" => plain(simple(&Spec {
-            short: "bkmgthlLw",
-            long: &[
-                "bytes", "kilo", "mega", "giga", "tera", "human", "si", "lohi", "total", "wide",
-            ],
-            ..NONE
-        })),
-        "uname" => plain(simple(&Spec {
-            short: "asnrvmpio",
-            long: &[
-                "all",
-                "kernel-name",
-                "nodename",
-                "kernel-release",
-                "kernel-version",
-                "machine",
-                "processor",
-                "hardware-platform",
-                "operating-system",
-            ],
-            ..NONE
-        })),
-        "whoami" => plain(simple(&NONE)),
-        "pwd" => plain(simple(&Spec {
-            short: "LP",
-            ..NONE
-        })),
-        "id" => plain(simple(&Spec {
-            short: "agGnruZ",
-            long: &["group", "groups", "name", "real", "user", "context"],
-            ..NONE
-        })),
-        "which" => plain(simple(&Spec {
-            short: "a",
-            long: &["all"],
-            ..NONE
-        })),
-        "date" => {
-            let p = simple(&Spec {
-                short: "uR",
-                short_val: "dr",
-                long: &["utc", "universal", "rfc-email", "iso-8601"],
-                long_val: &["date", "reference"],
-                digits: false,
-            })?;
-            // a bare positional would set the clock
-            p.pos.iter().all(|x| x.starts_with('+')).then(|| Stage {
-                argv: w.to_vec(),
-                roots: None,
-            })
-        }
-        "ps" => ps_ok(args).then(|| Stage {
-            argv: w.to_vec(),
-            roots: None,
-        }),
-        "grep" => {
-            let p = simple(&Spec {
-                short: "EFGiIvwxcLlonbHhqsaTUr",
-                short_val: "eAmBCf",
-                long: &[
-                    "extended-regexp",
-                    "fixed-strings",
-                    "basic-regexp",
-                    "ignore-case",
-                    "no-ignore-case",
-                    "invert-match",
-                    "word-regexp",
-                    "line-regexp",
-                    "count",
-                    "files-with-matches",
-                    "files-without-match",
-                    "only-matching",
-                    "line-number",
-                    "byte-offset",
-                    "with-filename",
-                    "no-filename",
-                    "quiet",
-                    "no-messages",
-                    "text",
-                    "recursive",
-                    "color",
-                    "colour",
-                    "null",
-                    "initial-tab",
-                    "binary-files",
-                ],
-                long_val: &[
-                    "regexp",
-                    "max-count",
-                    "after-context",
-                    "before-context",
-                    "context",
-                    "include",
-                    "exclude",
-                    "exclude-dir",
-                    "file",
-                ],
-                digits: false,
-            })?;
-            let rec = p.has("r") || p.has("recursive");
-            Some(Stage {
-                argv: if rec {
-                    with_excludes(w, false)
-                } else {
-                    w.to_vec()
-                },
-                roots: rec.then(|| search_roots(&p)),
-            })
-        }
-        "rg" => {
-            let p = simple(&Spec {
-                short: "iIsSvwxclnNHhqFuU",
-                short_val: "eAmBCtgj",
-                long: &[
-                    "ignore-case",
-                    "smart-case",
-                    "case-sensitive",
-                    "invert-match",
-                    "word-regexp",
-                    "line-regexp",
-                    "count",
-                    "files-with-matches",
-                    "files-without-match",
-                    "files",
-                    "only-matching",
-                    "line-number",
-                    "no-line-number",
-                    "with-filename",
-                    "no-filename",
-                    "fixed-strings",
-                    "hidden",
-                    "no-ignore",
-                    "quiet",
-                    "heading",
-                    "no-heading",
-                    "color",
-                    "no-messages",
-                    "column",
-                    "json",
-                ],
-                long_val: &[
-                    "regexp",
-                    "glob",
-                    "type",
-                    "max-count",
-                    "after-context",
-                    "before-context",
-                    "context",
-                    "max-depth",
-                    "threads",
-                ],
-                digits: false,
-            })?;
-            // rg always walks directories
-            Some(Stage {
-                argv: with_excludes(w, true),
-                roots: Some(search_roots(&p)),
-            })
-        }
-        "find" => find_stage(w),
-        "git" => Some(Stage {
-            argv: git_plan(args)?,
-            roots: None,
-        }),
-        "systemctl" => {
-            let mut i = 0;
-            while args
-                .get(i)
-                .is_some_and(|x| matches!(x.as_str(), "--user" | "--system" | "--no-pager"))
-            {
-                i += 1;
-            }
-            if args.get(i).map(String::as_str) != Some("status") {
-                return None;
-            }
-            plain(parse(
-                &Spec {
-                    short: "la",
-                    short_val: "n",
-                    long: &["full", "all", "no-pager", "no-legend", "user", "system"],
-                    long_val: &["lines", "output"],
-                    digits: false,
-                },
-                &args[i + 1..],
-            ))
-        }
-        _ => None,
+    let p = parse(spec, args)?;
+    let rec = p.has("r") || p.has("recursive");
+    Some(match name {
+        "ls" => plain(w, (p.has("R") || p.has("recursive")).then_some(p.pos)),
+        "du" => plain(w, Some(p.pos)),
+        // a bare positional would set the clock
+        "date" if !p.pos.iter().all(|x| x.starts_with('+')) => return None,
+        "grep" if rec => Stage {
+            argv: with_excludes(w, false),
+            roots: Some(search_roots(&p)),
+        },
+        // rg always walks directories
+        "rg" => Stage {
+            argv: with_excludes(w, true),
+            roots: Some(search_roots(&p)),
+        },
+        _ => plain(w, None),
+    })
+}
+
+fn plain(argv: &[String], roots: Option<Vec<String>>) -> Stage {
+    Stage {
+        argv: argv.to_vec(),
+        roots,
     }
 }
 
@@ -1008,16 +874,20 @@ fn paths_ok(words: &[String], cwd: &str) -> bool {
 /// A plan for `cmd` if it only reads, `None` otherwise. `extra`: the config's
 /// `allow:` prefixes (trusted, but still shell-free and secret-checked).
 pub fn plan(cmd: &str, extra: &[String], cwd: &str) -> Option<Plan> {
-    let toks = tokenize(cmd)?;
+    let (toks, odd) = lex(cmd)?;
+    if odd {
+        return None;
+    }
     let extra: Vec<Vec<String>> = extra
         .iter()
         .map(|e| e.split_whitespace().map(str::to_owned).collect())
         .collect();
     let mut stages: Vec<Vec<String>> = vec![Vec::new()];
-    for t in toks {
+    let mut toks = toks.into_iter();
+    while let Some(t) = toks.next() {
         match t {
             Tok::Word(w) => {
-                if w.glob {
+                if w.expands || w.glob {
                     return None;
                 }
                 let text = if w.tilde {
@@ -1030,7 +900,14 @@ pub fn plan(cmd: &str, extra: &[String], cwd: &str) -> Option<Plan> {
                 };
                 stages.last_mut()?.push(text);
             }
-            Tok::Pipe => stages.push(Vec::new()),
+            Tok::Pipe { amp: false } => stages.push(Vec::new()),
+            // only `2>&1` (stderr is merged into the output anyway)
+            Tok::Out {
+                dup: true,
+                fd: Some(fd),
+                clean: true,
+            } if fd == "2" && matches!(toks.next(), Some(Tok::Word(w)) if w.text == "1") => {}
+            _ => return None,
         }
     }
     let mut out = Vec::new();
@@ -1628,7 +1505,10 @@ mod tests {
 }
 
 /// Differential freeze of `plan` (argv, or `-`) and `on_hard_list` over tricky
-/// inputs: a lexer or table refactor must not move any line.
+/// inputs: a lexer or table refactor must not move any line. Moved on purpose
+/// (one lexer, one secret table): `"a\$b"` keeps no backslash as bash reads it;
+/// `#` comments, `\r` and backslash-newline are refused; `gh` and `aish` are
+/// excluded from recursive searches.
 #[cfg(test)]
 mod frozen {
     use super::*;
@@ -1654,11 +1534,11 @@ mod frozen {
     const FROZEN: &[(&str, &str)] = &[
         ("ls 'a b' \"c d\"", "[[\"ls\", \"a b\", \"c d\"]] false"),
         ("ls a\\ b", "[[\"ls\", \"a b\"]] false"),
-        ("ls \"a\\$b\"", "[[\"ls\", \"a\\\\$b\"]] false"),
-        ("ls \"a\\`b\"", "[[\"ls\", \"a\\\\`b\"]] false"),
+        ("ls \"a\\$b\"", "[[\"ls\", \"a$b\"]] false"),
+        ("ls \"a\\`b\"", "[[\"ls\", \"a`b\"]] false"),
         ("ls \"a\\\\b\"", "[[\"ls\", \"a\\\\b\"]] false"),
         ("ls \"a\\qb\"", "[[\"ls\", \"a\\\\qb\"]] false"),
-        ("ls \"a\\\nb\"", "[[\"ls\", \"a\\\\\\nb\"]] false"),
+        ("ls \"a\\\nb\"", "- false"),
         ("ls a\\\nb", "- false"),
         ("ls a\\", "- true"),
         ("ls \\\nfoo", "- false"),
@@ -1727,18 +1607,18 @@ mod frozen {
         ("ls ''~", "[[\"ls\", \"~\"]] false"),
         ("ls ~/*", "- false"),
         ("ls ~ ~", "[[\"ls\", \"<H>\", \"<H>\"]] false"),
-        ("ls #", "[[\"ls\", \"#\"]] false"),
-        ("ls # foo", "[[\"ls\", \"#\", \"foo\"]] false"),
-        ("ls #foo", "[[\"ls\", \"#foo\"]] false"),
+        ("ls #", "- false"),
+        ("ls # foo", "- false"),
+        ("ls #foo", "- false"),
         ("ls a#b", "[[\"ls\", \"a#b\"]] false"),
-        ("ls a #b", "[[\"ls\", \"a\", \"#b\"]] false"),
+        ("ls a #b", "- false"),
         ("ls ;# x", "- false"),
         ("# only", "- false"),
         ("ls\n# c\npwd", "- false"),
         ("ls\r", "- false"),
-        ("ls a\r", "[[\"ls\", \"a\\r\"]] false"),
+        ("ls a\r", "- false"),
         ("ls\rfoo", "- false"),
-        ("ls a\rb", "[[\"ls\", \"a\\rb\"]] false"),
+        ("ls a\rb", "- false"),
         ("ls\t-a", "[[\"ls\", \"-a\"]] false"),
         ("ls  -a", "[[\"ls\", \"-a\"]] false"),
         ("ls ''", "[[\"ls\", \"\"]] false"),
@@ -1822,13 +1702,13 @@ mod frozen {
         ("cat \"~/.ssh/id_rsa\"", "- false"),
         ("cat ~/.config/aish/config.yaml", "- false"),
         ("grep -r x ~", "- false"),
-        ("grep -r x .", "[[\"grep\", \"-r\", \"x\", \".\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=aider\"]] false"),
-        ("grep -r x", "[[\"grep\", \"-r\", \"x\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=aider\"]] false"),
+        ("grep -r x .", "[[\"grep\", \"-r\", \"x\", \".\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=gh\", \"--exclude-dir=aider\", \"--exclude-dir=aish\"]] false"),
+        ("grep -r x", "[[\"grep\", \"-r\", \"x\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=gh\", \"--exclude-dir=aider\", \"--exclude-dir=aish\"]] false"),
         ("grep x f", "[[\"grep\", \"x\", \"f\"]] false"),
         ("find ~ -name x", "- false"),
         ("find / -name x", "- false"),
         ("find . -exec rm {} \\;", "- true"),
-        ("rg x", "[[\"rg\", \"x\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!aider\"]] false"),
+        ("rg x", "[[\"rg\", \"x\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!gh\", \"--glob=!aider\", \"--glob=!aish\"]] false"),
         ("rg x ~", "- false"),
         ("du ~", "- false"),
         ("ls -R ~", "- false"),
@@ -2053,8 +1933,8 @@ mod frozen {
         ("grep --file=id_rsa x", "- false"),
         ("grep -n 'foo bar' f", "[[\"grep\", \"-n\", \"foo bar\", \"f\"]] false"),
         ("grep --recurs x .", "- false"),
-        ("grep -rf pats .", "[[\"grep\", \"-rf\", \"pats\", \".\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=aider\"]] false"),
-        ("grep -rn \"TODO\" src", "[[\"grep\", \"-rn\", \"TODO\", \"src\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=aider\"]] false"),
+        ("grep -rf pats .", "[[\"grep\", \"-rf\", \"pats\", \".\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=gh\", \"--exclude-dir=aider\", \"--exclude-dir=aish\"]] false"),
+        ("grep -rn \"TODO\" src", "[[\"grep\", \"-rn\", \"TODO\", \"src\", \"--exclude=.env*\", \"--exclude=*.env\", \"--exclude=id_*\", \"--exclude=*.pem\", \"--exclude=*.key\", \"--exclude=*.p12\", \"--exclude=*.pfx\", \"--exclude=*.kdbx\", \"--exclude=*.keystore\", \"--exclude=.git-credentials\", \"--exclude=.npmrc\", \"--exclude=.pypirc\", \"--exclude=.pgpass\", \"--exclude=.netrc\", \"--exclude=_netrc\", \"--exclude=.bash_history\", \"--exclude=.zsh_history\", \"--exclude=.sh_history\", \"--exclude=.python_history\", \"--exclude=.psql_history\", \"--exclude=.mysql_history\", \"--exclude=.node_repl_history\", \"--exclude=.lesshst\", \"--exclude=shadow*\", \"--exclude=gshadow*\", \"--exclude=sudoers*\", \"--exclude=hosts.yml\", \"--exclude-dir=.ssh\", \"--exclude-dir=.gnupg\", \"--exclude-dir=.aws\", \"--exclude-dir=.password-store\", \"--exclude-dir=.kube\", \"--exclude-dir=.docker\", \"--exclude-dir=gcloud\", \"--exclude-dir=gh\", \"--exclude-dir=aider\", \"--exclude-dir=aish\"]] false"),
         ("grep -R x .", "- false"),
         ("halt", "- true"),
         ("/h/.config/aish/config.yaml", "- false"),
@@ -2152,13 +2032,13 @@ mod frozen {
         ("r$X -rf x", "- true"),
         ("reboot", "- true"),
         ("rg --follow x", "- false"),
-        ("rg -g '*.rs' KEY", "[[\"rg\", \"-g\", \"*.rs\", \"KEY\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!aider\"]] false"),
-        ("rg --hidden --no-ignore KEY src", "[[\"rg\", \"--hidden\", \"--no-ignore\", \"KEY\", \"src\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!aider\"]] false"),
-        ("rg KEY", "[[\"rg\", \"KEY\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!aider\"]] false"),
+        ("rg -g '*.rs' KEY", "[[\"rg\", \"-g\", \"*.rs\", \"KEY\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!gh\", \"--glob=!aider\", \"--glob=!aish\"]] false"),
+        ("rg --hidden --no-ignore KEY src", "[[\"rg\", \"--hidden\", \"--no-ignore\", \"KEY\", \"src\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!gh\", \"--glob=!aider\", \"--glob=!aish\"]] false"),
+        ("rg KEY", "[[\"rg\", \"KEY\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!gh\", \"--glob=!aider\", \"--glob=!aish\"]] false"),
         ("rg -L x", "- false"),
-        ("rg -n TODO src", "[[\"rg\", \"-n\", \"TODO\", \"src\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!aider\"]] false"),
+        ("rg -n TODO src", "[[\"rg\", \"-n\", \"TODO\", \"src\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!gh\", \"--glob=!aider\", \"--glob=!aish\"]] false"),
         ("rg --pre sh x", "- false"),
-        ("rg -uu KEY .", "[[\"rg\", \"-uu\", \"KEY\", \".\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!aider\"]] false"),
+        ("rg -uu KEY .", "[[\"rg\", \"-uu\", \"KEY\", \".\", \"--glob=!.env*\", \"--glob=!*.env\", \"--glob=!id_*\", \"--glob=!*.pem\", \"--glob=!*.key\", \"--glob=!*.p12\", \"--glob=!*.pfx\", \"--glob=!*.kdbx\", \"--glob=!*.keystore\", \"--glob=!.git-credentials\", \"--glob=!.npmrc\", \"--glob=!.pypirc\", \"--glob=!.pgpass\", \"--glob=!.netrc\", \"--glob=!_netrc\", \"--glob=!.bash_history\", \"--glob=!.zsh_history\", \"--glob=!.sh_history\", \"--glob=!.python_history\", \"--glob=!.psql_history\", \"--glob=!.mysql_history\", \"--glob=!.node_repl_history\", \"--glob=!.lesshst\", \"--glob=!shadow*\", \"--glob=!gshadow*\", \"--glob=!sudoers*\", \"--glob=!hosts.yml\", \"--glob=!.ssh\", \"--glob=!.gnupg\", \"--glob=!.aws\", \"--glob=!.password-store\", \"--glob=!.kube\", \"--glob=!.docker\", \"--glob=!gcloud\", \"--glob=!gh\", \"--glob=!aider\", \"--glob=!aish\"]] false"),
         ("rg -uuL x", "- false"),
         ("rm $FLAGS x", "- true"),
         ("rm \"$x\"", "- true"),
