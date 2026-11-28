@@ -227,7 +227,9 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
   model, not mentioned in its prompt, and a call to it is refused. `tools: {run: off}`
   means no run tool at all, even read-only; that differs from `aish run off`, which
   only stops the model from running other commands itself):
-  `run(command, background?)`, `read_block(n)`, `jobs()`,
+  `run(command, background?)`, `read_block(n, start_line?, max_lines?)` (a long output is cut in the middle,
+  the header says which lines to ask for), `find(query, regex?)` (case-insensitive search over the last 100
+  commands and their output: up to 30 hits `block 3 L340: …`, then `N more hits`), `jobs()`,
   `job_output(id, lines)`, `read_file(path, start_line?, max_lines?)`
   (up to 200 lines / 32 KB; secret files — `~/.ssh/*`, `*.pem`, `.env*`,
   `~/.aws/credentials`, `~/.netrc`, aish's own config — are refused).
@@ -277,7 +279,7 @@ configurable: `keys: {ask: ctrl-q}` in config.yaml (`ctrl-<letter>` or `off`).
   context is the tail of the command's output (up to 200 lines), the command
   itself and cwd. For a program on the alternate screen the model is warned
   that the output stream may not match the picture.
-- The tools are only `read_block`, `jobs`, `job_output`. No commands (`run`) and
+- The tools are only `read_block`, `find`, `jobs`, `job_output`. No commands (`run`) and
   no file reading (`read_file`): the running command may be on another machine
   (ssh, docker exec), so local files and commands would be the wrong ones. The
   dialogue memory is shared with the ordinary `?`; secret masking for non-local
@@ -412,6 +414,7 @@ $ aish help                ← commands: `command — what it does`, long ones w
 $ aish models              ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
 $ aish model chat ds       ← switch a role's model AND save it to the config (`aish model ds` = chat; `aish chat ds` is the same)
 $ aish profile             ← profiles (the active one is marked `*`); `aish profile inet` switches and saves
+$ aish find <text>         ← search commands and output of the session: dim `#3 L340: …` / `#3 cmd: …`, `N more`, `no matches`
 $ aish run [ask|judge|off] ← may the model run commands (`--save` keeps it in the config)
 $ aish coach [on|fix|off]  ← language coach (`--save` keeps it in the config), see below
 $ aish tools [name on|off] ← the agent's tools run/files/web (`--save` keeps it)

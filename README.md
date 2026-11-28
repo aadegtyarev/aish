@@ -143,7 +143,7 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   the right edge shows `[N] ?` while jobs run and `⋯` while a model suggestion is slow.
 - Agent steps: when the chat model supports function calling, `?` can run read-only commands itself
   (a built-in allowlist plus `allow:` in the config; shown as a dim `│ $ cmd · N lines`), read files and
-  command history, and propose one mutating command at a time into your input line: after you run it the
+  command history (with search: `find`), and propose one mutating command at a time into your input line: after you run it the
   model continues with its output. Max 12 steps, Ctrl-C stops. Models without tools fall back to the
   single-step answer (`tools: off` per model forces it). See docs/UX.md.
   The model can also `insert` a command into your input line (after you press Enter on it; nothing is

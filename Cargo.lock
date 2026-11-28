@@ -21,6 +21,7 @@ dependencies = [
  "expectrl",
  "nix 0.29.0",
  "percent-encoding",
+ "regex",
  "serde",
  "serde_json",
  "serde_norway",

@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::blocks::BlockTracker;
 use crate::editor::overlay::toggle_prefix;
-use crate::llm::agent;
 use crate::llm::cmd::{self, is_aish_line, is_short_line, Cmd};
 use crate::llm::prefix::{self, is_model_line, Form};
 use crate::llm::render::{fit_line, Renderer};
 use crate::llm::suggest::{LsCache, ModelSuggest};
+use crate::llm::{agent, find};
 use crate::llm::{ask, compact, Llm};
 use crate::module::{Env, Module};
 use crate::task::Task;
@@ -145,7 +145,7 @@ impl Module for ModelModule {
             return false;
         }
         let Some(form) = prefix::parse(line, llm.prefix()) else {
-            return aish_command(&llm, line, out, task);
+            return aish_command(&llm, &tracker, line, out, task);
         };
         if form == Form::Chat {
             let on = !llm.chat.fetch_xor(true, Relaxed);
@@ -205,7 +205,13 @@ impl Module for ModelModule {
     }
 }
 
-fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option<Task>) -> bool {
+fn aish_command(
+    llm: &Arc<Llm>,
+    tracker: &Arc<Mutex<BlockTracker>>,
+    line: &str,
+    out: &mut Vec<u8>,
+    task: &mut Option<Task>,
+) -> bool {
     let cmd = cmd::parse(line);
     match cmd {
         Cmd::Status => {
@@ -229,6 +235,18 @@ fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option
             Some(t) => t.finish(Some(cmd::config_command(llm))),
             None => return false,
         },
+        Cmd::Find(q) => {
+            let Some(t) = task.take() else { return false };
+            let tracker = tracker.clone();
+            ask::run_task(t, move |t| {
+                let ls = tracker.lock().map_or_else(
+                    |_| Vec::new(),
+                    |b| find::user_lines(b.blocks().newest_first(), &q),
+                );
+                write_rows(t, &ls);
+                None
+            });
+        }
         _ => {
             let Some(t) = task.take() else {
                 // busy: only the cheap switches work without a task

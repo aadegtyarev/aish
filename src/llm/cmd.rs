@@ -10,7 +10,7 @@ use crate::config::{Coach, Config, RunMode, Setting};
 
 pub const SUBS: &[&str] = &[
     "status", "chat", "complete", "model", "models", "profile", "on", "off", "config", "init",
-    "help", "run", "coach", "tools",
+    "help", "run", "coach", "tools", "find",
 ];
 
 fn is_cmd_line(s: &str, name: &str) -> bool {
@@ -100,6 +100,8 @@ pub enum Cmd {
     Coach(Option<String>, bool),
     /// `tools [name on|off] [--save]`
     Tools(Option<(String, Option<String>)>, bool),
+    /// `find <text>`
+    Find(String),
     /// A first word that is no subcommand: a hint and the help, nothing else.
     Unknown(String),
 }
@@ -113,6 +115,7 @@ pub fn parse(line: &str) -> Cmd {
         (Some("config"), ..) => Cmd::Config,
         (Some("init"), ..) => Cmd::Init,
         (Some("models"), ..) => Cmd::Models,
+        (Some("find"), ..) => Cmd::Find(w[2..].join(" ")),
         (Some(r @ ("chat" | "complete")), Some(m), _) => Cmd::Model(r.into(), m.into()),
         (Some("model"), Some(m), None) => Cmd::Model("chat".into(), m.into()),
         (Some("model"), Some(r), Some(m)) => Cmd::Model(r.into(), m.into()),
@@ -197,6 +200,7 @@ const HELP: &[(&str, &str)] = &[
         "language coach: fix = corrections, on = + word completion; --save keeps it",
     ),
     ("tools [name on|off]", "switch tools; --save keeps it"),
+    ("find <text>", "search commands and output"),
     ("on | off", "suggestions"),
     ("config", "open the config"),
     ("init", "set up launch"),
@@ -569,7 +573,7 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
             v.extend(help_lines(width, llm.prefix()));
             v
         }
-        Cmd::Status | Cmd::Config | Cmd::Init => Vec::new(),
+        Cmd::Status | Cmd::Config | Cmd::Init | Cmd::Find(_) => Vec::new(),
     }
 }
 

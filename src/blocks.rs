@@ -75,6 +75,11 @@ impl Blocks {
         self.ring.iter().skip(self.ring.len().saturating_sub(n))
     }
 
+    /// All blocks, newest first.
+    pub fn newest_first(&self) -> impl Iterator<Item = &Block> {
+        self.ring.iter().rev()
+    }
+
     /// Number of blocks ever finished (monotonic, unlike `len`).
     pub fn total(&self) -> u64 {
         self.total

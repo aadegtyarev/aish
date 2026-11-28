@@ -10,6 +10,7 @@ pub mod cmdsuggest;
 pub mod coach;
 pub mod compact;
 pub mod context;
+pub mod find;
 pub mod firstrun;
 pub mod hard;
 pub mod jobs;

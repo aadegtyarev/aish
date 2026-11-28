@@ -251,3 +251,16 @@ fn our_command_is_not_highlighted_as_unknown() {
         "red ai: {ok:?}"
     );
 }
+
+#[test]
+fn find_prints_hits() {
+    for cols in [80u16, 36] {
+        let home = TempDir::new().unwrap();
+        let m = mock();
+        let mut t = start(&home, &m, cols);
+        run(&mut t, "echo needle-xyz", "needle-xyz");
+        run(&mut t, "ai find NEEDLE", "L1:");
+        rows_fit(&t);
+        assert!(t.scr.everything().contains("cmd:"), "{}", t.scr.dump());
+    }
+}

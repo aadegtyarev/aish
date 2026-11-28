@@ -9,6 +9,11 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- Session search: the model gets a `find` tool (text or regex over the last 100 commands and their
+  output), `read_block` reads slices (`start_line`, `max_lines`) and says which lines a cut
+  output omitted; `aish find <text>` does the same for you.
+
 ### Changed
 - Help, hints, the model's prompt and the docs use the full `aish …` form. The short `ai`
   stays a configurable alias (`command: ai`, `command: off` turns it off).

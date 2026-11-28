@@ -69,6 +69,7 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 ("run", "may the model run commands"),
                 ("coach", "language coach"),
                 ("tools", "tools on/off"),
+                ("find", "search commands and output"),
                 toggle,
                 other,
                 ("config", "open the config"),
