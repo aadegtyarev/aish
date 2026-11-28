@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use aish_editor::Theme;
 
@@ -16,20 +16,24 @@ pub struct TaskShared {
     /// `Some(prefill)` once the task is finished.
     done: Mutex<Option<Option<String>>>,
     finished: AtomicBool,
-    /// Output is dropped (the screen it was meant for is gone).
-    pub muted: AtomicBool,
-    /// Held around "check muted + write" so `mute` is a barrier.
-    write_lock: Mutex<()>,
+    /// Held around "check state + write" so `mute` is a barrier.
+    out: Mutex<Out>,
     wake: Arc<File>,
-    /// A status row (spinner) is the last row on screen: the next output
-    /// replaces it. Changed only under `write_lock`.
-    status_row: AtomicBool,
-    /// Output has replaced the status row: no more spinner until `status_reset`.
-    status_off: AtomicBool,
     /// The worker waits for one decision key (`Task::wait_key`): the
     /// controller hands keys to `offer_key` instead of buffering them.
     pub keys_wanted: AtomicBool,
     keys: Mutex<KeyState>,
+}
+
+#[derive(Default)]
+struct Out {
+    /// Output is dropped (the screen it was meant for is gone).
+    muted: bool,
+    /// A status row (spinner) is the last row on screen: the next output
+    /// replaces it.
+    status_row: bool,
+    /// Output has replaced the status row: no more spinner until `reset`.
+    status_off: bool,
 }
 
 /// Ignore decision keys this long after the prompt is drawn.
@@ -91,8 +95,11 @@ impl TaskShared {
 
     /// Drop all further output; returns once no write is in flight.
     pub fn mute(&self) {
-        let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.out().muted = true;
+    }
+
+    fn out(&self) -> MutexGuard<'_, Out> {
+        self.out.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn take_done(&self) -> Option<Option<String>> {
@@ -119,22 +126,18 @@ impl Task {
     }
 
     pub fn write(&self, bytes: &[u8]) {
-        let _g = self
-            .shared
-            .write_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if self.shared.muted.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut o = self.shared.out();
+        if o.muted {
             return;
         }
         let mut bytes = bytes;
-        if self.shared.status_row.swap(false, Relaxed) {
+        if std::mem::take(&mut o.status_row) {
             // the output takes the place of the status row
             let _ = (&*self.out).write_all(b"\r\x1b[2K");
             bytes = bytes.strip_prefix(b"\r\n").unwrap_or(bytes);
         }
         if !bytes.is_empty() {
-            self.shared.status_off.store(true, Relaxed);
+            o.status_off = true;
         }
         let _ = (&*self.out).write_all(bytes);
     }
@@ -180,12 +183,8 @@ impl Task {
 
     fn complete(&self, prefill: Option<String>) {
         {
-            let _g = self
-                .shared
-                .write_lock
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if self.shared.status_row.swap(false, Relaxed) {
+            let mut o = self.shared.out();
+            if std::mem::take(&mut o.status_row) {
                 let _ = (&*self.out).write_all(b"\r\x1b[2K");
             }
         }
@@ -209,26 +208,17 @@ pub struct StatusWriter {
 impl StatusWriter {
     /// Forget that output replaced the status row: a new wait begins.
     pub fn reset(&self) {
-        let _g = self
-            .shared
-            .write_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        self.shared.status_off.store(false, Relaxed);
+        self.shared.out().status_off = false;
     }
 
     /// Show `row` (a complete row: bar and text) as the status row, in place
     /// when it is already there. False when output has taken over.
     pub fn show(&self, row: &[u8]) -> bool {
-        let _g = self
-            .shared
-            .write_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if self.shared.muted.load(Relaxed) || self.shared.status_off.load(Relaxed) {
+        let mut o = self.shared.out();
+        if o.muted || o.status_off {
             return false;
         }
-        let first = !self.shared.status_row.swap(true, Relaxed);
+        let first = !std::mem::replace(&mut o.status_row, true);
         let mut b = Vec::with_capacity(row.len() + 8);
         b.extend_from_slice(if first { b"\r\n" } else { b"\r\x1b[2K" });
         b.extend_from_slice(row);
@@ -268,11 +258,8 @@ impl TaskMaker {
                 cancel: AtomicBool::new(false),
                 done: Mutex::new(None),
                 finished: AtomicBool::new(false),
-                muted: AtomicBool::new(false),
-                write_lock: Mutex::new(()),
+                out: Mutex::new(Out::default()),
                 wake: self.wake.clone(),
-                status_row: AtomicBool::new(false),
-                status_off: AtomicBool::new(false),
                 keys_wanted: AtomicBool::new(false),
                 keys: Mutex::new(KeyState::default()),
             }),

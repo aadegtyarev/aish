@@ -118,6 +118,17 @@ fn aliases(models: &[&String]) -> Vec<String> {
 
 const DEEPSEEK_URL: &str = "https://api.deepseek.com/v1";
 
+/// alias -> model for each (model id, alias) pair.
+fn model_map(ms: &[&String], aliases: &[String]) -> BTreeMap<String, CfgModel> {
+    ms.iter()
+        .zip(aliases)
+        .map(|(m, a)| {
+            let id = (*m).clone();
+            (a.clone(), CfgModel { id, effort: None })
+        })
+        .collect()
+}
+
 /// Pick roles and render the config, optionally with a DeepSeek provider
 /// (`$DEEPSEEK_API_KEY`) whose model ids were listed from `/models`.
 /// Returns `(yaml, chat, complete)` labels.
@@ -141,15 +152,7 @@ pub fn build_with(
             continue;
         }
         let al = aliases(&ms);
-        let mut models = BTreeMap::new();
         for (m, a) in ms.iter().zip(&al) {
-            models.insert(
-                a.clone(),
-                CfgModel {
-                    id: (*m).clone(),
-                    effort: None,
-                },
-            );
             locals.push((f, m, a.clone()));
         }
         providers.push(CfgProvider {
@@ -157,7 +160,7 @@ pub fn build_with(
             url: f.url.clone(),
             kind: "chat",
             key: None,
-            models,
+            models: model_map(&ms, &al),
         });
     }
     let ds_models: Vec<&String> = deepseek
@@ -213,19 +216,7 @@ pub fn build_with(
             url: url.to_owned(),
             kind: "chat",
             key: Some("$DEEPSEEK_API_KEY".into()),
-            models: ds_models
-                .iter()
-                .zip(&al)
-                .map(|(m, a)| {
-                    (
-                        a.clone(),
-                        CfgModel {
-                            id: (*m).clone(),
-                            effort: None,
-                        },
-                    )
-                })
-                .collect(),
+            models: model_map(&ds_models, &al),
         });
     }
     let mut roles = BTreeMap::new();
@@ -241,33 +232,27 @@ pub fn build_with(
         );
         comp = format!("{}/{m}", f.id);
     }
-    if key {
-        roles.insert(
-            "chat",
-            CfgRole {
-                id: "cloud/main".into(),
-                effort: Some("low".into()),
-            },
-        );
-        chat = format!("cloud/{DEFAULT_CLOUD_MODEL}");
+    // (role id, effort, label) of the chat model: cloud, else DeepSeek, else the biggest local
+    let pick = if key {
+        Some((
+            "cloud/main".to_owned(),
+            Some("low"),
+            format!("cloud/{DEFAULT_CLOUD_MODEL}"),
+        ))
     } else if let Some((a, m)) = ds_pick {
+        Some((format!("deepseek/{a}"), None, format!("deepseek/{m}")))
+    } else {
+        big.map(|(f, m, a)| (format!("{}/{a}", f.id), None, format!("{}/{m}", f.id)))
+    };
+    if let Some((id, effort, label)) = pick {
         roles.insert(
             "chat",
             CfgRole {
-                id: format!("deepseek/{a}"),
-                effort: None,
+                id,
+                effort: effort.map(Into::into),
             },
         );
-        chat = format!("deepseek/{m}");
-    } else if let Some((f, m, a)) = big {
-        roles.insert(
-            "chat",
-            CfgRole {
-                id: format!("{}/{a}", f.id),
-                effort: None,
-            },
-        );
-        chat = format!("{}/{m}", f.id);
+        chat = label;
     }
     let yaml = serde_norway::to_string(&Cfg { providers, roles }).ok()?;
     Some((yaml, chat, comp))

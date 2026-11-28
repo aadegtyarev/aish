@@ -537,80 +537,11 @@ impl Controller {
 
     /// Bytes from the keyboard. `buf[..n]` is valid; passthrough may rewrite it.
     pub fn on_input(&mut self, buf: &mut [u8], n: usize) -> Input {
-        if let Some(t) = &self.task {
-            let mut data = buf[..n].to_vec();
-            if self.dsr.is_some() {
-                let mut out = Vec::with_capacity(n);
-                if self.dsr_filter.filter(&buf[..n], &mut out) {
-                    self.dsr = None;
-                    out.extend(self.dsr_filter.take_held());
-                }
-                data = out;
-            }
-            let wanted = t.keys_wanted.load(std::sync::atomic::Ordering::Relaxed);
-            if wanted && !data.contains(&0x03) {
-                // the agent asks: one exact key decides, nothing is kept
-                if !data.is_empty() {
-                    t.offer_input(&data);
-                }
-                return Input::Handled(false);
-            }
-            if !data.is_empty() {
-                t.note_input();
-            }
-            for b in data {
-                if b == 0x03 {
-                    t.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                } else if self.typeahead.len() < 65536 {
-                    self.typeahead.push(b);
-                }
-            }
-            return Input::Handled(false);
+        if let Some(t) = self.task.clone() {
+            return self.task_input(&t, buf, n);
         }
         if !self.prompt {
-            let mut held_out: Option<Vec<u8>> = None;
-            match self.ask.filter(|_| self.ask_ready()) {
-                Some(k) => match self.detect.scan(k, &buf[..n]) {
-                    overlay::Scan::Clear => {}
-                    overlay::Scan::Hit(r) => return Input::Ask(Box::new(r)),
-                    overlay::Scan::Forward(v) => held_out = Some(v),
-                },
-                None if !self.detect.is_empty() => {
-                    let mut v = self.detect.take_held();
-                    v.extend_from_slice(&buf[..n]);
-                    held_out = Some(v);
-                }
-                None => {}
-            }
-            let src: &[u8] = held_out.as_deref().unwrap_or(&buf[..n]);
-            if let Some(t) = self.dsr {
-                let mut out = Vec::with_capacity(src.len());
-                let found = self.dsr_filter.filter(src, &mut out);
-                if found || t.elapsed() > DSR_TTL {
-                    self.dsr = None;
-                    out.extend(self.dsr_filter.take_held());
-                }
-                if !self.detect.is_empty() {
-                    // keep the Esc timer running for the held key start
-                    self.send(&out);
-                    return Input::Handled(true);
-                }
-                if self.scan.b_seen && !out.is_empty() {
-                    self.dirty = out[out.len() - 1] != 0x03;
-                    self.refuse_inject_if_dirty();
-                }
-                return Input::ForwardOwned(out);
-            }
-            if let Some(v) = held_out {
-                // part of a possible CSI-u key waits for the next read (or ESC_WAIT)
-                self.send(&v);
-                return Input::Handled(!self.detect.is_empty());
-            }
-            if self.scan.b_seen && n > 0 {
-                self.dirty = buf[n - 1] != 0x03;
-                self.refuse_inject_if_dirty();
-            }
-            return Input::Forward(n);
+            return self.running_input(buf, n);
         }
         let mut ev = std::mem::take(&mut self.events);
         // the kitty form of the ask key is the plain control key for the editor
@@ -627,6 +558,85 @@ impl Controller {
         self.handle_events(&mut ev);
         self.events = ev;
         Input::Handled(self.ed.has_pending_input())
+    }
+
+    /// Input while a task (a streaming answer) owns the screen.
+    fn task_input(&mut self, t: &TaskShared, buf: &[u8], n: usize) -> Input {
+        let mut data = buf[..n].to_vec();
+        if self.dsr.is_some() {
+            let mut out = Vec::with_capacity(n);
+            if self.dsr_filter.filter(&buf[..n], &mut out) {
+                self.dsr = None;
+                out.extend(self.dsr_filter.take_held());
+            }
+            data = out;
+        }
+        let wanted = t.keys_wanted.load(std::sync::atomic::Ordering::Relaxed);
+        if wanted && !data.contains(&0x03) {
+            // the agent asks: one exact key decides, nothing is kept
+            if !data.is_empty() {
+                t.offer_input(&data);
+            }
+            return Input::Handled(false);
+        }
+        if !data.is_empty() {
+            t.note_input();
+        }
+        for b in data {
+            if b == 0x03 {
+                t.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else if self.typeahead.len() < 65536 {
+                self.typeahead.push(b);
+            }
+        }
+        Input::Handled(false)
+    }
+
+    /// Input while a program runs (no prompt): forwarded, the ask key spotted.
+    fn running_input(&mut self, buf: &mut [u8], n: usize) -> Input {
+        let mut held_out: Option<Vec<u8>> = None;
+        match self.ask.filter(|_| self.ask_ready()) {
+            Some(k) => match self.detect.scan(k, &buf[..n]) {
+                overlay::Scan::Clear => {}
+                overlay::Scan::Hit(r) => return Input::Ask(Box::new(r)),
+                overlay::Scan::Forward(v) => held_out = Some(v),
+            },
+            None if !self.detect.is_empty() => {
+                let mut v = self.detect.take_held();
+                v.extend_from_slice(&buf[..n]);
+                held_out = Some(v);
+            }
+            None => {}
+        }
+        let src: &[u8] = held_out.as_deref().unwrap_or(&buf[..n]);
+        if let Some(t) = self.dsr {
+            let mut out = Vec::with_capacity(src.len());
+            let found = self.dsr_filter.filter(src, &mut out);
+            if found || t.elapsed() > DSR_TTL {
+                self.dsr = None;
+                out.extend(self.dsr_filter.take_held());
+            }
+            if !self.detect.is_empty() {
+                // keep the Esc timer running for the held key start
+                self.send(&out);
+                return Input::Handled(true);
+            }
+            if self.scan.b_seen && !out.is_empty() {
+                self.dirty = out[out.len() - 1] != 0x03;
+                self.refuse_inject_if_dirty();
+            }
+            return Input::ForwardOwned(out);
+        }
+        if let Some(v) = held_out {
+            // part of a possible CSI-u key waits for the next read (or ESC_WAIT)
+            self.send(&v);
+            return Input::Handled(!self.detect.is_empty());
+        }
+        if self.scan.b_seen && n > 0 {
+            self.dirty = buf[n - 1] != 0x03;
+            self.refuse_inject_if_dirty();
+        }
+        Input::Forward(n)
     }
 
     /// The user typed into bash's line while the model's approved command
@@ -697,6 +707,45 @@ impl Controller {
         self.outbox.extend_from_slice(bytes);
     }
 
+    /// A line the modules may answer instead of bash.
+    fn intercepted(&mut self, line: &str) {
+        let mut notice = std::mem::take(&mut self.notice);
+        notice.clear();
+        let mut task = Some(self.tasks.make(self.ed.theme(), width()));
+        let shared = task.as_ref().map(|t| t.shared.clone());
+        let handled = self
+            .modules
+            .iter_mut()
+            .any(|m| m.on_intercept(line, &mut notice, &mut task));
+        if handled && task.is_none() {
+            // Answer comes from a worker thread; it writes the rows.
+            let _ = self.ed.draw_final(&mut self.stdout, width(), line);
+            self.leave(true);
+            self.task = shared;
+        } else if handled {
+            // The typed line stays on screen, the notice follows,
+            // and a bare Enter makes bash print a fresh prompt (its
+            // line is empty: an empty block, which the tracker drops).
+            let _ = self.ed.draw_final(&mut self.stdout, width(), line);
+            let _ = self.stdout.write_all(b"\r\n");
+            let dim = self.ed.theme().enabled;
+            if dim {
+                let _ = write!(self.stdout, "\x1b[{}m", self.ed.theme().dim);
+            }
+            let _ = self.stdout.write_all(&notice);
+            if dim {
+                let _ = self.stdout.write_all(b"\x1b[0m");
+            }
+            self.leave(true);
+            self.bare_enter();
+        } else {
+            self.erase();
+            self.leave(true);
+            self.send_line(line);
+        }
+        self.notice = notice;
+    }
+
     fn handle_events(&mut self, events: &mut Vec<Event>) {
         let mut left = false;
         for ev in events.drain(..) {
@@ -722,45 +771,8 @@ impl Controller {
                     }
                     self.send_line(&line);
                 }
-                Event::Intercepted(line) => {
-                    if left {
-                        continue;
-                    }
-                    let mut notice = std::mem::take(&mut self.notice);
-                    notice.clear();
-                    let mut task = Some(self.tasks.make(self.ed.theme(), width()));
-                    let shared = task.as_ref().map(|t| t.shared.clone());
-                    let handled = self
-                        .modules
-                        .iter_mut()
-                        .any(|m| m.on_intercept(&line, &mut notice, &mut task));
-                    if handled && task.is_none() {
-                        // Answer comes from a worker thread; it writes the rows.
-                        let _ = self.ed.draw_final(&mut self.stdout, width(), &line);
-                        self.leave(true);
-                        self.task = shared;
-                    } else if handled {
-                        // The typed line stays on screen, the notice follows,
-                        // and a bare Enter makes bash print a fresh prompt (its
-                        // line is empty: an empty block, which the tracker drops).
-                        let _ = self.ed.draw_final(&mut self.stdout, width(), &line);
-                        let _ = self.stdout.write_all(b"\r\n");
-                        let dim = self.ed.theme().enabled;
-                        if dim {
-                            let _ = write!(self.stdout, "\x1b[{}m", self.ed.theme().dim);
-                        }
-                        let _ = self.stdout.write_all(&notice);
-                        if dim {
-                            let _ = self.stdout.write_all(b"\x1b[0m");
-                        }
-                        self.leave(true);
-                        self.bare_enter();
-                    } else {
-                        self.erase();
-                        self.leave(true);
-                        self.send_line(&line);
-                    }
-                    self.notice = notice;
+                Event::Intercepted(line) if !left => {
+                    self.intercepted(&line);
                     left = true;
                 }
                 Event::PassKey(b) => {

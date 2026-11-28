@@ -165,6 +165,57 @@ fn yes(a: &str) -> bool {
     matches!(a.to_lowercase().as_str(), "y" | "yes" | "1")
 }
 
+/// Where to start aish: "1" every bash, "2" also tmux, "3" manually. None:
+/// a wrong answer or no input (already said).
+fn ask_mode(interactive: bool) -> Option<String> {
+    if !interactive {
+        return Some("1".to_owned());
+    }
+    let tm = if tmux_installed() {
+        ""
+    } else {
+        " (tmux not found)"
+    };
+    let a = ask(
+        &format!(
+            "Start aish: 1 — in every interactive bash, 2 — also in tmux{tm}, 3 — manually only"
+        ),
+        "1",
+    )?;
+    if matches!(a.as_str(), "1" | "2" | "3") {
+        return Some(a);
+    }
+    eprintln!("aish: expected 1, 2 or 3");
+    None
+}
+
+/// The startup files `mode` changes (only those that would really change).
+fn plan_changes(mode: &str, bashrc: &Path, tmux: &Path) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+    if mode != "3" {
+        let old = std::fs::read_to_string(bashrc).unwrap_or_default();
+        let body = bashrc_block(&aish_path());
+        changes.push(FileChange {
+            new: with_block_top(&old, &body),
+            path: bashrc.to_owned(),
+            added: block(&body).lines().count(),
+        });
+    }
+    if mode == "2" && tmux_installed() {
+        if let Ok(exe) = std::env::current_exe() {
+            let body = format!("set -g default-shell {}", exe.display());
+            let old = std::fs::read_to_string(tmux).unwrap_or_default();
+            changes.push(FileChange {
+                new: with_block(&old, &body),
+                path: tmux.to_owned(),
+                added: block(&body).lines().count(),
+            });
+        }
+    }
+    changes.retain(|c| std::fs::read_to_string(&c.path).ok().as_deref() != Some(c.new.as_str()));
+    changes
+}
+
 /// `aish init [--remove] [--yes]`; the exit code.
 pub fn run(args: &[std::ffi::OsString]) -> i32 {
     let flags: Vec<String> = args
@@ -190,26 +241,9 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     let st = style();
 
     // 1. where to start
-    let mut mode = "1".to_owned();
-    if interactive && !yes_all {
-        let tm = if tmux_installed() {
-            ""
-        } else {
-            " (tmux not found)"
-        };
-        let a = ask(
-            &format!("Start aish: 1 — in every interactive bash, 2 — also in tmux{tm}, 3 — manually only"),
-            "1",
-        );
-        match a {
-            Some(a) if matches!(a.as_str(), "1" | "2" | "3") => mode = a,
-            Some(_) => {
-                eprintln!("aish: expected 1, 2 or 3");
-                return 1;
-            }
-            None => return 1,
-        }
-    }
+    let Some(mode) = ask_mode(interactive && !yes_all) else {
+        return 1;
+    };
 
     // 2. models
     let cfg_path = crate::config::config_path();
@@ -240,31 +274,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     }
 
     // 3. summary and apply
-    let mut changes: Vec<FileChange> = Vec::new();
-    if mode != "3" {
-        let old = std::fs::read_to_string(&bashrc).unwrap_or_default();
-        let body = bashrc_block(&aish_path());
-        changes.push(FileChange {
-            new: with_block_top(&old, &body),
-            path: bashrc.clone(),
-            added: block(&body).lines().count(),
-        });
-    }
-    if mode == "2" && tmux_installed() {
-        if let Ok(exe) = std::env::current_exe() {
-            let body = format!("set -g default-shell {}", exe.display());
-            let old = std::fs::read_to_string(&tmux).unwrap_or_default();
-            changes.push(FileChange {
-                new: with_block(&old, &body),
-                path: tmux.clone(),
-                added: block(&body).lines().count(),
-            });
-        }
-    }
-    let changes: Vec<FileChange> = changes
-        .into_iter()
-        .filter(|c| std::fs::read_to_string(&c.path).ok().as_deref() != Some(c.new.as_str()))
-        .collect();
+    let changes = plan_changes(&mode, &bashrc, &tmux);
     for c in &changes {
         println!("  {}  +{} lines", tilde(&c.path), c.added);
     }
