@@ -54,7 +54,7 @@ pub fn is_model_line(line: &str, p: char) -> bool {
     parse(line, p).is_some()
 }
 
-/// Forms for the help (`?h`, `ai help`): head, description.
+/// Forms for the help (`?h`, `aish help`): head, description.
 pub fn forms(p: char) -> Vec<(String, &'static str)> {
     vec![
         (format!("{p} text"), "ask"),

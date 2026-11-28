@@ -358,7 +358,7 @@ fn run(llm: &Llm) -> std::io::Result<()> {
         return Ok(()); // someone else created it first
     }
     llm.set_notice(format!(
-        "aish · chat: {chat} · complete: {comp} · {{cmd}} config — change"
+        "aish · chat: {chat} · complete: {comp} · aish config — change"
     ));
     Ok(())
 }

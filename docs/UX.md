@@ -13,7 +13,7 @@ UI text is English only; the conversation follows the user's language.
    indistinguishable from `bash`. PS1, aliases, `.bashrc`, `vim`, `ssh` are all yours.
 2. **2–3 steps to any action.** No settings menu, no dialogs.
 3. **Propose, don't do.** The model puts a command into your input line, or, with
-   your permission (`ai run`), types it into your bash. Nothing runs unasked except
+   your permission (`aish run`), types it into your bash. Nothing runs unasked except
    read-only commands; in `judge` mode the hard list (sudo, `rm -rf` ...) still asks.
 4. **Instant.** Typing never waits for the network. LLM suggestions catch up,
    they don't block. Keypress latency < 1 ms, history < 5 ms.
@@ -57,7 +57,7 @@ glob, escape it: `\?`.
 
 `?` is the default; `prefix:` in config.yaml picks another one of `?` `,` `@`
 `#` `;`. Everywhere below `?` means "your prefix": the recognition, the
-highlighting, the dim marker at the right edge, the hints and `ai help`.
+highlighting, the dim marker at the right edge, the hints and `aish help`.
 Chosen because none of them means anything at the start of a bash line
 (`?` only as a one-character glob, `,foo`, `@foo` and `;` are just errors, `#`
 is a comment). `#` is the one with a catch: `# text` (with a space) becomes a
@@ -90,7 +90,7 @@ Letters right after the prefix, no space (`? n` with a space is a question):
 |---|---|
 | `?n` | new conversation: the memory is cleared, `◇ new conversation` |
 | `?c` | compact now: the conversation is summarised and replaced by the summary, `◇ compacted 12.4k → 1.1k tokens` |
-| `?h` | the forms above in six short rows (also at the end of `ai help`) |
+| `?h` | the forms above in six short rows (also at the end of `aish help`) |
 
 ### Compaction
 
@@ -111,7 +111,7 @@ compact:
 
 The window is the model's `context_window` from the config (at least 2048); unset and the
 provider is a local llama.cpp, `n_ctx` from `GET <base>/props` (asked once per
-model, ignored if absent); else 8192. `ai status` shows it (`ctx 32k`). The
+model, ignored if absent); else 8192. `aish status` shows it (`ctx 32k`). The
 summary request is masked like every other request: a non-local provider gets
 masked text. If compaction fails, the oldest turns are dropped instead, with one
 dim line (`◇ not compacted · dropped old turns`).
@@ -177,7 +177,7 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
   Your own prefixes go in `allow:` in config.yaml. A planted `.git/config` (a clean
   filter, textconv, gpg.program) could still make these git commands run a program:
   the same risk as running the command yourself in that repository.
-- **Everything else** goes through `run` and depends on the mode (`ai run`):
+- **Everything else** goes through `run` and depends on the mode (`aish run`):
   - `ask` (default): a dim prompt under the answer, one key decides:
     ```
     │ ▶ apt list --upgradable
@@ -220,12 +220,12 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     the model learns what was actually run), and when the block ends the model
     continues in a new `│` section. Ctrl-C on the line, or a different command
     instead of the proposed one, stops the agent silently.
-  - `ai run` shows the mode, `ai run ask|judge|off` sets it for the session, add
+  - `aish run` shows the mode, `aish run ask|judge|off` sets it for the session, add
     `--save` to write `run:` to the config. Read-only commands run by themselves
     in every mode. The Ctrl-Q overlay never has `run` (the foreground may be another host).
-- Tools (`ai tools` switches `run`, `files`, `web`; an off tool is not sent to the
+- Tools (`aish tools` switches `run`, `files`, `web`; an off tool is not sent to the
   model, not mentioned in its prompt, and a call to it is refused. `tools: {run: off}`
-  means no run tool at all, even read-only; that differs from `ai run off`, which
+  means no run tool at all, even read-only; that differs from `aish run off`, which
   only stops the model from running other commands itself):
   `run(command, background?)`, `read_block(n)`, `jobs()`,
   `job_output(id, lines)`, `read_file(path, start_line?, max_lines?)`
@@ -338,7 +338,7 @@ gave the exact continuation.
 
 ### Language coach
 
-Off by default (`coach:` in the config, `ai coach on|fix|off [--save]`). You practise the
+Off by default (`coach:` in the config, `aish coach on|fix|off [--save]`). You practise the
 reply language (`language:`, English by default). With `fix`, when a question is written in that
 language and has mistakes, the answer starts with one dim line before it:
 
@@ -392,32 +392,31 @@ For the model aish keeps its own job journal (pid, log, exit); you don't need it
 
 ## Controlling aish
 
-Inside a session the short command `ai` (and the always available long form
-`aish`) has the same subcommands. The name `ai` always wins over anything of the
-same name in the system; it can be changed or turned off in the config
-(`command: mm` or `command: off`; `aish` works in any case). A bare `llm` is not
+Inside a session `aish` takes the subcommands below. A short alias (`ai` by
+default) does the same; it wins over anything of that name in the system and is
+changed or turned off with `command: mm` or `command: off`. A bare `llm` is not
 touched. `aish status` and `aish config` also work as ordinary CLI commands;
 other arguments go to bash:
 
 The command's arguments get a grey suggestion instantly and locally (no model,
-higher priority than history): `ai ` → `status`; `ai c` → `hat`; `ai chat ` → a
+higher priority than history): `aish ` → `status`; `aish c` → `hat`; `aish chat ` → a
 model reference, preferably **not the current one** (the likely switch target),
-then in config order; `ai o` → `n`/`ff` — the opposite of the current state.
+then in config order; `aish o` → `n`/`ff` — the opposite of the current state.
 To the right of the line there is a short dim explanation (`· now cloud/main`)
 if there is room. `→` accepts, Tab shows a pager with all the options. Works for
 `aish` and for the name from `command:`.
 
 ```
-$ ai               ← status: providers, roles, availability (one line per role)
-$ ai help          ← commands: `command — what it does`, long ones wrap (fits 36 columns); also `ai -h`
-$ ai models        ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
-$ ai model chat ds ← switch a role's model AND save it to the config (`ai model ds` = chat; `ai chat ds` is the same)
-$ ai profile       ← profiles (the active one is marked `*`); `ai profile inet` switches and saves
-$ ai run [ask|judge|off]    ← may the model run commands (`--save` keeps it in the config)
-$ ai coach [on|fix|off]    ← language coach (`--save` keeps it in the config), see below
-$ ai tools [name on|off]   ← the agent's tools run/files/web (`--save` keeps it)
-$ ai off / ai on          ← turn model suggestions off/on
-$ ai config                ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)
+$ aish status              ← status: providers, roles, availability (one line per role)
+$ aish help                ← commands: `command — what it does`, long ones wrap (fits 36 columns); also `aish -h` and a bare `aish`
+$ aish models              ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
+$ aish model chat ds       ← switch a role's model AND save it to the config (`aish model ds` = chat; `aish chat ds` is the same)
+$ aish profile             ← profiles (the active one is marked `*`); `aish profile inet` switches and saves
+$ aish run [ask|judge|off] ← may the model run commands (`--save` keeps it in the config)
+$ aish coach [on|fix|off]  ← language coach (`--save` keeps it in the config), see below
+$ aish tools [name on|off] ← the agent's tools run/files/web (`--save` keeps it)
+$ aish off / aish on       ← turn model suggestions off/on
+$ aish config              ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)
 ```
 
 A model reference is an `alias` (if it is unique) or `provider/alias`. Switching
@@ -425,7 +424,7 @@ a model edits only the role's value in the config (a targeted text patch:
 comments, keys and order are not touched; the write is atomic, file permissions
 are kept). If the file's shape is unusual, the model changes for the session
 only, and a dim line says so. A role can be a list (`chat: {id: [mellum, ds]}`):
-`ai model chat ds` puts the model **first**, the rest stay as fallbacks.
+`aish model chat ds` puts the model **first**, the rest stay as fallbacks.
 
 **Fallback models.** If a model fails to connect / times out / answers 5xx / 404
 before the first token, the next one in the list is used, with one dim line
@@ -435,18 +434,18 @@ working one (the same for `complete` suggestions, but silently). Secret masking
 follows the model that answered.
 
 **Profiles.** `profiles:` are named sets of roles, `profile:` is the active one
-(none — the `roles:` section). With an active profile `ai model` edits the
+(none — the `roles:` section). With an active profile `aish model` edits the
 profile's entry.
 
-**Any line with `ai`.** A line starting with `ai` (or the name from `command:`)
+**Any line with `aish`.** A line starting with `aish` (or the alias from `command:`)
 is ours and never goes to bash or to the model. If the first word is exactly a
 subcommand (`help`, `models`, `model`, `chat`, `complete`, `profile`, `status`,
 `on`, `off`, `config`, `init`, `run`, `tools`), it runs. Anything else (a typo, text in another
 language, any words) prints, dimmed: `unknown chst · did you mean chat?` (only if
 a subcommand is close: edit distance ≤ 2 or a unique prefix), the line
-`ask the model: ? <question>` and the ordinary `ai help`. A bare `ai` = `ai help`.
+`ask the model: ? <question>` and the ordinary `aish help`. A bare `aish` = `aish help`.
 For typos in arguments: the same for an unknown model (`no model: x · did you
-mean ds?`, otherwise `· have: a, b, …`), role and profile. `ai` and `aish` are not
+mean ds?`, otherwise `· have: a, b, …`), role and profile. `aish` and its alias are not
 highlighted red as unknown commands; with a typo in a subcommand a `→ chat`
 suggestion appears on the right.
 
@@ -474,7 +473,7 @@ speaks. `update_check: off` in the config turns the check off.
 
 `./install.sh` (or `curl -fsSL https://aadegtyarev.github.io/aish/install.sh | bash`:
 apt or tarball) builds and puts `aish` into `~/.local/bin`, then runs `aish init`
-(in a session the same: `ai init`). No more than three questions, one line each,
+(in a session the same: `aish init`). No more than three questions, one line each,
 Enter takes the default (it is dim):
 
 ```
@@ -500,7 +499,7 @@ No config → aish probes `localhost:11434` (ollama), `localhost:1234`
 (LM Studio), `$OPENAI_API_KEY` itself, writes a config and says so in one line:
 
 ```
-aish · chat: cloud/gpt-6 · complete: local/qwen2.5-coder:1.5b · ai config — change
+aish · chat: cloud/gpt-6 · complete: local/qwen2.5-coder:1.5b · aish config — change
 ```
 
 This is the only time aish speaks unasked. The line is cut to the width of the

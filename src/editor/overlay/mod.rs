@@ -210,12 +210,9 @@ impl Overlay {
         let _ = self.s.stdout.flush();
         self.last_q = q.clone();
         let Some(target) = self.s.llm.target("chat") else {
-            let msg = format!(
-                "no model configured · {} config",
-                self.s.llm.command_label()
-            );
+            let msg = "no model configured · aish config";
             let mut o = Vec::new();
-            Renderer::new(&self.s.theme, cols()).note(&msg, &mut o);
+            Renderer::new(&self.s.theme, cols()).note(msg, &mut o);
             self.w(&o);
             self.answered(None);
             return;

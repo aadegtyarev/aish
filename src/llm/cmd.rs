@@ -204,7 +204,7 @@ const HELP: &[(&str, &str)] = &[
 ];
 
 pub fn help_lines(w: usize, prefix: char) -> Vec<Ln> {
-    let mut v = vec![Ln::dim("ai or aish + command:")];
+    let mut v = vec![Ln::dim("aish + command:")];
     for (h, d) in HELP {
         v.extend(help_rows(h, d, w));
     }
@@ -224,10 +224,7 @@ pub fn form_lines(w: usize, prefix: char) -> Vec<Ln> {
 /// Models by provider: alias, id (dim, cut with `…`), roles using it.
 pub fn models_lines(llm: &Llm, w: usize) -> Vec<Ln> {
     let Some(cfg) = llm.config() else {
-        return vec![Ln::dim(format!(
-            "no model configured · {} config",
-            llm.command_label()
-        ))];
+        return vec![Ln::dim("no model configured · aish config")];
     };
     let roles: Vec<(&str, Vec<String>)> = ["chat", "complete"]
         .into_iter()
@@ -364,7 +361,7 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
         let mode = llm.run_mode();
         let mut v = vec![Ln::dim(format!("run: {}", mode.name()))];
         if !llm.tool_on("run") {
-            v.push(Ln::dim("tool run is off: ai tools run on"));
+            v.push(Ln::dim("tool run is off: aish tools run on"));
         } else {
             if mode == RunMode::Judge {
                 let by = llm
@@ -435,7 +432,7 @@ fn tools_lines(llm: &Llm, arg: Option<&(String, Option<String>)>, save: bool) ->
                 Ln::dim(format!("{n:<6}{}", if on { "on" } else { "off" }))
             })
             .collect();
-        v.push(Ln::dim("ai tools <name> on|off · --save"));
+        v.push(Ln::dim("aish tools <name> on|off · --save"));
         return v;
     };
     if !crate::config::SWITCHABLE_TOOLS.contains(&name.as_str()) {
@@ -504,10 +501,7 @@ fn set_model(llm: &Llm, role: &str, r: &str) -> Vec<Ln> {
         return vec![Ln::dim(format!("no role: {role} {hint}"))];
     }
     let Some(cfg) = llm.config() else {
-        return vec![Ln::dim(format!(
-            "no model configured · {} config",
-            llm.command_label()
-        ))];
+        return vec![Ln::dim("no model configured · aish config")];
     };
     let Ok(new) = cfg.resolve_ref(r, &Setting::Unset) else {
         return vec![Ln::dim(bad_ref(&cfg, r))];

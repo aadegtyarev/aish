@@ -5,7 +5,7 @@
 1. **Session search for the model.** `find(query|regex, scope)` over block
    commands/outputs and stored tool results (numbered, size-capped) returning
    short hits `#12 L340: …`; `read_block(id, lines a..b)` for slices of huge
-   output; `ai find <text>` for the user.
+   output; `aish find <text>` for the user.
 2. **Memory file.** `~/.config/aish/memory.md`, limit in config
    (`memory: {limit: 2000 chars}` or tokens); tools `memory_read` and
    `memory_write` (replace whole); over the limit the write is refused with
@@ -25,7 +25,7 @@ On `ssh host`, offer to put aish there (`Enter` this session · `i` install ·
 `n` no · `N` never). One ControlMaster connection for auth, the binary from the
 GitHub release (checked against SHA256SUMS), model requests tunnelled back to
 the laptop's configured models over a forwarded unix socket (keys never leave
-the laptop; only configured models, no general proxy). `ai get`/`ai put` for
+the laptop; only configured models, no general proxy). `aish get`/`aish put` for
 files and "open this URL on the laptop" over the same channel.
 
 ## Skills: small, composable, cheap in context
@@ -53,14 +53,14 @@ Body: imperative steps and facts. No prose, no examples unless essential.
 **Discovery and trust.** `~/.config/aish/skills/*.md` (personal) and
 `.aish/skills/*.md` in the current repo. A file that passes the format check
 (header, limits) is trusted: a skill is only text within hard limits and
-grants nothing, so users can write and share their own freely. `ai skills`
-lists them with sizes; `ai skills new <name>` opens a stub.
+grants nothing, so users can write and share their own freely. `aish skills`
+lists them with sizes; `aish skills new <name>` opens a stub.
 
-**Import.** `ai skills import <github url>` (a file, a directory or a whole
+**Import.** `aish skills import <github url>` (a file, a directory or a whole
 repo of skills): fetch over HTTPS, validate every file against the format,
 show the list (`name — when · size`) and install on Enter into
-`~/.config/aish/skills/<source>/`. `ai skills update` re-fetches imported
-sources; `ai skills rm <name|source>` removes them.
+`~/.config/aish/skills/<source>/`. `aish skills update` re-fetches imported
+sources; `aish skills rm <name|source>` removes them.
 
 **Loading into context.** Never all bodies at once.
 
@@ -78,7 +78,7 @@ sources; `ai skills rm <name|source>` removes them.
    most one auto-attached body.
 
 **First skill: how to write skills.** Ships built-in and is used by
-`ai skills new`. It covers the format, the limits, one fact per line,
+`aish skills new`. It covers the format, the limits, one fact per line,
 imperative mood, triggers that are words users actually type, and splitting
 instead of growing. The model can draft a skill from the current conversation
 ("save this as a skill"); the user reviews it before it is written.

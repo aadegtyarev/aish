@@ -9,6 +9,10 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Changed
+- Help, hints, the model's prompt and the docs use the full `aish …` form. The short `ai`
+  stays a configurable alias (`command: ai`, `command: off` turns it off).
+
 ## [0.4.4] - 2026-11-28
 
 ### Added

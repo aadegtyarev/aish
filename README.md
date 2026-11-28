@@ -35,7 +35,7 @@ From source:
 ./install.sh --no-init    # skip the setup;  --bin PATH takes a prebuilt binary
 ```
 
-`aish init` (also `ai init` in a session) asks up to three questions: where to start aish (every
+`aish init` (also in a session) asks up to three questions: where to start aish (every
 interactive bash via a guarded block in `~/.bashrc`; also as tmux default shell; or only manually),
 which models to use (autodetect: llama.cpp, ollama, LM Studio, `$OPENAI_API_KEY`, `$DEEPSEEK_API_KEY`;
 keys are written as `$VAR` references, an existing config is kept unless you regenerate it), and
@@ -134,7 +134,7 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
   Ctrl-C clears). `?n` starts a fresh conversation, `?c` compacts it into a summary (also automatic near the context window, see `compact:`), `?h` is the short help. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
-- Language coach (`coach: fix|on`, off by default; `ai coach on|fix|off [--save]`): when your question
+- Language coach (`coach: fix|on`, off by default; `aish coach on|fix|off [--save]`): when your question
   is in the reply language (`language:`) and has mistakes, a dim
   `✎ Better: <corrected question>` line comes with the answer; `on` also completes the sentence as ghost text while you type
   a question. See docs/UX.md.
@@ -149,13 +149,13 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   The model can also `insert` a command into your input line (after you press Enter on it; nothing is
   run) and `ask` you a question: answer in the input line, a number picks a listed choice, Esc skips.
   With tools on, a final ```bash block is no longer prefilled (without tools it still is).
-- `ai` (inside a session; always wins over any program of that name — rename or disable it with
-  `command: mm` / `command: off` in the config) and its always-available long form `aish` show the roles and whether they answer;
-  `ai help` lists the commands, `ai models` the models by provider, `ai model [chat|complete] <alias|provider/alias>`
-  (also `ai chat <..>`, `ai complete <..>`) sets a role's model and saves it to the config (a role may list
-  fallbacks: `chat: {id: [mellum, ds]}`), `ai profile [name]` lists/switches `profiles:`, `ai on|off` toggles model
-  suggestions, `ai config` puts `${EDITOR:-vi} ~/.config/aish/config.yaml` in the line. `aish status` and
+- `aish` (inside a session) shows the roles and whether they answer;
+  `aish help` lists the commands, `aish models` the models by provider, `aish model [chat|complete] <alias|provider/alias>`
+  (also `aish chat <..>`, `aish complete <..>`) sets a role's model and saves it to the config (a role may list
+  fallbacks: `chat: {id: [mellum, ds]}`), `aish profile [name]` lists/switches `profiles:`, `aish on|off` toggles model
+  suggestions, `aish config` puts `${EDITOR:-vi} ~/.config/aish/config.yaml` in the line. `aish status` and
   `aish config` also work as CLI commands; any other arguments go to bash. Tab completes them.
+  The short alias `ai` wins over any program of that name; rename or drop it with `command: mm` / `command: off`.
 - First start without a config probes ollama (`:11434`), LM Studio (`:1234`), llama.cpp `llama-server` (`:8080`) and `$OPENAI_API_KEY`
   (override URLs for tests with `AISH_PROBE_OLLAMA`, `AISH_PROBE_LMSTUDIO`, `AISH_PROBE_LLAMACPP`, `AISH_OPENAI_URL`),
   writes a config and prints one line. The config is re-read when its mtime changes.

@@ -178,7 +178,7 @@ impl Module for ModelModule {
             return true;
         }
         let Some(target) = llm.target("chat") else {
-            let n = format!("│ no model configured · {} config", llm.command_label());
+            let n = "│ no model configured · aish config";
             out.extend_from_slice(n.as_bytes());
             return true;
         };

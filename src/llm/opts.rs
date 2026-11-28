@@ -1,5 +1,5 @@
 //! Session settings of the agent's `run` mode and per-tool switches: the
-//! config gives the default, `ai run` / `ai tools` override it for the session.
+//! config gives the default, `aish run` / `aish tools` override it for the session.
 
 use std::collections::HashMap;
 
@@ -26,7 +26,7 @@ impl Llm {
         }
     }
 
-    /// The language coach (`ai coach`, `coach:`).
+    /// The language coach (`aish coach`, `coach:`).
     pub fn coach(&self) -> Coach {
         let over = self.opts.lock().ok().and_then(|o| o.coach);
         over.unwrap_or_else(|| self.config().map_or(Coach::Off, |c| c.coach_mode()))

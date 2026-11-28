@@ -23,7 +23,7 @@ providers:
         #                       # with type: responses; chat providers: set it only if the model does)
 
 # Roles take provider/alias, or just the alias when only one provider has it
-# (same for `ai chat <alias>`). Keep aliases short: they are what you type.
+# (same for `aish chat <alias>`). Keep aliases short: they are what you type.
 roles:
   complete:
     id: local/coder
@@ -34,19 +34,19 @@ roles:
 # A role may list several models, tried in order: if the first refuses the
 # connection, times out, answers 5xx or 404 before any output, the next one answers
 # (a dim `↪ ds · mellum unavailable` line; the failed one is skipped for 60 s).
-# `ai model chat ds` saves the choice here and moves it to the front of the list.
+# `aish model chat ds` saves the choice here and moves it to the front of the list.
 # roles:
 #   chat: {id: [local/big, cloud/main]}
 
 # Profiles: named sets of roles; `profile:` picks the active one (absent: `roles:`
-# above). `ai profile` lists them, `ai profile inet` switches and saves.
+# above). `aish profile` lists them, `aish profile inet` switches and saves.
 # profiles:
 #   local: {chat: [big], complete: coder}
 #   inet:  {chat: [main, big], complete: coder}
 # profile: local
 
-# Name of the in-session control command (status, chat, complete, on/off, config).
-# It always wins over any program of that name; `off` disables it (`aish ...` still works).
+# Short alias for `aish` in a session (`ai help` = `aish help`). It wins over
+# any program of that name. Default: ai; `off` = no alias.
 # command: ai
 
 # Keys. `ask` asks the model from anywhere, also while a command runs (an overlay
@@ -73,7 +73,7 @@ roles:
 #           Over 12 rows or 1000 characters is refused in every mode.
 #   off   — never: the command is put into your input line for Enter.
 # Read-only commands keep running by themselves in every mode.
-# In a session: `ai run ask|judge|off` (add --save to write it here).
+# In a session: `aish run ask|judge|off` (add --save to write it here).
 # run: ask
 # The long form (the scalar `run: judge` keeps working):
 # run:
@@ -85,7 +85,7 @@ roles:
 # Switch the agent's tools on/off. An off tool is not sent to the model at all.
 # `run: off` here removes the run tool entirely (not even read-only commands);
 # the `run:` setting above only decides what happens to other commands.
-# In a session: `ai tools web off` (add --save to write it here).
+# In a session: `aish tools web off` (add --save to write it here).
 # tools:
 #   run: on
 #   files: on     # read_file
@@ -116,7 +116,7 @@ roles:
 # Language coach: you practise the reply language (`language:`). `fix` — when your
 # question is written in it and has mistakes, a dim line
 # `✎ Better: <corrected question>` comes with the answer; `on` — also ghost-text completion of the question
-# while you type it (from the `complete` model). Default off; `ai coach on|fix|off`.
+# while you type it (from the `complete` model). Default off; `aish coach on|fix|off`.
 # coach: fix
 
 # Conversation memory. When it grows past `at` of the chat model's context window

@@ -20,7 +20,7 @@ answer the question asked, not the last error. \
 Commands must run as is, no <placeholders>; ask if a value is unknown. \
 Never claim or undo a change no command made; say so if nothing changed. \
 About aish itself read /usr/share/doc/aish/ or github.com/aadegtyarev/aish instead of guessing; \
-`ai help` lists its commands.";
+`aish help` lists its commands.";
 
 /// A question: how many blocks of context, and the text.
 pub struct Parsed {

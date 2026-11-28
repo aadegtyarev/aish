@@ -254,10 +254,6 @@ impl Llm {
     }
 
     /// What to call the command in messages.
-    pub fn command_label(&self) -> String {
-        self.command().unwrap_or_else(|| "aish".to_owned())
-    }
-
     pub fn set_override(&self, role: &str, id: &str) {
         if let Ok(mut o) = self.over.lock() {
             o.insert(role.to_owned(), id.to_owned());

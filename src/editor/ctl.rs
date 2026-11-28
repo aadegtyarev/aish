@@ -433,7 +433,6 @@ impl Controller {
             }
         }
         if let Some(n) = notice {
-            let n = n.replace("{cmd}", &self.llm.command_label());
             let n = crate::llm::render::fit_line(&n, width() as usize);
             text.push_str(&format!("{a}{n}{b}\r\n"));
         }
