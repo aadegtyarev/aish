@@ -15,6 +15,7 @@ use serde_json::Value;
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
 use super::cmd::edit_distance;
+use super::coach::{Fix, WAIT};
 use super::context::{self, trim_middle};
 use super::render::{fit_line, one_line, run_rows, unsafe_cmd, Renderer};
 use super::web::{self, Web};
@@ -205,16 +206,10 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
     let run = llm.tool_on("run").then(|| llm.run_mode());
     let files = llm.tool_on("files");
     let mut system = String::from(SYSTEM);
-    let lang = reply_language(llm.config().as_deref());
     system.push_str(&format!(
-        " Always reply in {lang}, whatever the question's language."
+        " Always reply in {}, whatever the question's language.",
+        reply_language(llm.config().as_deref())
     ));
-    if llm.coach() != crate::config::Coach::Off {
-        system.push_str(&format!(
-            " The user practises {lang}: if their question is written in {lang} and has mistakes, \
-begin the reply with one line `✎ Better: <the corrected question>`; otherwise no such line."
-        ));
-    }
     if overlay {
         system.push_str(OVERLAY_GUIDE);
     } else if o.tools {
@@ -868,6 +863,8 @@ struct Drive<'a> {
     t: Target,
     offer: Offer,
     turn: Turn,
+    /// The coach's correction of the question, shown once.
+    fix: Fix,
 }
 
 /// What one request streamed.
@@ -915,6 +912,14 @@ pub fn drive(
         tried: vec![t.label.clone()],
         t: t.clone(),
         offer,
+        fix: Fix::start(
+            llm,
+            if turn.overlay || turn.msgs.len() > 1 {
+                ""
+            } else {
+                &turn.q
+            },
+        ),
         turn,
     }
     .run()
@@ -949,6 +954,7 @@ impl Drive<'_> {
                     s.r.note("empty answer", &mut out);
                 }
                 task.write(&out);
+                self.fix.show(task, WAIT);
                 self.turn.msgs.push(Message::assistant(s.full));
                 let window = self.llm.window_known(&self.t) as usize;
                 remember_turn(self.llm, &self.turn, window);
@@ -967,6 +973,7 @@ impl Drive<'_> {
                 Calls::Done => {}
                 Calls::Stop => return None,
                 Calls::Paused(call_id, line, bg, stage) => {
+                    self.fix.show(task, WAIT);
                     let prefill = stage == Stage::Prefilled;
                     if let Ok(mut p) = self.llm.pending.lock() {
                         *p = Some(Pending {
@@ -987,8 +994,8 @@ impl Drive<'_> {
     }
 
     /// Send one request and render what streams back.
-    fn stream_once(&self) -> (Result<(Usage, Vec<ToolCall>), Error>, Streamed) {
-        let (task, t) = (self.task, &self.t);
+    fn stream_once(&mut self) -> (Result<(Usage, Vec<ToolCall>), Error>, Streamed) {
+        let (task, t, fix) = (self.task, &self.t, &mut self.fix);
         let (system, tools) = request_parts(self.llm, self.turn.overlay, &self.offer);
         let mut all = self.turn.history.clone();
         all.extend(self.turn.msgs.iter().cloned());
@@ -1017,6 +1024,7 @@ impl Drive<'_> {
                     let mut out = Vec::new();
                     s.r.push(&d, &mut out);
                     if !out.is_empty() {
+                        fix.show(task, Duration::ZERO);
                         task.write(&out);
                     }
                 }
@@ -1137,7 +1145,11 @@ impl Drive<'_> {
                 note_only(task, &format!("step limit ({MAX_STEPS})"));
                 return Calls::Stop;
             }
-            match exec_tool(&env, c, task.cols as usize) {
+            let out = exec_tool(&env, c, task.cols as usize);
+            if !matches!(out, ToolOut::Done { .. } | ToolOut::Handoff { .. }) {
+                self.fix.show(task, WAIT); // before the user is asked
+            }
+            match out {
                 ToolOut::Done { result, shown } => {
                     if task.cancelled() {
                         note_only(task, "⏹");
@@ -1782,24 +1794,6 @@ mod tests {
         llm.set_tool("run", false);
         let (sys, tools) = request_parts(&llm, false, &on);
         assert!(sys.contains("over with insert") && tools.iter().all(|t| t.name != "run"));
-    }
-
-    #[test]
-    fn coach_sentence_only_when_fix_or_on() {
-        use crate::config::Coach;
-        let llm = Llm::new();
-        let on = Offer {
-            tools: false,
-            native: false,
-            search: false,
-            read: false,
-        };
-        for (m, want) in [(Coach::Off, false), (Coach::Fix, true), (Coach::On, true)] {
-            llm.set_coach(m);
-            let sys = request_parts(&llm, false, &on).0;
-            assert_eq!(sys.contains("✎ Better:"), want, "{m:?}");
-            assert_eq!(sys.contains("practises English"), want);
-        }
     }
 
     #[test]

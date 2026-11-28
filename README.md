@@ -135,8 +135,8 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   Ctrl-C clears). `?n` starts a fresh conversation, `?c` compacts it into a summary (also automatic near the context window, see `compact:`), `?h` is the short help. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
 - Language coach (`coach: fix|on`, off by default; `ai coach on|fix|off [--save]`): when your question
-  is in the reply language (`language:`) and has mistakes, the answer starts with a dim
-  `✎ Better: <corrected question>` line; `on` also completes the sentence as ghost text while you type
+  is in the reply language (`language:`) and has mistakes, a dim
+  `✎ Better: <corrected question>` line comes with the answer; `on` also completes the sentence as ghost text while you type
   a question. See docs/UX.md.
 - Background jobs: when one finishes while you are at the prompt, a single line appears above it
   (` ✓ [1] cargo build · 2m13s` / ` ✗ [2] npm test · 41s · exit 1`) in place of bash's `[1]+ Done`; the hint at

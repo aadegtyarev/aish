@@ -292,21 +292,25 @@ impl Renderer {
             return;
         }
         let rows = self.prose_rows(line);
-        let coach = t.starts_with("✎ "); // the language coach's correction: dim
         let mut buf = Vec::new();
         self.emit_blank(&mut buf);
         for r in rows {
             buf.extend_from_slice(b"\r\n");
             self.bar(&mut buf);
-            if coach {
-                self.sgr(&mut buf, &self.dim.clone());
-            }
             buf.extend_from_slice(&r);
-            if coach {
-                self.reset(&mut buf);
-            }
         }
         self.route(buf, out);
+    }
+
+    /// The language coach's correction: dim rows, wrapped like prose.
+    pub fn better(&self, text: &str, out: &mut Vec<u8>) {
+        for r in self.prose_rows(&format!("✎ Better: {}", text.replace(['`', '*'], ""))) {
+            out.extend_from_slice(b"\r\n");
+            self.bar(out);
+            self.sgr(out, &self.dim.clone());
+            out.extend_from_slice(&r);
+            self.reset(out);
+        }
     }
 
     fn emit_blank(&mut self, buf: &mut Vec<u8>) {
@@ -665,14 +669,11 @@ mod tests {
 
     #[test]
     fn coach_line_is_dim_and_wrapped() {
-        let (o, c) = run(
-            &["✎ Better: how do I list files\n```bash\nls\n```\n"],
-            true,
-            20,
-        );
+        let mut out = Vec::new();
+        Renderer::new(&Theme::default(), 22).better("how do I `list` files", &mut out);
+        let o = String::from_utf8(out).unwrap();
         assert!(o.contains("\x1b[2m✎ Better: how do I\x1b[0m"), "{o:?}");
         assert!(o.contains("\x1b[2mlist files\x1b[0m"), "{o:?}");
-        assert_eq!(c.as_deref(), Some("ls"));
     }
 
     #[test]

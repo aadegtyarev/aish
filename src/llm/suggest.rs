@@ -30,12 +30,13 @@ const SYSTEM: &str = "You complete a bash command line. Reply with ONLY the text
 the line exactly from its end: no explanation, no markdown, no quotes, do not repeat the line. \
 One line. Reply with nothing if unsure.";
 
-/// The system prompt for a question line: complete the sentence, not a command.
+/// The system prompt for a question line: the whole sentence back, so that the
+/// typed text can be cut off (continuations lose spaces and cut words).
 fn sentence_system(lang: &str) -> String {
     format!(
-        "You complete the user's {lang} sentence (a question to a shell assistant). Reply with \
-ONLY the text that continues it from its end: no explanation, no quotes, do not repeat it. \
-One line. Reply with nothing if unsure."
+        "Complete the user's unfinished {lang} sentence (a question to a shell assistant). Reply \
+with ONLY the whole sentence, starting exactly with the given text, finishing the last word if it \
+is cut. One line. Reply with nothing if unsure."
     )
 }
 
@@ -351,30 +352,25 @@ fn ask(
         Err(_) => (String::new(), Vec::new()),
     };
     let names = ls.names(&cwd);
+    // a question line: the sentence after `? `, alone
+    let typed = match sentence {
+        Some(_) => job.line.split_once(' ').map_or("", |x| x.1),
+        None => &job.line,
+    };
     let mut ctx = match sentence {
-        Some(_) => "Sentence so far (continue it from its very end):\n".to_owned(),
+        Some(_) => String::new(),
         None => format!(
             "cwd: {cwd}\nrecent commands:\n{}\nfiles: {}\nLine so far (continue it from its very end):\n",
             recent.join("\n"),
             names.join(" ")
         ),
     };
+    ctx.push_str(typed);
     if !t.local {
         ctx = mask(&ctx);
     }
-    // a question line: the sentence after `? `
-    let typed = match sentence {
-        Some(_) => job.line.split_once(' ').map_or("", |x| x.1),
-        None => &job.line,
-    };
-    let line = if t.local {
-        typed.to_owned()
-    } else {
-        mask(typed)
-    };
-    ctx.push_str(&line);
     let req = Request {
-        max_tokens: 48,
+        max_tokens: if sentence.is_some() { 96 } else { 48 },
         temperature: Some(0.0),
         stop: vec!["\n".into()],
         first_token_timeout: aish_llm::FIRST_TOKEN_COMPLETE,
@@ -396,7 +392,12 @@ fn ask(
         Err(e) => return Err(e),
         Ok(_) => {}
     }
-    Ok(clean(&job.line, &reply).map(|c| format!("{}{c}", job.line)))
+    let cut = match sentence {
+        // the reply must start with the typed sentence; the rest is the ghost text
+        Some(_) => reply.strip_prefix(typed).and_then(|r| clean("", r)),
+        None => clean(&job.line, &reply),
+    };
+    Ok(cut.map(|c| format!("{}{c}", job.line)))
 }
 
 #[cfg(test)]
@@ -419,11 +420,7 @@ mod tests {
         assert_eq!(clean("ls", "ls"), None);
         assert_eq!(clean("ls ", "-la").as_deref(), Some("-la"));
         assert_eq!(clean("sudo apt install <x>", "sudo apt install htop"), None);
-        // sentences: the guard looks at the whole editor line, which starts with `?`
-        assert_eq!(
-            clean("? how do", " I list files").as_deref(),
-            Some(" I list files")
-        );
+        assert_eq!(clean("", "est?").as_deref(), Some("est?"));
     }
 
     #[test]

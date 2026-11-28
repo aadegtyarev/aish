@@ -2626,19 +2626,34 @@ fn with_tools_a_bash_block_is_not_prefilled() {
     p.expect(Eof).unwrap();
 }
 
-/// Chat answers start with a coach correction; the complete model continues sentences.
+/// The `complete` model answers the coach prompts (detected by the system prompt);
+/// the chat model answers 300 ms later, a "slow" correction comes after it.
 fn coach_mock() -> Mock {
     Mock::start(|r, c| {
+        let b = &r.body;
         if r.path.ends_with("/models") {
             mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
-        } else if r.body.contains("Sentence so far") {
-            mock::chat_stream(c, &[" I list files"], Duration::ZERO);
+        } else if b.contains("Correct the spelling") {
+            let fixed = match () {
+                _ if b.contains("slow") => "a slow fixed question?",
+                _ if b.contains("chmod") => "What does `chmod 755` do?",
+                _ if b.contains("sure") => "OK",
+                _ => "how do I list files?",
+            };
+            if b.contains("slow") {
+                std::thread::sleep(Duration::from_millis(800));
+            }
+            mock::chat_stream(c, &[fixed], Duration::ZERO);
+        } else if b.contains("unfinished") {
+            let whole = if b.contains("\"how bad") {
+                "something else"
+            } else {
+                "how do I list files"
+            };
+            mock::chat_stream(c, &[whole], Duration::ZERO);
         } else {
-            mock::chat_stream(
-                c,
-                &["✎ Better: how do I list files?\nSure thing.\n"],
-                Duration::ZERO,
-            );
+            std::thread::sleep(Duration::from_millis(300));
+            mock::chat_stream(c, &["Sure thing.\n"], Duration::ZERO);
         }
     })
 }
@@ -2646,12 +2661,12 @@ fn coach_mock() -> Mock {
 fn sentence_requests(m: &Mock) -> usize {
     m.requests()
         .iter()
-        .filter(|r| r.body.contains("Sentence so far"))
+        .filter(|r| r.body.contains("unfinished"))
         .count()
 }
 
 #[test]
-fn coach_on_corrects_and_completes_questions() {
+fn coach_on_completes_and_corrects_questions() {
     let home = TempDir::new().unwrap();
     let m = coach_mock();
     write_config(
@@ -2662,17 +2677,62 @@ fn coach_on_corrects_and_completes_questions() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? how do").unwrap();
-    p.expect(" I list files").unwrap(); // ghost from the complete model
+    p.expect(" I list files").unwrap(); // ghost: the whole reply minus the typed text
     p.send("\r").unwrap();
-    p.expect("✎ Better: how do I list files?").unwrap();
+    p.expect("✎ Better: how do I list files?").unwrap(); // ready first: before the answer
     p.expect("Sure thing.").unwrap();
-    let q = m
+    p.expect("E> ").unwrap();
+    // a reply that does not start with the typed text: no ghost
+    settle();
+    p.send("? how bad").unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    assert_eq!(
+        sentence_requests(&m),
+        2,
+        "{:?}",
+        m.requests()
+            .iter()
+            .map(|r| r.body.clone())
+            .collect::<Vec<_>>()
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn coach_correction_comes_after_a_slow_answer_and_is_not_shown_when_pointless() {
+    let home = TempDir::new().unwrap();
+    let m = coach_mock();
+    write_config(
+        home.path(),
+        &format!("{}coach: fix\n", mock_config(&m.url())),
+    );
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("? a slow one").unwrap();
+    p.expect("Sure thing.").unwrap();
+    p.expect("✎ Better: a slow fixed question?").unwrap();
+    p.expect("E> ").unwrap();
+    for q in ["? sure ok", "? what does chmod 755 do", "? как дела"] {
+        settle();
+        p.send_line(q).unwrap();
+        let f = p.expect("E> ").unwrap();
+        assert!(!String::from_utf8_lossy(f.before()).contains("Better"));
+    }
+    let asked: Vec<_> = m
         .requests()
         .into_iter()
-        .find(|r| r.body.contains("Sure") || r.body.contains("practises"))
-        .unwrap();
-    assert!(q.body.contains("The user practises English"), "{}", q.body);
-    p.expect("E> ").unwrap();
+        .filter(|r| r.body.contains("Correct the spelling"))
+        .collect();
+    assert_eq!(asked.len(), 3, "Cyrillic is not sent: English coach");
+    assert!(
+        asked[0].body.contains("\"temperature\":0.2"),
+        "{}",
+        asked[0].body
+    );
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }

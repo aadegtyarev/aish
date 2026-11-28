@@ -1047,11 +1047,14 @@ fn coach_line_and_sentence_ghost() {
     let m = Mock::start(|r, c| {
         if r.path.ends_with("/models") {
             mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
-        } else if r.body.contains("Sentence so far") {
-            mock::chat_stream(c, &[" I list files"], Duration::ZERO);
-        } else {
-            let fix = "✎ Better: how do I list all the files in this folder?\nSure thing.\n";
+        } else if r.body.contains("unfinished") {
+            mock::chat_stream(c, &["how do I list files"], Duration::ZERO);
+        } else if r.body.contains("Correct the spelling") {
+            let fix = "how do I list all the files in this folder?";
             mock::chat_stream(c, &[fix], Duration::ZERO);
+        } else {
+            std::thread::sleep(Duration::from_millis(300)); // the correction is ready first
+            mock::chat_stream(c, &["Sure thing.\n"], Duration::ZERO);
         }
     });
     for (cols, ps1) in question_cases() {

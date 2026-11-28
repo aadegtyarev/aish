@@ -114,8 +114,8 @@ roles:
 # language: Russian
 
 # Language coach: you practise the reply language (`language:`). `fix` — when your
-# question is written in it and has mistakes, the answer starts with a dim line
-# `✎ Better: <corrected question>`; `on` — also ghost-text completion of the question
+# question is written in it and has mistakes, a dim line
+# `✎ Better: <corrected question>` comes with the answer; `on` — also ghost-text completion of the question
 # while you type it (from the `complete` model). Default off; `ai coach on|fix|off`.
 # coach: fix
 

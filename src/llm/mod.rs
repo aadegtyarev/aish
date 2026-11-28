@@ -7,6 +7,7 @@ pub mod allow;
 pub mod ask;
 pub mod cmd;
 pub mod cmdsuggest;
+pub mod coach;
 pub mod compact;
 pub mod context;
 pub mod firstrun;

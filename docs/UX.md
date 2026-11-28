@@ -348,10 +348,14 @@ language and has mistakes, the answer starts with one dim line before it:
 ```
 
 Nothing is shown for a correct question or one in another language; the task is still done as
-asked. The model is told this in one sentence of the system prompt; the renderer draws any answer
-line that starts with `✎ ` dim, wrapped like other prose. With `on`, a question line (`? how do`)
-also gets ghost text, a continuation of the sentence from the same `complete` model, with the same
-pause, cache and keys as command suggestions.
+asked. The correction is a separate small request to the `complete` model, sent when the turn
+starts (a question with non-ASCII letters is not sent while the language is English). The dim row
+comes first if it is ready before the answer starts; otherwise right after the answer (at its end,
+or before an approval, insert or question prompt), waiting at most 2 s; never in the middle of the
+text. A failed or slow model means no line. With `on`, a question line (`? how do`) also gets ghost
+text: the model returns the whole sentence, and what follows the typed text is shown (a space, or
+the end of a cut word); a reply that does not start with the typed text is dropped. Same pause,
+cache and keys as command suggestions.
 
 ## Feedback about commands
 
