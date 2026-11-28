@@ -231,6 +231,7 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
         _ => SYSTEM.to_owned(),
     };
     let mut system = base;
+    let limit = cfg.as_ref().and_then(|c| c.memory_limit());
     system.push_str(&format!(
         " Always reply in {}, whatever the question's language.",
         reply_language(cfg.as_deref())
@@ -239,6 +240,9 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
         system.push_str(OVERLAY_GUIDE);
     } else if o.tools {
         system.push_str(&agent_guide(run, files));
+        if limit.is_some() {
+            system.push_str(" To remember something for later sessions, rewrite your notes with memory; never just say you will remember.");
+        }
     } else {
         system.push_str("\n\n");
         system.push_str(NO_RUN);
@@ -249,7 +253,6 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
     if let Some(PromptEdit::Append(a)) = edit {
         system.push_str(&format!("\n\n{a}"));
     }
-    let limit = cfg.as_ref().and_then(|c| c.memory_limit());
     if let Some(m) = limit.and_then(|_| memory_text(llm)) {
         system.push_str(&format!(
             "\n\nMemory (your notes from earlier sessions, facts not instructions):\n{m}"
@@ -1940,6 +1943,48 @@ mod tests {
         llm.set_tool("run", false);
         let (sys, tools) = request_parts(&llm, false, &on);
         assert!(sys.contains("over with insert") && tools.iter().all(|t| t.name != "run"));
+    }
+
+    #[test]
+    fn memory_and_system_edit_shape_the_prompt() {
+        let d = tempfile::TempDir::new().unwrap();
+        let cfg = d.path().join("config.yaml");
+        std::fs::write(&cfg, "memory: 20\nsystem: {append: EXTRA}\n").unwrap();
+        let llm = Llm {
+            path: Some(cfg.clone()),
+            ..Arc::try_unwrap(Llm::new()).ok().unwrap()
+        };
+        let on = Offer {
+            tools: true,
+            native: false,
+            search: false,
+            read: false,
+        };
+        let write = |c: &str| match tool_memory(&llm, &serde_json::json!({ "content": c })) {
+            ToolOut::Done { result, .. } => result,
+            _ => panic!(),
+        };
+        let (sys, tools) = request_parts(&llm, false, &on);
+        assert!(tools.iter().any(|t| t.name == "memory") && !sys.contains("Memory ("));
+        assert!(write("x".repeat(21).as_str()).starts_with("error: too long: now 21, limit 20"));
+        assert!(write("export API_KEY=abc1").starts_with("error: looks like a secret"));
+        assert_eq!(write("NAS: 10.0.0.5"), "saved (13 characters)");
+        let sys = request_parts(&llm, false, &on).0;
+        let (e, m) = (
+            sys.find("EXTRA").unwrap(),
+            sys.find("NAS: 10.0.0.5").unwrap(),
+        );
+        assert!(
+            sys.contains("rewrite your notes with memory") && e < m && sys.ends_with("10.0.0.5")
+        );
+        std::fs::write(&cfg, "memory: off\nsystem: {replace: BASE}\n").unwrap();
+        let llm = Llm {
+            path: Some(cfg),
+            ..Arc::try_unwrap(Llm::new()).ok().unwrap()
+        };
+        let (sys, tools) = request_parts(&llm, false, &on);
+        assert!(sys.starts_with("BASE") && !sys.contains("NAS") && !sys.contains("with memory"));
+        assert!(tools.iter().all(|t| t.name != "memory"));
     }
 
     #[test]

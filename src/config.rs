@@ -879,6 +879,10 @@ roles:
         );
         assert!(Config::parse("run: {mode: judge, judge: nope/x}").is_err());
         assert!(Config::parse("run: {judge_prompt: {append: a, replace: b}}").is_err());
+        assert!(Config::parse("system: {append: a, replace: b}").is_err());
+        assert!(Config::parse("system: x").is_err());
+        assert_eq!(Config::parse("memory: off").unwrap().memory_limit(), None);
+        assert_eq!(Config::parse("{}").unwrap().memory_limit(), Some(2000));
         assert_eq!(
             Config::parse("run: {mode: off}").unwrap().run_mode(),
             RunMode::Off
