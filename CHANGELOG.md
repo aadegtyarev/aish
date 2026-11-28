@@ -9,6 +9,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-28
+
 ### Changed
 - The model answers with facts it gathers itself (read-only commands, files,
   the terminal history, the web) instead of listing commands to try; asked how
@@ -220,7 +222,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/aadegtyarev/aish/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/aadegtyarev/aish/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/aadegtyarev/aish/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/aadegtyarev/aish/compare/v0.3.1...v0.3.2
