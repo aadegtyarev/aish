@@ -9,6 +9,13 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- Memory: the model keeps short notes in `~/.config/aish/memory.md` (tool `memory`, shown as a `memory (N chars)`
+  row) and gets them with every request. `memory: 2000` is the limit in characters, `memory: off` disables it;
+  secrets are refused. `aish memory` opens the file in `$EDITOR`.
+- `system: {append|replace: <text|file>}` changes the system prompt. Requests keep a cache-friendly order:
+  static prompt, memory, conversation, dynamic context last.
+
 ## [0.4.5] - 2026-11-28
 
 ### Added

@@ -1819,7 +1819,11 @@ fn ai_tools_web_off_removes_web_tools_from_the_request() {
     p.send("? two\r").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    let reqs = m.requests();
+    let reqs: Vec<_> = m
+        .requests()
+        .into_iter()
+        .filter(|r| r.path.ends_with("/chat/completions"))
+        .collect();
     assert!(reqs[0].body.contains("web_search"), "{}", reqs[0].body);
     let b = &reqs[1].body;
     assert!(b.contains("\"run\"") && b.contains("read_file"), "{b}");

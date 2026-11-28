@@ -232,6 +232,23 @@ pub struct Config {
     /// `tools: {run, files, web}` — per-tool on/off.
     #[serde(default)]
     pub tools: ToolsCfg,
+    /// `memory: <chars>|off` — limit of the model's notes (default 2000).
+    #[serde(default)]
+    pub memory: Setting<usize>,
+    /// `system: {append|replace}` — changes the base system prompt.
+    #[serde(default)]
+    pub system: Option<PromptEdit>,
+}
+
+impl Config {
+    /// The memory limit in characters; `None` when `memory: off`.
+    pub fn memory_limit(&self) -> Option<usize> {
+        match self.memory {
+            Setting::Off => None,
+            Setting::Value(n) => Some(n),
+            Setting::Unset => Some(2000),
+        }
+    }
 }
 
 /// How the model's `run` tool treats commands that are not read-only.
@@ -288,12 +305,45 @@ impl Coach {
     }
 }
 
-/// `run.judge_prompt`: text added to the default judge prompt, or replacing it
-/// (a text, or a path like `~/judge.txt`).
+/// `run.judge_prompt` and `system`: text added to a default prompt, or
+/// replacing it (a text, or a path like `~/judge.txt`).
 #[derive(Debug, Clone, PartialEq)]
-pub enum JudgePrompt {
+pub enum PromptEdit {
     Append(String),
     Replace(String),
+}
+
+impl PromptEdit {
+    fn parse<E: serde::de::Error>(v: &serde_norway::Value, key: &str) -> Result<Self, E> {
+        let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+        match (v.is_mapping(), get("append"), get("replace")) {
+            (true, Some(a), None) => Ok(PromptEdit::Append(a)),
+            (true, None, Some(r)) => Ok(PromptEdit::Replace(r)),
+            (true, ..) => Err(E::custom(format!("{key}: give `append` or `replace`"))),
+            _ => Err(E::custom(format!("{key} must be a mapping"))),
+        }
+    }
+
+    /// The `replace` text, or the file it names (`~/x` or an absolute path).
+    pub fn resolve(text: String) -> String {
+        let path = if let Some(rest) = text.strip_prefix("~/") {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(rest))
+        } else if text.starts_with('/') && !text.contains('\n') {
+            Some(PathBuf::from(&text))
+        } else {
+            None
+        };
+        path.and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or(text)
+    }
+}
+
+impl<'de> Deserialize<'de> for PromptEdit {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        PromptEdit::parse(&serde_norway::Value::deserialize(d)?, "prompt")
+    }
 }
 
 /// `run:` in the config: a scalar mode (`run: judge`), or a mapping
@@ -303,7 +353,7 @@ pub struct RunCfg {
     pub mode: Setting<String>,
     /// Model references of the judge (tried in order); empty: the chat role.
     pub judge: Vec<String>,
-    pub judge_prompt: Option<JudgePrompt>,
+    pub judge_prompt: Option<PromptEdit>,
 }
 
 impl<'de> Deserialize<'de> for RunCfg {
@@ -337,19 +387,7 @@ impl<'de> Deserialize<'de> for RunCfg {
         };
         let judge_prompt = match m.get("judge_prompt") {
             None | Some(serde_norway::Value::Null) => None,
-            Some(serde_norway::Value::Mapping(p)) => {
-                let get = |k: &str| p.get(k).and_then(|x| x.as_str()).map(str::to_owned);
-                match (get("append"), get("replace")) {
-                    (Some(a), None) => Some(JudgePrompt::Append(a)),
-                    (None, Some(r)) => Some(JudgePrompt::Replace(r)),
-                    _ => {
-                        return Err(D::Error::custom(
-                            "run.judge_prompt: give `append` or `replace`",
-                        ))
-                    }
-                }
-            }
-            Some(_) => return Err(D::Error::custom("run.judge_prompt must be a mapping")),
+            Some(p) => Some(PromptEdit::parse(p, "run.judge_prompt")?),
         };
         Ok(RunCfg {
             mode: m.get("mode").map_or(Ok(Setting::Unset), mode)?,
@@ -837,7 +875,7 @@ roles:
         assert_eq!(j.run.judge, ["p/m"]);
         assert_eq!(
             j.run.judge_prompt,
-            Some(JudgePrompt::Append("be strict".into()))
+            Some(PromptEdit::Append("be strict".into()))
         );
         assert!(Config::parse("run: {mode: judge, judge: nope/x}").is_err());
         assert!(Config::parse("run: {judge_prompt: {append: a, replace: b}}").is_err());

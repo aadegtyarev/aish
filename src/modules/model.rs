@@ -235,6 +235,10 @@ fn aish_command(
             Some(t) => t.finish(Some(cmd::config_command(llm))),
             None => return false,
         },
+        Cmd::Memory => match task.take() {
+            Some(t) => t.finish(Some(cmd::memory_command(llm))),
+            None => return false,
+        },
         Cmd::Find(q) => {
             let Some(t) = task.take() else { return false };
             let tracker = tracker.clone();

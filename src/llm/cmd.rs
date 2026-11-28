@@ -1,6 +1,7 @@
 //! The `aish` command inside a session (status, chat/complete, on/off,
 //! config) and the same status as a real CLI subcommand.
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,8 +10,8 @@ use super::{Llm, Target};
 use crate::config::{Coach, Config, RunMode, Setting};
 
 pub const SUBS: &[&str] = &[
-    "status", "chat", "complete", "model", "models", "profile", "on", "off", "config", "init",
-    "help", "run", "coach", "tools", "find",
+    "status", "chat", "complete", "model", "models", "profile", "on", "off", "config", "memory",
+    "init", "help", "run", "coach", "tools", "find",
 ];
 
 /// `aish` or `aish <subcommand, or a one-letter typo of one> ...`; anything
@@ -92,6 +93,7 @@ pub enum Cmd {
     Profile(Option<String>),
     Suggest(bool),
     Config,
+    Memory,
     Init,
     /// `run [ask|judge|off] [--save]`
     Run(Option<String>, bool),
@@ -112,6 +114,7 @@ pub fn parse(line: &str) -> Cmd {
         (Some("on"), ..) => Cmd::Suggest(true),
         (Some("off"), ..) => Cmd::Suggest(false),
         (Some("config"), ..) => Cmd::Config,
+        (Some("memory"), ..) => Cmd::Memory,
         (Some("init"), ..) => Cmd::Init,
         (Some("models"), ..) => Cmd::Models,
         (Some("find"), ..) => Cmd::Find(w[2..].join(" ")),
@@ -202,6 +205,7 @@ const HELP: &[(&str, &str)] = &[
     ("find <text>", "search commands and output"),
     ("on | off", "suggestions"),
     ("config", "open the config"),
+    ("memory", "edit the model's memory"),
     ("init", "set up launch"),
     ("help", "this help"),
 ];
@@ -572,16 +576,22 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
             v.extend(help_lines(width, llm.prefix()));
             v
         }
-        Cmd::Status | Cmd::Config | Cmd::Init | Cmd::Find(_) => Vec::new(),
+        Cmd::Status | Cmd::Config | Cmd::Memory | Cmd::Init | Cmd::Find(_) => Vec::new(),
     }
 }
 
 /// Text for the input line that opens the config in the user's editor.
 pub fn config_command(llm: &Llm) -> String {
-    let path = llm
-        .path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    editor_command(llm.path())
+}
+
+/// Same for the model's memory file.
+pub fn memory_command(llm: &Llm) -> String {
+    editor_command(llm.memory_path().as_ref())
+}
+
+fn editor_command(path: Option<&PathBuf>) -> String {
+    let path = path.map(|p| p.display().to_string()).unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     let shown = match path.strip_prefix(&home) {
         Some(r) if !home.is_empty() && r.starts_with('/') => format!("~{r}"),

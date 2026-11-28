@@ -209,6 +209,11 @@ impl Llm {
         self.path.as_ref()
     }
 
+    /// `memory.md` next to the config.
+    pub fn memory_path(&self) -> Option<PathBuf> {
+        Some(self.path.as_ref()?.with_file_name("memory.md"))
+    }
+
     pub fn config_exists(&self) -> bool {
         self.path.as_ref().is_some_and(|p| p.exists())
     }

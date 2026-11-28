@@ -1,16 +1,5 @@
 # Backlog and ideas
 
-## Backlog (agreed, in order)
-
-1. **Memory file.** `~/.config/aish/memory.md`, limit in config
-   (`memory: {limit: 2000 chars}` or tokens); tools `memory_read` and
-   `memory_write` (replace whole); over the limit the write is refused with
-   `now N, limit M` so the model rewrites it shorter.
-2. **Request order for provider caching.** Static system prompt → memory →
-   skills index → summary + conversation → dynamic context (cwd, git, recent
-   blocks, jobs) last.
-3. **Overridable system prompt.** `system: {replace: <file|text>, append: <text>}`.
-
 ## Ideas
 
 Not planned yet; each needs a design pass before work starts.

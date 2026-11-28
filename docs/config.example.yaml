@@ -82,6 +82,15 @@ roles:
 #   judge_prompt: {append: "Treat anything under ~/work as low risk."}
 #   # judge_prompt: {replace: "~/judge-prompt.txt"}   # a text or a file
 
+# The model's notes (~/.config/aish/memory.md, edit with `aish memory`): the limit in
+# characters, or off (no tool, nothing in the prompt).
+# memory: 2000
+
+# The system prompt: add your rules, or replace the base text (a text or a file).
+# The reply language, tool guides and memory are still added.
+# system: {append: "Answer briefly. My servers are in ~/.ssh/config."}
+# # system: {replace: "~/system-prompt.txt"}
+
 # Switch the agent's tools on/off. An off tool is not sent to the model at all.
 # `run: off` here removes the run tool entirely (not even read-only commands);
 # the `run:` setting above only decides what happens to other commands.

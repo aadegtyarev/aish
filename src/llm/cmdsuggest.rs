@@ -73,6 +73,7 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 toggle,
                 other,
                 ("config", "open the config"),
+                ("memory", "edit the model's memory"),
                 ("init", "set up launch and models"),
                 ("help", "list commands"),
             ];

@@ -10,7 +10,7 @@ use aish_llm::{Error, Kind, Message, Request};
 use super::mask::mask;
 use super::render::sanitize;
 use super::{Llm, Target};
-use crate::config::{Config, JudgePrompt, Setting};
+use crate::config::{Config, PromptEdit, Setting};
 use crate::task::Task;
 
 /// Characters of the user's question the judge sees.
@@ -59,20 +59,8 @@ pub fn parse(text: &str) -> Option<Verdict> {
 pub fn system_prompt(cfg: Option<&Config>) -> String {
     match cfg.and_then(|c| c.run.judge_prompt.clone()) {
         None => DEFAULT_PROMPT.to_owned(),
-        Some(JudgePrompt::Append(a)) => format!("{DEFAULT_PROMPT}\n{a}"),
-        Some(JudgePrompt::Replace(r)) => {
-            let path = if let Some(rest) = r.strip_prefix("~/") {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| std::path::PathBuf::from(h).join(rest))
-            } else if r.starts_with('/') && !r.contains('\n') {
-                Some(std::path::PathBuf::from(&r))
-            } else {
-                None
-            };
-            path.and_then(|p| std::fs::read_to_string(p).ok())
-                .unwrap_or(r)
-        }
+        Some(PromptEdit::Append(a)) => format!("{DEFAULT_PROMPT}\n{a}"),
+        Some(PromptEdit::Replace(r)) => PromptEdit::resolve(r),
     }
 }
 

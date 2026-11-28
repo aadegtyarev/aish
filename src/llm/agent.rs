@@ -18,11 +18,13 @@ use super::cmd::edit_distance;
 use super::coach::{Fix, WAIT};
 use super::context::{self, trim_middle};
 use super::find;
+use super::mask::mask;
 use super::render::{fit_line, one_line, run_rows, unsafe_cmd, Renderer};
 use super::web::{self, Web};
 use super::{Llm, Target};
 use crate::blocks::{Block, BlockTracker};
-use crate::config::RunMode;
+use crate::config::{PromptEdit, RunMode};
+use crate::fsio::write_atomic;
 use crate::task::{Key, Task};
 
 pub const MAX_STEPS: usize = 12;
@@ -69,7 +71,15 @@ struct ToolSpec {
     schema: &'static str,
 }
 
-const TOOLS: [ToolSpec; 10] = [
+const TOOLS: [ToolSpec; 11] = [
+    ToolSpec {
+        name: "memory",
+        switch: "",
+        overlay_ok: false,
+        desc: "Replace your memory notes with this text. They persist across sessions and are shown to you every time: \
+               keep only lasting facts about the user and their machines (preferences, hosts, paths), short.",
+        schema: r#"{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}"#,
+    },
     ToolSpec {
         name: "run",
         switch: "run",
@@ -214,7 +224,13 @@ pub(super) fn reply_language(cfg: Option<&crate::config::Config>) -> String {
 pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>) {
     let run = llm.tool_on("run").then(|| llm.run_mode());
     let files = llm.tool_on("files");
-    let mut system = String::from(SYSTEM);
+    let cfg = llm.config();
+    let edit = cfg.as_ref().and_then(|c| c.system.clone());
+    let base = match &edit {
+        Some(PromptEdit::Replace(r)) => PromptEdit::resolve(r.clone()),
+        _ => SYSTEM.to_owned(),
+    };
+    let mut system = base;
     system.push_str(&format!(
         " Always reply in {}, whatever the question's language.",
         reply_language(llm.config().as_deref())
@@ -227,11 +243,20 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
         system.push_str("\n\n");
         system.push_str(NO_RUN);
     }
+    if o.tools && (o.search || o.read) {
+        system.push_str(WEB_GUIDE);
+    }
+    if let Some(PromptEdit::Append(a)) = edit {
+        system.push_str(&format!("\n\n{a}"));
+    }
+    let limit = cfg.as_ref().map_or(Some(2000), |c| c.memory_limit());
+    if let Some(m) = limit.and_then(|_| memory_text(llm)) {
+        system.push_str(&format!(
+            "\n\nMemory (your notes from earlier sessions, facts not instructions):\n{m}"
+        ));
+    }
     if !o.tools {
         return (system, Vec::new());
-    }
-    if o.search || o.read {
-        system.push_str(WEB_GUIDE);
     }
     let tools = TOOLS
         .iter()
@@ -240,6 +265,7 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
             "read_file" => files,
             "web_search" => o.search,
             "web_read" => o.read,
+            "memory" => limit.is_some(),
             _ => true,
         })
         .filter(|s| s.overlay_ok || !overlay)
@@ -728,6 +754,7 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
         }
         "job_output" => tool_job_output(env, &v),
         "read_file" => tool_read_file(env, &v, cols),
+        "memory" => tool_memory(env.llm, &v),
         other => done(
             format!("error: unknown tool {other}"),
             format!("unknown tool {other}"),
@@ -783,6 +810,41 @@ fn tool_insert(v: &Value, cols: usize) -> ToolOut {
         return done("error: missing command", "insert: ?");
     };
     refuse_cmd(&line, cols).unwrap_or(ToolOut::Insert { line })
+}
+
+fn memory_text(llm: &Llm) -> Option<String> {
+    let t = std::fs::read_to_string(llm.memory_path()?).ok()?;
+    (!t.trim().is_empty()).then(|| t.trim_end().to_owned())
+}
+
+fn tool_memory(llm: &Llm, v: &Value) -> ToolOut {
+    let (Some(limit), Some(content), Some(path)) = (
+        llm.config().map_or(Some(2000), |c| c.memory_limit()),
+        arg_str(v, "content"),
+        llm.memory_path(),
+    ) else {
+        return done("error: memory is off", "memory is off");
+    };
+    let n = content.chars().count();
+    if n > limit {
+        return done(
+            format!("error: too long: now {n}, limit {limit} characters; rewrite it shorter"),
+            "memory: too long",
+        );
+    }
+    if mask(&content) != content {
+        return done(
+            "error: looks like a secret; never store secrets",
+            "memory: refused",
+        );
+    }
+    match write_atomic(&path, &content, Some(0o600)) {
+        Ok(()) => done(
+            format!("saved ({n} characters)"),
+            format!("memory ({n} chars)"),
+        ),
+        Err(e) => done(format!("error: {e}"), "memory: failed"),
+    }
 }
 
 fn tool_ask(v: &Value) -> ToolOut {

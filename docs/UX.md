@@ -294,6 +294,27 @@ configurable: `keys: {ask: ctrl-q}` in config.yaml (`ctrl-<letter>` or `off`).
   closes the overlay and sends the program one real Ctrl-Q (a double Ctrl-Q for
   emacs/micro). This is also the way to send the program a real XON/Ctrl-Q.
 
+## Memory
+
+The model keeps notes in `memory.md` next to the config (`~/.config/aish/memory.md`). They are added to every
+request, so keep them short: `memory: 2000` is the limit in characters, `memory: off` removes the tool and the
+notes from the prompt. The `memory` tool replaces the whole file (empty text clears it); a write over the limit
+is refused with `now N, limit M` so the model rewrites it shorter, and text that looks like a secret is refused.
+Each write leaves a `memory (N chars)` row. Edit the file yourself with `aish memory` (puts
+`${EDITOR:-vi} <path>` in the input line). The overlay (Ctrl-Q) reads the notes but cannot change them.
+
+## System prompt
+
+`system: {append: <text|file>}` adds text after the tool guides; `system: {replace: <text|file>}` swaps only the
+base prompt. Exactly one key; a value is a text or a path (`~/prompt.txt`). The reply language, the tool guides
+and the memory are always added.
+
+## Request layout
+
+A request is ordered: static system prompt (base, guides, `system:` append) → memory → conversation → dynamic
+context (cwd, git, recent blocks) in the last user message. Whatever changes most goes last, so provider prefix
+caches and llama.cpp's KV cache reuse the unchanged beginning.
+
 ## Web: search and reading pages
 
 The agent has two tools: `web_search(query)` and `web_read(url)`. Both only read

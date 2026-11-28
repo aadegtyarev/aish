@@ -149,6 +149,12 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   The model can also `insert` a command into your input line (after you press Enter on it; nothing is
   run) and `ask` you a question: answer in the input line, a number picks a listed choice, Esc skips.
   With tools on, a final ```bash block is no longer prefilled (without tools it still is).
+- Memory: the model keeps short notes about you and your machines in `~/.config/aish/memory.md` (the `memory`
+  tool replaces the whole file; you see a `memory (N chars)` row) and gets them with every request. `memory: 2000`
+  in the config is the limit in characters, `memory: off` turns the feature off; text that looks like a secret is
+  refused. `aish memory` puts `${EDITOR:-vi} ~/.config/aish/memory.md` in the line.
+- `system: {append: <text|file>}` adds your rules to the system prompt, `system: {replace: <text|file>}` swaps its
+  base text (the reply language, tool guides and memory are still added).
 - `aish` (inside a session) shows the roles and whether they answer;
   `aish help` lists the commands, `aish models` the models by provider, `aish model [chat|complete] <alias|provider/alias>`
   (also `aish chat <..>`, `aish complete <..>`) sets a role's model and saves it to the config (a role may list
