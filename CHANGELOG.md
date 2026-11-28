@@ -9,6 +9,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-28
+
 ### Removed
 - The legacy `?!` question form (`?n` starts a new conversation; `?!` is now an
   ordinary shell line).
@@ -209,7 +211,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aadegtyarev/aish/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/aadegtyarev/aish/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/aadegtyarev/aish/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/aadegtyarev/aish/compare/v0.3.0...v0.3.1
