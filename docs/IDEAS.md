@@ -1,4 +1,21 @@
-# Ideas
+# Backlog and ideas
+
+## Backlog (agreed, in order)
+
+1. **Session search for the model.** `find(query|regex, scope)` over block
+   commands/outputs and stored tool results (numbered, size-capped) returning
+   short hits `#12 L340: …`; `read_block(id, lines a..b)` for slices of huge
+   output; `ai find <text>` for the user.
+2. **Memory file.** `~/.config/aish/memory.md`, limit in config
+   (`memory: {limit: 2000 chars}` or tokens); tools `memory_read` and
+   `memory_write` (replace whole); over the limit the write is refused with
+   `now N, limit M` so the model rewrites it shorter.
+3. **Request order for provider caching.** Static system prompt → memory →
+   skills index → summary + conversation → dynamic context (cwd, git, recent
+   blocks, jobs) last.
+4. **Overridable system prompt.** `system: {replace: <file|text>, append: <text>}`.
+
+## Ideas
 
 Not planned yet; each needs a design pass before work starts.
 
@@ -68,3 +85,20 @@ instead of growing. The model can draft a skill from the current conversation
 
 Open questions: versioning when a skill goes stale; conflicts between two
 skills with the same name from different sources.
+
+## Language coach
+
+Optional: while answering, the model also corrects the user's own message
+when it has mistakes (grammar, word order, typos), so asking questions doubles
+as practice. Off by default; `coach: on` or `coach: en` (only for messages in
+that language).
+
+- One dim line before the answer, only when there is something to fix:
+  `✎ Better: How do I find the biggest files in this directory?`
+  Nothing is shown for a correct message: no praise, no noise.
+- The task is still done as asked; the correction never replaces the answer.
+- Implementation: a short addition to the system prompt plus a marker the
+  renderer turns into the dim line (for example the model starts with
+  `✎ ` on the first line). Costs a few tokens, works with any chat model.
+- `ai coach on|off` to toggle for the session.
+- Could ship as a built-in skill once skills exist.

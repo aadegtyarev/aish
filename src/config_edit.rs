@@ -339,6 +339,96 @@ pub fn set_profile(src: &str, name: &str) -> Option<String> {
     Some(join(&lines))
 }
 
+/// Set a top-level plain scalar (`run: auto`), adding the key when missing.
+/// `None` if the existing value is not a single-line scalar.
+pub fn set_top(src: &str, key: &str, value: &str) -> Option<String> {
+    let eol = eol_of(src);
+    let mut lines = split(src);
+    match find_top(&lines, key) {
+        Some(i) => {
+            let rest = key_rest(&lines[i], key)?.to_owned();
+            let (a, b) = value_span(&rest);
+            if a == b || rest[a..b].starts_with(['[', '{', '|', '>', '&', '*']) {
+                return None;
+            }
+            let colon = body(&lines[i]).len() - rest.len();
+            rewrite(&mut lines, i, |l| {
+                Some(format!("{}{}", &l[..colon], replace_value(&rest, value)))
+            })?;
+        }
+        None => {
+            let at = lines.len();
+            push_line(&mut lines, at, format!("{key}: {value}"), eol);
+        }
+    }
+    Some(join(&lines))
+}
+
+/// Set `name: value` inside the top-level `tools:` mapping (block or flow
+/// form), creating the section when it is missing.
+pub fn set_tool(src: &str, name: &str, value: &str) -> Option<String> {
+    let eol = eol_of(src);
+    let mut lines = split(src);
+    let Some(i) = find_top(&lines, "tools") else {
+        let at = lines.len();
+        push_line(&mut lines, at, format!("tools:\n  {name}: {value}"), eol);
+        return Some(join(&lines));
+    };
+    let rest = key_rest(&lines[i], "tools")?.to_owned();
+    let (vs, ve) = value_span(&rest);
+    let colon = body(&lines[i]).len() - rest.len();
+    if vs != ve {
+        // flow map on the key line: `tools: {web: off}`
+        let flow = rest[vs..ve].to_owned();
+        let (ia, ib) = flow_inner(&flow)?;
+        let edited = match flow_get(&flow, name) {
+            Some((x, y)) => format!("{}{value}{}", &flow[..x], &flow[y..]),
+            None if flow[ia..ib].trim().is_empty() => {
+                format!("{}{name}: {value}{}", &flow[..ia], &flow[ib..])
+            }
+            None => format!("{}, {name}: {value}{}", flow[..ib].trim_end(), &flow[ib..]),
+        };
+        rewrite(&mut lines, i, |l| {
+            Some(format!("{}{}", &l[..colon], replace_value(&rest, &edited)))
+        })?;
+        return Some(join(&lines));
+    }
+    let (a, b) = region(&lines, i);
+    let c = (a..b)
+        .find(|&j| !is_skip(&lines[j]))
+        .map(|j| indent(&lines[j]))
+        .unwrap_or(2);
+    let hit = (a..b).find(|&j| {
+        !is_skip(&lines[j]) && indent(&lines[j]) == c && key_rest(&lines[j], name).is_some()
+    });
+    match hit {
+        Some(j) => {
+            let r = key_rest(&lines[j], name)?.to_owned();
+            let (s2, e2) = value_span(&r);
+            if s2 == e2 {
+                return None;
+            }
+            let c2 = body(&lines[j]).len() - r.len();
+            rewrite(&mut lines, j, |l| {
+                Some(format!("{}{}", &l[..c2], replace_value(&r, value)))
+            })?;
+        }
+        None => {
+            let last = (a..b)
+                .rev()
+                .find(|&j| !is_skip(&lines[j]))
+                .map_or(i + 1, |j| j + 1);
+            push_line(
+                &mut lines,
+                last,
+                format!("{}{name}: {value}", " ".repeat(c)),
+                eol,
+            );
+        }
+    }
+    Some(join(&lines))
+}
+
 /// Replace the file atomically: a symlink is followed (the target changes, the
 /// link stays), the temp file is new and random next to it, owner and mode are
 /// kept, and the file and the directory are synced.
@@ -544,5 +634,49 @@ mod tests {
             0o600
         );
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn top_scalar_and_tools_edits() {
+        assert_eq!(
+            set_top("a: 1\nrun: ask # c\nb: 2\n", "run", "auto").unwrap(),
+            "a: 1\nrun: auto # c\nb: 2\n"
+        );
+        assert_eq!(set_top("a: 1", "run", "auto").unwrap(), "a: 1\nrun: auto\n");
+        assert_eq!(set_top("run: [x]\n", "run", "auto"), None);
+        assert_eq!(
+            set_tool("a: 1\n", "web", "off").unwrap(),
+            "a: 1\ntools:\n  web: off\n"
+        );
+        assert_eq!(
+            set_tool(
+                "tools:\n  run: on\n  # c\n  web: on # keep\nx: 1\n",
+                "web",
+                "off"
+            )
+            .unwrap(),
+            "tools:\n  run: on\n  # c\n  web: off # keep\nx: 1\n"
+        );
+        assert_eq!(
+            set_tool("tools:\n  run: on\nx: 1\n", "files", "off").unwrap(),
+            "tools:\n  run: on\n  files: off\nx: 1\n"
+        );
+        assert_eq!(
+            set_tool("tools: {run: on}\n", "web", "off").unwrap(),
+            "tools: {run: on, web: off}\n"
+        );
+        assert_eq!(
+            set_tool("tools: {run: on}\n", "run", "off").unwrap(),
+            "tools: {run: off}\n"
+        );
+        assert_eq!(
+            set_tool("tools: {}\n", "run", "off").unwrap(),
+            "tools: {run: off}\n"
+        );
+        assert_eq!(
+            set_tool("tools:\nx: 1\n", "run", "off").unwrap(),
+            "tools:\n  run: off\nx: 1\n"
+        );
+        assert_eq!(set_tool("tools: ~\n", "run", "off"), None);
     }
 }

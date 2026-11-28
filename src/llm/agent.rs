@@ -19,6 +19,7 @@ use super::render::{fit_line, unsafe_cmd, Renderer};
 use super::web::{self, Web};
 use super::{Llm, Target};
 use crate::blocks::{Block, BlockTracker};
+use crate::config::RunMode;
 use crate::module::Task;
 
 pub const MAX_STEPS: usize = 12;
@@ -28,12 +29,45 @@ const FILE_LINES: usize = 200;
 const FILE_BYTES: usize = 32 * 1024;
 const PENDING_TTL: Duration = Duration::from_secs(30 * 60);
 
-pub const AGENT_GUIDE: &str = "\n\nYou can use tools. Prefer the read-only tools (run with a read-only command, \
-read_file, read_block, jobs, job_output) to gather facts instead of guessing or asking the user. \
-Propose exactly one mutating command at a time with run: it goes into the user's input line, \
+/// System-prompt addition for the agent loop; only the tools that are offered
+/// are mentioned. `run`: the mode of the run tool, `None` when it is off.
+pub fn agent_guide(run: Option<RunMode>, files: bool) -> String {
+    let mut tools: Vec<&str> = Vec::new();
+    if run.is_some() {
+        tools.push("run with a read-only command");
+    }
+    if files {
+        tools.push("read_file");
+    }
+    tools.extend(["read_block", "jobs", "job_output"]);
+    let mut g = format!(
+        "\n\nYou can use tools. Prefer the read-only tools ({}) to gather facts instead of guessing or asking the user. ",
+        tools.join(", ")
+    );
+    g.push_str(match run {
+        Some(RunMode::Off) => {
+            "Propose exactly one mutating command at a time with run: it goes into the user's input line, \
 they decide whether to run it, and you get the result afterwards. For long-running commands use \
-run with background=true and check on them with jobs/job_output. Explain briefly what you are doing and why. \
-Stop (answer without a tool call) as soon as the task is done. Do not put the command in a ```bash block when you use run.";
+run with background=true and check on them with jobs/job_output. "
+        }
+        Some(_) => {
+            "Propose exactly one command that changes things at a time with run: it is typed into the user's own \
+terminal (they see it, cd persists) once they approve it, or at once if they allowed that; you get its exit \
+code, duration and the tail of its output. If the user declines, do not retry it: adapt or explain. \
+Commands such as sudo, rm -r, dd, redirection into files or tee always need their approval. \
+For long-running commands use run with background=true and check on them with jobs/job_output. "
+        }
+        None => {
+            "You cannot run commands: when one is needed, put exactly one in a final ```bash block; \
+the user reads it and presses Enter. "
+        }
+    });
+    g.push_str("Explain briefly what you are doing and why. Stop (answer without a tool call) as soon as the task is done.");
+    if run.is_some() {
+        g.push_str(" Do not put the command in a ```bash block when you use run.");
+    }
+    g
+}
 
 /// Added to the guides when web tools are offered.
 pub const WEB_GUIDE: &str = "\nWeb: web_search(query) finds pages, web_read(url) reads one (use it for current or external facts, \
@@ -77,6 +111,27 @@ pub fn web_defs(search: bool, read: bool) -> Vec<Tool> {
         ));
     }
     v
+}
+
+/// The run tool's description when the model may run commands itself.
+const RUN_ASKS: &str = "Run a shell command. Read-only commands (ls, cat, grep, git status, ...) run immediately and \
+             their output is returned. Any other command is typed into the user's terminal after they approve it \
+             (they may decline); you receive its exit code, duration and the tail of its output.";
+
+/// The tools offered to the model in the agent loop, as configured.
+pub fn enabled_defs(run: Option<RunMode>, files: bool) -> Vec<Tool> {
+    let mut t = tool_defs();
+    t.retain(|d| match d.name.as_str() {
+        "run" => run.is_some(),
+        "read_file" => files,
+        _ => true,
+    });
+    if run.is_some_and(|m| m != RunMode::Off) {
+        if let Some(d) = t.iter_mut().find(|d| d.name == "run") {
+            d.description = RUN_ASKS.into();
+        }
+    }
+    t
 }
 
 pub fn tool_defs() -> Vec<Tool> {
@@ -154,6 +209,10 @@ pub struct Pending {
     /// Tool result, once the block of the command finished.
     result: Option<String>,
     at: Instant,
+    /// Approved, waiting to be typed into bash (see `take_inject`).
+    inject: bool,
+    /// aish typed the command itself: the result carries the duration.
+    ran_by_aish: bool,
 }
 
 enum ToolOut {
@@ -161,6 +220,14 @@ enum ToolOut {
     Done { result: String, shown: String },
     /// Put into the input line; the turn pauses.
     Handoff { line: String, bg: Option<Bg> },
+    /// The model wants to run it in the user's bash (`run: ask|auto`).
+    Run {
+        line: String,
+        bg: Option<Bg>,
+        /// What the user is shown and the hard list judged.
+        cmd: String,
+        hard: bool,
+    },
 }
 
 struct Env<'a> {
@@ -480,6 +547,18 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
             format!("{} unavailable", call.name),
         );
     }
+    let tool = match call.name.as_str() {
+        "run" => Some("run"),
+        "read_file" => Some("files"),
+        "web_search" | "web_read" => Some("web"),
+        _ => None,
+    };
+    if tool.is_some_and(|t| !env.llm.tool_on(t)) {
+        return done(
+            format!("error: the {} tool is turned off by the user", call.name),
+            format!("{} is off", call.name),
+        );
+    }
     match call.name.as_str() {
         "web_search" | "web_read" => {
             let search = call.name == "web_search";
@@ -545,7 +624,9 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                     "command with control characters rejected".into(),
                 );
             }
-            if bg {
+            let mode = env.llm.run_mode();
+            let hard = super::hard::needs_ask(&cmd);
+            let (line, bgj) = if bg {
                 let Some(dir) = jobs_dir() else {
                     return done("error: no state directory".into(), "run: no HOME".into());
                 };
@@ -558,14 +639,28 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 let n = format!("{}-{n}", std::process::id());
                 let log = dir.join(format!("{n}.log"));
                 let line = format!("{} &>{} &", cmd.trim_end(), shell_path(&log));
-                return ToolOut::Handoff {
+                (
                     line,
-                    bg: Some(Bg { log, command: cmd }),
-                };
+                    Some(Bg {
+                        log,
+                        command: cmd.clone(),
+                    }),
+                )
+            } else {
+                (cmd.clone(), None)
+            };
+            if mode == RunMode::Off {
+                return ToolOut::Handoff { line, bg: bgj };
             }
-            ToolOut::Handoff {
-                line: cmd,
-                bg: None,
+            ToolOut::Run {
+                line,
+                bg: bgj,
+                cmd: if bg {
+                    format!("{} &", cmd.trim_end())
+                } else {
+                    cmd
+                },
+                hard,
             }
         }
         "read_block" => {
@@ -635,7 +730,10 @@ pub fn drive(
     let mut cur = t.clone();
     let t = &mut cur;
     let mut use_tools = t.tools;
-    let web = llm.config().and_then(|c| Web::from_config(&c));
+    let web = llm
+        .config()
+        .filter(|_| llm.tool_on("web"))
+        .and_then(|c| Web::from_config(&c));
     // native search needs `provider` in the search chain
     let native_of = |t: &Target| {
         t.native_search
@@ -658,13 +756,15 @@ pub fn drive(
             note_only(task, "⏹");
             return None;
         }
+        let run_tool = llm.tool_on("run").then(|| llm.run_mode());
+        let files_on = llm.tool_on("files");
         let mut all = turn.history.clone();
         all.extend(turn.msgs.iter().cloned());
         let req = Request {
             max_tokens: 2048,
             tools: match (use_tools, turn.overlay) {
                 (false, _) => Vec::new(),
-                (true, false) => tool_defs(),
+                (true, false) => enabled_defs(run_tool, files_on),
                 (true, true) => overlay_tool_defs(),
             }
             .into_iter()
@@ -680,7 +780,7 @@ pub fn drive(
                     "{}{}",
                     match (use_tools, turn.overlay) {
                         (_, true) => format!("{SYSTEM}{OVERLAY_GUIDE}"),
-                        (true, false) => format!("{SYSTEM}{AGENT_GUIDE}"),
+                        (true, false) => format!("{SYSTEM}{}", agent_guide(run_tool, files_on)),
                         (false, false) => SYSTEM.to_owned(),
                     },
                     if use_tools && (offer_search || offer_read) {
@@ -812,9 +912,12 @@ pub fn drive(
         }
         r.finish(&mut out, false);
         search_notes(&r, &searches, &mut out);
-        task.write(&out);
+        // (nothing to show: the waiting row stays for the next row to replace)
+        if !out.is_empty() {
+            task.write(&out);
+        }
         turn.msgs.push(Message::assistant_calls(&full, &calls));
-        let mut paused: Option<(String, String, Option<Bg>)> = None;
+        let mut paused: Option<(String, String, Option<Bg>, bool)> = None;
         for c in &calls {
             if paused.is_some() {
                 turn.msgs.push(Message::tool_result(
@@ -841,10 +944,29 @@ pub fn drive(
                     note_only(task, &shown);
                     turn.msgs.push(Message::tool_result(&c.id, result));
                 }
-                ToolOut::Handoff { line, bg } => paused = Some((c.id.clone(), line, bg)),
+                ToolOut::Handoff { line, bg } => {
+                    paused = Some((c.id.clone(), line, bg, false));
+                }
+                ToolOut::Run {
+                    line,
+                    bg,
+                    cmd,
+                    hard,
+                } => match approve(llm, task, &cmd, hard) {
+                    Approval::Cancelled => {
+                        note_only(task, "⏹");
+                        return None;
+                    }
+                    Approval::Declined => turn.msgs.push(Message::tool_result(
+                        &c.id,
+                        "The user declined to run this command. Do not retry it: continue without it, \
+                         or propose something different.",
+                    )),
+                    Approval::Go => paused = Some((c.id.clone(), line, bg, true)),
+                },
             }
         }
-        if let Some((id, line, bg)) = paused {
+        if let Some((id, line, bg, inject)) = paused {
             if let Ok(mut p) = llm.pending.lock() {
                 *p = Some(Pending {
                     turn,
@@ -853,11 +975,120 @@ pub fn drive(
                     bg,
                     result: None,
                     at: Instant::now(),
+                    inject,
+                    ran_by_aish: inject,
                 });
             }
-            return Some(line);
+            // an approved command is typed into bash by the controller at the
+            // next idle prompt (`take_inject`); otherwise it is prefilled
+            return (!inject).then_some(line);
         }
     }
+}
+
+enum Approval {
+    Go,
+    Declined,
+    Cancelled,
+}
+
+/// Ask the user about a command the model wants to run (a dim prompt under
+/// the answer; one key decides). In `auto` only the hard list asks.
+fn approve(llm: &Llm, task: &Task, cmd: &str, hard: bool) -> Approval {
+    let full = llm.run_mode() == RunMode::Ask;
+    if !full && !hard {
+        return Approval::Go;
+    }
+    let r = Renderer::new(&task.theme, task.cols);
+    let hints: &[&str] = if full {
+        &[
+            "Enter run · s session · a always · Esc no",
+            "Enter run · s · a always · Esc",
+            "Enter · s · a · Esc",
+            "⏎ s a Esc",
+        ]
+    } else {
+        &["Enter run · Esc no", "Enter · Esc", "⏎ Esc"]
+    };
+    let mut out = Vec::new();
+    r.run_prompt(cmd, hints, &mut out);
+    task.write(&out);
+    let end = |note: Option<&str>| {
+        let mut out = Vec::new();
+        r.run_prompt_done(note, &mut out);
+        task.write(&out);
+    };
+    loop {
+        match task.wait_key() {
+            None => return Approval::Cancelled,
+            Some(b'\r') => {
+                end(None);
+                return Approval::Go;
+            }
+            Some(0x1b) => {
+                end(Some("declined"));
+                return Approval::Declined;
+            }
+            Some(k @ (b's' | b'a')) if full => {
+                llm.set_run_mode(RunMode::Auto);
+                let kept = k == b'a' && super::cmd::save_run(llm, RunMode::Auto);
+                end(if k == b'a' && !kept {
+                    Some("session only: config unchanged")
+                } else {
+                    None
+                });
+                return Approval::Go;
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// The approved command of a paused turn, to be typed into bash now (once).
+/// `refuse`: the line is not empty; the model gets that text as the result
+/// instead and `None` is returned.
+pub fn take_inject(llm: &Llm, refuse: Option<&str>) -> Option<String> {
+    let mut g = llm.pending.lock().ok()?;
+    let p = g.as_mut()?;
+    if p.at.elapsed() > PENDING_TTL {
+        *g = None;
+        return None;
+    }
+    if !p.inject || p.result.is_some() {
+        return None;
+    }
+    p.inject = false;
+    if let Some(why) = refuse {
+        p.result = Some(why.to_owned());
+        return None;
+    }
+    Some(p.proposed.clone())
+}
+
+/// The command could not be typed in: the model gets `why` as the result.
+pub fn refuse_inject(llm: &Llm, why: &str) {
+    if let Ok(mut g) = llm.pending.lock() {
+        if let Some(p) = g.as_mut().filter(|p| p.inject && p.result.is_none()) {
+            p.inject = false;
+            p.result = Some(why.to_owned());
+        }
+    }
+}
+
+/// The last `OUT_CAP` bytes of `s`.
+fn tail_cap(s: &str) -> String {
+    let s = s.trim_end();
+    if s.is_empty() {
+        return "(no output)".into();
+    }
+    if s.len() <= OUT_CAP {
+        return s.to_owned();
+    }
+    let mut cut = s.len() - OUT_CAP;
+    while !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("[... earlier output omitted ...]\n{}", &s[cut..])
 }
 
 /// Dim lines for searches the provider ran by itself.
@@ -917,7 +1148,7 @@ pub fn on_block(llm: &Llm, block: &Block) {
         return;
     };
     let Some(p) = g.as_mut() else { return };
-    if p.result.is_some() {
+    if p.result.is_some() || p.inject {
         return;
     }
     if p.at.elapsed() > PENDING_TTL {
@@ -956,6 +1187,16 @@ pub fn on_block(llm: &Llm, block: &Block) {
                 j.link(id, bg.log.clone());
             }
         }
+    } else if p.ran_by_aish {
+        let status = match block.exit_code {
+            Some(130) => "130 (interrupted by the user with Ctrl-C)".to_owned(),
+            _ => code,
+        };
+        res.push_str(&format!(
+            "exit: {status}\nduration: {:.1}s\noutput (tail):\n{}",
+            block.duration.as_secs_f32(),
+            tail_cap(&block.output)
+        ));
     } else {
         res.push_str(&format!("exit: {code}\noutput:\n{}", cap(&block.output)));
     }

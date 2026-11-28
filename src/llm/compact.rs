@@ -53,13 +53,25 @@ pub fn summary_tokens(window: u64, size: f64, summariser_window: u64) -> u32 {
 
 /// Tokens a turn costs besides the memory: the context budget, the system
 /// prompt and the tool schemas.
-pub fn overhead_tokens(t: &Target, window: u64) -> usize {
+pub fn overhead_tokens(llm: &Llm, t: &Target, window: u64) -> usize {
+    use super::agent;
     let mut chars = super::ask::SYSTEM.len();
     if t.tools {
-        chars += super::agent::AGENT_GUIDE.len() + super::agent::WEB_GUIDE.len();
-        for d in super::agent::tool_defs()
+        let run = llm.tool_on("run").then(|| llm.run_mode());
+        let files = llm.tool_on("files");
+        chars += agent::agent_guide(run, files).len();
+        let web = llm.tool_on("web");
+        if web {
+            chars += agent::WEB_GUIDE.len();
+        }
+        let web_defs = if web {
+            agent::web_defs(true, true)
+        } else {
+            Vec::new()
+        };
+        for d in agent::enabled_defs(run, files)
             .iter()
-            .chain(super::agent::web_defs(true, true).iter())
+            .chain(web_defs.iter())
         {
             chars += d.name.len() + d.description.len() + d.parameters.to_string().len();
         }
@@ -307,7 +319,7 @@ pub fn before_turn(llm: &Llm, chat: &Target, task: &Task) -> bool {
     }
     let at = llm.config().map_or(0.7, |c| c.compact_at());
     // (a small memory fits any real window: the server is not asked for it yet)
-    let over = |w: u64| needs_compaction(tokens + overhead_tokens(chat, w), w, at);
+    let over = |w: u64| needs_compaction(tokens + overhead_tokens(llm, chat, w), w, at);
     if chat.window.is_none() && !over(MIN_WINDOW) {
         return true;
     }
@@ -323,8 +335,8 @@ pub fn before_turn(llm: &Llm, chat: &Target, task: &Task) -> bool {
         }
         Err(e) => {
             tracing::warn!("compaction: {e:?}");
-            let keep =
-                ((window as f64 * at / 2.0) as usize).saturating_sub(overhead_tokens(chat, window));
+            let keep = ((window as f64 * at / 2.0) as usize)
+                .saturating_sub(overhead_tokens(llm, chat, window));
             if let Ok(mut c) = llm.convo.lock() {
                 drop_oldest(&mut c, keep);
             }
@@ -458,6 +470,7 @@ mod tests {
             model: "m".into(),
             effort: None,
         };
+        let llm = Llm::new();
         let mut t = Target {
             ep,
             provider: "p".into(),
@@ -467,9 +480,9 @@ mod tests {
             tools: false,
             native_search: false,
         };
-        let plain = overhead_tokens(&t, 8192);
+        let plain = overhead_tokens(&llm, &t, 8192);
         t.tools = true;
-        assert!(overhead_tokens(&t, 8192) > plain + 300);
+        assert!(overhead_tokens(&llm, &t, 8192) > plain + 300);
         assert!(plain > super::super::context::budget_tokens(Some(8192)));
     }
 

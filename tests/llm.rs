@@ -527,6 +527,11 @@ use std::sync::Arc;
 
 /// No `complete` role: ghost suggestions would add requests to the count.
 fn config_kind(url: &str, kind: &str) -> String {
+    // (`run: off`: the model's commands are prefilled, as these tests expect)
+    format!("{}run: off\n", config_kind_run(url, kind))
+}
+
+fn config_kind_run(url: &str, kind: &str) -> String {
     config(url)
         .replace("type: chat", &format!("type: {kind}"))
         .replace("  complete: {id: mock/m}\n", "")
@@ -1563,6 +1568,370 @@ fn native_search_needs_provider_in_the_search_chain() {
     assert!(
         !b.contains(r#""type":"web_search""#) && b.contains(r#""name":"web_search""#),
         "{b}"
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+// ---- the model runs commands (run: ask | auto | off) and tools on/off ------
+
+/// Default config (run mode unset = ask) plus `extra` lines.
+fn with_run(home: &TempDir, m: &Mock, extra: &str) -> Session {
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("{}{extra}", config_kind_run(&m.url(), "chat")),
+    )
+    .unwrap();
+    spawn(base(home))
+}
+
+fn cfg_text(home: &TempDir) -> String {
+    std::fs::read_to_string(home.path().join(".config/aish/config.yaml")).unwrap()
+}
+
+/// `cmds` one after another, then the final answer.
+fn run_steps(cmds: &[&str]) -> Vec<(&'static str, Calls)> {
+    let ids = ["c1", "c2", "c3"];
+    let mut v: Vec<(&'static str, Calls)> = cmds
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ("", run_call(ids[i], c)))
+        .collect();
+    v.push(("Готово: all-done\n", vec![]));
+    v
+}
+
+const PRINT: &str = "printf 'out-%s\\n' 42";
+
+#[test]
+fn run_once_types_the_command_and_the_model_gets_exit_and_output() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&[PRINT]));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("printf").unwrap();
+    p.expect("Enter run · s session · a always · Esc no")
+        .unwrap();
+    assert_eq!(m.requests().len(), 1, "waits for the user");
+    p.send("\r").unwrap();
+    // typed into bash like by the user: after the prompt, visible
+    p.expect("E> ").unwrap();
+    p.expect("printf").unwrap();
+    p.expect("out-42\r\n").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    let reqs = m.requests();
+    assert_eq!(reqs.len(), 2);
+    let b = &reqs[1].body;
+    assert!(b.contains("exit: 0") && b.contains("out-42"), "{b}");
+    assert!(b.contains("duration: "), "{b}");
+    // not remembered as always
+    assert!(!cfg_text(&home).contains("run:"));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn esc_declines_and_the_model_continues() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("declined-marker");
+    let cmd = format!("touch {}", marker.display());
+    let m = stepped("chat", run_steps(&[&cmd]));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("touch").unwrap();
+    settle();
+    p.send("\x1b").unwrap();
+    p.expect("declined").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    let reqs = m.requests();
+    assert_eq!(reqs.len(), 2);
+    assert!(reqs[1].body.contains("declined"), "{}", reqs[1].body);
+    assert!(!marker.exists(), "a declined command must not run");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn s_allows_the_session_and_the_next_command_runs_without_asking() {
+    let home = TempDir::new().unwrap();
+    let m = stepped(
+        "chat",
+        run_steps(&["printf 'one-%s\\n' 1", "printf 'two-%s\\n' 2"]),
+    );
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    p.send("s").unwrap();
+    p.expect("one-1\r\n").unwrap();
+    // no prompt for the second one: its output just arrives
+    let c = p.expect("two-2\r\n").unwrap();
+    let before = String::from_utf8_lossy(c.before()).into_owned();
+    assert!(!before.contains("Enter run"), "asked again: {before}");
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    assert_eq!(m.requests().len(), 3);
+    // session only
+    assert!(!cfg_text(&home).contains("run:"));
+    settle();
+    p.send_line("ai run").unwrap();
+    p.expect("run: auto").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn a_persists_run_auto_in_the_config() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&[PRINT]));
+    let mut p = with_run(&home, &m, "# my note\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    p.send("a").unwrap();
+    p.expect("out-42\r\n").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    let c = cfg_text(&home);
+    assert!(
+        c.contains("\nrun: auto\n") && c.contains("# my note"),
+        "{c}"
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn hard_list_commands_ask_even_in_auto() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("victim");
+    std::fs::create_dir(&marker).unwrap();
+    let cmd = format!("rm -rf {}", marker.display());
+    let m = stepped("chat", run_steps(&[&cmd]));
+    let mut p = with_run(&home, &m, "run: auto\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? clean up\r").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("rm -rf").unwrap();
+    // only the choices that make sense: auto is already on
+    p.expect("Enter run · Esc no").unwrap();
+    settle();
+    assert!(marker.exists());
+    p.send("\x1b").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    assert!(marker.exists(), "declined: still there");
+    assert!(m.requests()[1].body.contains("declined"));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn auto_runs_a_harmless_command_without_asking() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&[PRINT]));
+    let mut p = with_run(&home, &m, "run: auto\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    let c = p.expect("out-42\r\n").unwrap();
+    assert!(!String::from_utf8_lossy(c.before()).contains("Enter run"));
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn injection_is_refused_when_the_line_is_not_empty() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("must-not-run");
+    let cmd = format!("touch {}", marker.display());
+    let steps = run_steps(&[&cmd]);
+    let n = Arc::new(AtomicUsize::new(0));
+    let m = Mock::start(move |_, c| {
+        let i = n.fetch_add(1, Ordering::SeqCst);
+        if i == 0 {
+            // time to type while the model "thinks"
+            std::thread::sleep(Duration::from_millis(700));
+            let (text, calls) = &steps[0];
+            let calls: Vec<(&str, &str, &str)> =
+                calls.iter().map(|(a, b, d)| (*a, *b, d.as_str())).collect();
+            mock::chat_calls_stream(c, text, &calls);
+        } else {
+            mock::chat_stream(c, &["all-done\n"], Duration::ZERO);
+        }
+    });
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    p.send("xy").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("touch").unwrap();
+    settle();
+    p.send("\r").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    let reqs = m.requests();
+    assert!(
+        reqs[1].body.contains("input line is not empty"),
+        "{}",
+        reqs[1].body
+    );
+    assert!(!marker.exists());
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn ctrl_c_on_the_running_command_is_reported_as_interrupted() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&["sleep 30"]));
+    let mut p = with_run(&home, &m, "run: auto\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? wait\r").unwrap();
+    p.expect("E> ").unwrap();
+    p.expect("sleep 30").unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    p.send("\x03").unwrap();
+    p.expect("all-done").unwrap();
+    let b = m.requests()[1].body.clone();
+    assert!(b.contains("interrupted by the user"), "{b}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn ai_run_off_prefills_instead_of_running() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&[PRINT]));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai run").unwrap();
+    p.expect("run: ask").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai run off").unwrap();
+    p.expect("run: off · this session").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    let c = p.expect("E> ").unwrap();
+    assert!(!String::from_utf8_lossy(c.before()).contains('▶'));
+    settle();
+    assert_eq!(m.requests().len(), 1, "waits for Enter in the line");
+    p.send("\r").unwrap();
+    p.expect("out-42").unwrap();
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn ai_run_save_persists_and_ai_tools_lists() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", vec![("ok\n", vec![])]);
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai run auto --save").unwrap();
+    p.expect("run: auto · saved").unwrap();
+    assert!(cfg_text(&home).contains("\nrun: auto\n"));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai tools files off --save").unwrap();
+    p.expect("files: off · saved").unwrap();
+    assert!(
+        cfg_text(&home).contains("tools:\n  files: off\n"),
+        "{}",
+        cfg_text(&home)
+    );
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai tools").unwrap();
+    p.expect("files off").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn ai_tools_web_off_removes_web_tools_from_the_request() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", vec![("ok\n", vec![])]);
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? one\r").unwrap();
+    p.expect("ok").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai tools web off").unwrap();
+    p.expect("web: off · this session").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? two\r").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    let reqs = m.requests();
+    assert!(reqs[0].body.contains("web_search"), "{}", reqs[0].body);
+    let b = &reqs[1].body;
+    assert!(b.contains("\"run\"") && b.contains("read_file"), "{b}");
+    assert!(!b.contains("web_search") && !b.contains("web_read"), "{b}");
+    // nothing about it in the system prompt either
+    assert!(!b.contains("Web:"), "{b}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn a_call_to_a_turned_off_tool_is_refused_and_files_off_hides_read_file() {
+    let home = TempDir::new().unwrap();
+    let m = stepped(
+        "chat",
+        vec![
+            (
+                "",
+                vec![("c1", "web_search", r#"{"query":"x"}"#.to_owned())],
+            ),
+            ("fine\n", vec![]),
+        ],
+    );
+    let mut p = with_run(&home, &m, "tools: {web: off, files: off, run: off}\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? look\r").unwrap();
+    p.expect("fine").unwrap();
+    p.expect("E> ").unwrap();
+    let reqs = m.requests();
+    let b = &reqs[0].body;
+    assert!(
+        !b.contains("web_") && !b.contains("read_file") && !b.contains("\"run\""),
+        "{b}"
+    );
+    assert!(b.contains("read_block"), "{b}");
+    assert!(!b.contains("run with a read-only command"), "{b}");
+    assert!(
+        reqs[1].body.contains("turned off by the user"),
+        "{}",
+        reqs[1].body
     );
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();

@@ -10,8 +10,10 @@ pub mod cmdsuggest;
 pub mod compact;
 pub mod context;
 pub mod firstrun;
+pub mod hard;
 pub mod jobs;
 pub mod mask;
+pub mod opts;
 pub mod prefix;
 pub mod render;
 pub mod status;
@@ -73,6 +75,8 @@ pub struct Llm {
     /// An agent turn waiting for the user to run a proposed command.
     pub pending: Mutex<Option<agent::Pending>>,
     pub jobs: Mutex<jobs::Jobs>,
+    /// Session overrides of `run:` and `tools:`.
+    pub opts: Mutex<opts::Opts>,
     pub status: std::sync::OnceLock<status::Status>,
     /// The job poller found a dead pid: the controller should poke the shell.
     pub job_poll: AtomicBool,
@@ -103,6 +107,7 @@ impl Llm {
             failed: Mutex::default(),
             pending: Mutex::new(None),
             jobs: Mutex::default(),
+            opts: Mutex::default(),
             status: std::sync::OnceLock::new(),
             job_poll: AtomicBool::new(false),
             job_notices: Mutex::default(),

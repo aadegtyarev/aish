@@ -7,6 +7,7 @@ use std::sync::Arc;
 use lineedit_wip::{Ctx, Decoration, Plugin};
 
 use super::Llm;
+use crate::config::RunMode;
 
 /// What the suggestions depend on.
 pub struct State {
@@ -20,6 +21,20 @@ pub struct State {
     /// Profile names, and the active one.
     pub profiles: Vec<String>,
     pub profile: Option<String>,
+    pub run: RunMode,
+    /// Switchable tools and whether each is on.
+    pub tools: Vec<(String, bool)>,
+}
+
+/// `--save` as the last word of `ai run ...` / `ai tools ...`.
+fn save_flag(part: &str) -> Option<(String, String)> {
+    ((part.is_empty() || part.starts_with('-')) && "--save".starts_with(part) && part != "--save")
+        .then(|| {
+            (
+                "--save"[part.len()..].to_owned(),
+                "· keep in the config".to_owned(),
+            )
+        })
 }
 
 /// `(rest of the line to append, short description)`.
@@ -50,6 +65,8 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 ("model", "switch a role's model"),
                 ("models", "list models"),
                 ("profile", "profiles"),
+                ("run", "may the model run commands"),
+                ("tools", "tools on/off"),
                 toggle,
                 other,
                 ("config", "open the config"),
@@ -90,6 +107,46 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 Some(r) => Some((r[part.len()..].to_owned(), "· role".to_owned())),
                 None => complete_ref(st, "chat", part),
             }
+        }
+        ["run", part] => {
+            // a mode other than the current one
+            let m = RunMode::ALL
+                .into_iter()
+                .filter(|m| m.name().starts_with(part) && m.name() != *part)
+                .find(|m| *m != st.run)?;
+            Some((
+                m.name()[part.len()..].to_owned(),
+                format!("· now {}", st.run.name()),
+            ))
+        }
+        ["run", m, part] if RunMode::parse(m).is_some() => save_flag(part),
+        ["tools", part] => {
+            let (n, on) = st
+                .tools
+                .iter()
+                .find(|(n, _)| n.starts_with(part) && n != part)?;
+            Some((
+                n[part.len()..].to_owned(),
+                format!("· now {}", if *on { "on" } else { "off" }),
+            ))
+        }
+        ["tools", name, part] => {
+            let on = st.tools.iter().find(|(n, _)| n == name)?.1;
+            // the other state first
+            let order = if on { ["off", "on"] } else { ["on", "off"] };
+            let w = order
+                .into_iter()
+                .find(|w| w.starts_with(part) && w != part)?;
+            Some((
+                w[part.len()..].to_owned(),
+                format!("· now {}", if on { "on" } else { "off" }),
+            ))
+        }
+        ["tools", name, state @ ("on" | "off"), part]
+            if st.tools.iter().any(|(n, _)| n == name) =>
+        {
+            let _ = state;
+            save_flag(part)
         }
         ["profile", part] => {
             let pick = st
@@ -186,6 +243,11 @@ impl CmdSuggest {
                 .map(|c| c.profiles.0.iter().map(|(n, _)| n.clone()).collect())
                 .unwrap_or_default(),
             profile: self.llm.config().and_then(|c| c.profile.clone()),
+            run: self.llm.run_mode(),
+            tools: super::cmd::TOOL_NAMES
+                .iter()
+                .map(|n| ((*n).to_owned(), self.llm.tool_on(n)))
+                .collect(),
         }
     }
 
@@ -247,7 +309,49 @@ mod tests {
             complete: Some("local/coder".into()),
             profiles: vec!["local".into(), "inet".into()],
             profile: Some("local".into()),
+            run: RunMode::Ask,
+            tools: vec![
+                ("run".into(), true),
+                ("files".into(), true),
+                ("web".into(), false),
+            ],
         }
+    }
+
+    #[test]
+    fn run_and_tools_args() {
+        let s = st(true);
+        assert_eq!(c(&s, "ai r").unwrap().0, "un");
+        assert_eq!(c(&s, "ai t").unwrap().0, "ools");
+        // not the current mode
+        assert_eq!(
+            c(&s, "ai run ").unwrap(),
+            ("auto".into(), "· now ask".into())
+        );
+        assert_eq!(c(&s, "ai run a").unwrap().0, "uto");
+        assert_eq!(c(&s, "ai run as"), None);
+        let off = State {
+            run: RunMode::Off,
+            ..st(true)
+        };
+        assert_eq!(c(&off, "ai run ").unwrap().0, "ask");
+        assert_eq!(c(&s, "ai run auto ").unwrap().0, "--save");
+        assert_eq!(c(&s, "ai run auto --sa").unwrap().0, "ve");
+        assert_eq!(c(&s, "ai run x --sa"), None);
+        assert_eq!(
+            c(&s, "ai tools ").unwrap(),
+            ("run".into(), "· now on".into())
+        );
+        assert_eq!(
+            c(&s, "ai tools w").unwrap(),
+            ("eb".into(), "· now off".into())
+        );
+        // the opposite state first
+        assert_eq!(c(&s, "ai tools web ").unwrap().0, "on");
+        assert_eq!(c(&s, "ai tools run ").unwrap().0, "off");
+        assert_eq!(c(&s, "ai tools run o").unwrap().0, "ff");
+        assert_eq!(c(&s, "ai tools run off ").unwrap().0, "--save");
+        assert_eq!(c(&s, "ai tools nope "), None);
     }
 
     #[test]

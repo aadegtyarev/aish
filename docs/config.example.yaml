@@ -56,10 +56,33 @@ roles:
 #   ask: ctrl-q
 
 # Extra read-only command prefixes the agent (`?`) may run by itself, without
-# asking. Everything else is put into your input line for Enter.
+# asking. Other commands: see `run:` below.
 # allow:
 #   - make check
 #   - docker ps
+
+# May the model run commands that are not read-only (via the `run` tool)?
+#   ask  — (default) a dim prompt under the answer: Enter runs it once, s allows the
+#          session, a also writes `run: auto` here, Esc declines. The command is typed
+#          into your bash as if you did (visible, sudo can prompt, cd persists); the
+#          model gets the exit code, the output tail and the duration.
+#   auto — no asking; sudo/su, rm -r/-f, dd, mkfs, fdisk/parted, shutdown/reboot,
+#          redirection or tee into files, `curl | sh`, chmod/chown -R, git push --force,
+#          git reset --hard and git clean -f still ask.
+#   off  — never: the command is put into your input line for Enter.
+# Read-only commands keep running by themselves in every mode.
+# In a session: `ai run ask|auto|off` (add --save to write it here).
+# run: ask
+
+# Switch the agent's tools on/off. An off tool is not sent to the model at all.
+# `run: off` here removes the run tool entirely (not even read-only commands);
+# the `run:` setting above only decides what happens to other commands.
+# In a session: `ai tools web off` (add --save to write it here).
+# tools:
+#   run: on
+#   files: on     # read_file
+#   web: on       # web_search, web_read (see `web:` below for the backends)
+#   skills: on    # reserved
 
 # Web tools for the agent: web_search(query) and web_read(url), read-only, run by themselves.
 # Each has a chain of backends, tried in order; one that is unavailable or finds nothing

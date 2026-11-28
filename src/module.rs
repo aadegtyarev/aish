@@ -40,9 +40,20 @@ pub struct TaskShared {
     status_row: AtomicBool,
     /// Output has replaced the status row: no more spinner until `status_reset`.
     status_off: AtomicBool,
+    /// The worker waits for one decision key (`Task::wait_key`): the
+    /// controller hands keys to `offer_key` instead of buffering them.
+    pub keys_wanted: AtomicBool,
+    key: Mutex<Option<u8>>,
 }
 
 impl TaskShared {
+    /// A key for the waiting worker (the first one wins).
+    pub fn offer_key(&self, k: u8) {
+        if let Ok(mut g) = self.key.lock() {
+            g.get_or_insert(k);
+        }
+    }
+
     /// Drop all further output; returns once no write is in flight.
     pub fn mute(&self) {
         let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -91,6 +102,26 @@ impl Task {
             self.shared.status_off.store(true, Relaxed);
         }
         let _ = (&*self.out).write_all(bytes);
+    }
+
+    /// Block until the user presses a decision key (`\r`, `s`, `a` or ESC
+    /// as 0x1b; see the controller). `None`: cancelled with Ctrl-C.
+    pub fn wait_key(&self) -> Option<u8> {
+        if let Ok(mut g) = self.shared.key.lock() {
+            *g = None;
+        }
+        self.shared.keys_wanted.store(true, Relaxed);
+        let r = loop {
+            if self.cancelled() {
+                break None;
+            }
+            if let Some(k) = self.shared.key.lock().ok().and_then(|mut g| g.take()) {
+                break Some(k);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        };
+        self.shared.keys_wanted.store(false, Relaxed);
+        r
     }
 
     /// A writer for the status row that a worker thread can own.
@@ -201,6 +232,8 @@ impl TaskMaker {
                 wake: self.wake.clone(),
                 status_row: AtomicBool::new(false),
                 status_off: AtomicBool::new(false),
+                keys_wanted: AtomicBool::new(false),
+                key: Mutex::new(None),
             }),
         }
     }

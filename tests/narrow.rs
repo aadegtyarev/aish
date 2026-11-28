@@ -1272,6 +1272,92 @@ fn waiting_in_the_overlay() {
     t.send("\x1b");
 }
 
+// ---- the model asks to run a command ---------------------------------------
+
+fn run_prompt_mock() -> Mock {
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Mock::start(move |r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            let cmd = "apt list --upgradable 2>&1 | grep -i security-updates-from-the-archive | sort -u | head -n 20";
+            mock::chat_calls_stream(
+                c,
+                "",
+                &[(
+                    "c1",
+                    "run",
+                    &serde_json::json!({ "command": cmd }).to_string(),
+                )],
+            );
+        } else {
+            mock::chat_stream(c, &["fine-done\n"], Duration::from_millis(10));
+        }
+    })
+}
+
+fn run_prompt_fits_the_width_and_stays_dim() {
+    for (cols, n) in [(36u16, 12usize), (80, 12), (20, 12)] {
+        let home = TempDir::new().unwrap();
+        let m = run_prompt_mock();
+        let ps1 = prompt(n);
+        let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+        t.send("? upgrade\r");
+        t.wait_for("Esc");
+        t.pump_for(Duration::from_millis(500));
+        t.assert_clean();
+        let c = cols as usize;
+        let first = t.scr.find_row("▶").unwrap();
+        let hint = t.scr.find_row("Esc").unwrap();
+        assert!(hint > first, "{}", t.scr.dump());
+        for y in first..=hint {
+            let row = t.scr.row_text(y);
+            assert!(row.starts_with("│ "), "row {y}: {row:?}\n{}", t.scr.dump());
+            assert!(!t.scr.row_wrapped(y), "row {y} wrapped\n{}", t.scr.dump());
+            assert!(
+                row.chars().count() <= c,
+                "row {y} too long\n{}",
+                t.scr.dump()
+            );
+            assert!(t.scr.is_dim(0, y), "bar not dim, row {y}\n{}", t.scr.dump());
+        }
+        // the hint row is dim and laconic; the command is all there
+        assert!(t.scr.is_dim(4, hint), "{}", t.scr.dump());
+        let text: String = (first..hint)
+            .map(|y| {
+                t.scr
+                    .row_text(y)
+                    .trim_start_matches("│ ")
+                    .trim_start_matches("▶ ")
+                    .trim()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            text.replace(' ', "").contains("head-n20"),
+            "command cut\n{}",
+            t.scr.dump()
+        );
+        if cols >= 60 {
+            assert!(
+                t.scr
+                    .row_text(hint)
+                    .contains("Enter run · s session · a always · Esc no"),
+                "{}",
+                t.scr.dump()
+            );
+        }
+        // declining leaves one dim note and the model's answer follows
+        t.send("\x1b");
+        t.wait_for("fine-done");
+        t.pump_for(Duration::from_millis(600));
+        t.assert_clean();
+        assert!(t.scr.find_row("declined").is_some(), "{}", t.scr.dump());
+        assert!(t.scr.find_row("Enter run").is_none(), "{}", t.scr.dump());
+    }
+}
+
 macro_rules! both {
     ($($n:ident),* $(,)?) => {
         mod utf8 {
@@ -1334,6 +1420,7 @@ fn conversation_commands_fit_the_width() {
 
 both!(
     conversation_commands_fit_the_width,
+    run_prompt_fits_the_width_and_stays_dim,
     waiting_phases,
     waiting_error_replaces_the_row,
     waiting_ctrl_c_cancels_and_cleans_up,

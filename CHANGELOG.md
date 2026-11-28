@@ -33,6 +33,23 @@ version and date, and the release notes on GitHub are taken from it.
   from `.bashrc` no longer appear twice. Rerun `aish init` to move an old block.
 
 ### Added
+- The model may run commands itself, with your permission. For a command that is not
+  read-only the agent shows a dim prompt under the answer (`│ ▶ cmd`, `Enter run ·
+  s session · a always · Esc no`). Enter types the command into your bash as if you
+  did (visible, sudo can prompt, `cd` persists, Ctrl-C works) and the model gets the
+  exit code, the output tail and the duration; `s` stops asking until aish exits,
+  `a` also saves `run: auto`, Esc declines (the model is told and goes on). It is
+  typed only into an empty line at an idle prompt. A hard list always asks, also in
+  auto: sudo/doas/su, `rm -r/-f`, dd, mkfs, fdisk/parted/wipefs, shutdown/reboot,
+  redirection or `tee` into files, `curl | sh`, `chmod/chown -R`, `git push --force`,
+  `git reset --hard`, `git clean -f` (parsed conservatively: when unsure, it asks).
+  `ai run` shows the mode, `ai run ask|auto|off` sets it (`--save` keeps it); `off`
+  is the old behaviour (the command goes into your input line). `run:` in the config.
+- Per-tool switches: `tools: {run, files, web, skills}` in the config (`skills` is
+  reserved), `ai tools` lists them, `ai tools web off [--save]` changes one. An off
+  tool is not sent to the model and not mentioned in its prompt; a call to it is
+  refused. `tools: {run: off}` means no run tool at all (not even read-only commands),
+  unlike `ai run off`.
 - A waiting indicator for `?` answers (also in the Ctrl-Q overlay): one dim
   status row, `│ ⠹ waiting · 4s`, updated in place and replaced by the
   answer; phases connecting / waiting / thinking / loading model (llama.cpp
