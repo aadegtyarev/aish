@@ -65,16 +65,19 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
             } else {
                 &st.complete
             };
+            // `m` names the current model, as `provider/alias` or bare alias
+            let is_cur = |m: &str| {
+                cur.as_deref().is_some_and(|c| {
+                    c == m || (!m.contains('/') && c.split_once('/').is_some_and(|(_, a)| a == m))
+                })
+            };
             let mut it = st
                 .models
                 .iter()
                 .filter(|m| m.starts_with(part) && *m != part);
             // the likely switch target first: not the current one
-            let pick = it
-                .clone()
-                .find(|m| Some(*m) != cur.as_ref())
-                .or_else(|| it.next());
-            let pick = pick.filter(|m| Some(*m) != cur.as_ref())?;
+            let pick = it.clone().find(|m| !is_cur(m)).or_else(|| it.next());
+            let pick = pick.filter(|m| !is_cur(m))?;
             Some((
                 pick[part.len()..].to_owned(),
                 format!("· сейчас {}", cur.as_deref().unwrap_or("не задана")),
@@ -114,8 +117,17 @@ impl CmdSuggest {
                         .flat_map(|p| {
                             let mut a: Vec<&String> = p.models.keys().collect();
                             a.sort();
+                            // `provider/alias`, plus the bare alias when no
+                            // other provider has it
                             a.into_iter()
-                                .map(|m| format!("{}/{m}", p.id))
+                                .flat_map(|m| {
+                                    let full = format!("{}/{m}", p.id);
+                                    if c.providers_with(m).len() == 1 {
+                                        vec![m.clone(), full]
+                                    } else {
+                                        vec![full]
+                                    }
+                                })
                                 .collect::<Vec<_>>()
                         })
                         .collect()
@@ -182,6 +194,24 @@ mod tests {
             chat: Some("cloud/main".into()),
             complete: Some("local/coder".into()),
         }
+    }
+
+    #[test]
+    fn bare_alias_and_current_given_as_provider_alias() {
+        let s = State {
+            models: vec![
+                "mellum".into(),
+                "local/mellum".into(),
+                "oss".into(),
+                "local/oss".into(),
+            ],
+            chat: Some("local/mellum".into()),
+            ..st(true)
+        };
+        // the current one (bare form) is not offered
+        assert_eq!(c(&s, "ai chat mel"), None);
+        assert_eq!(c(&s, "ai chat o").unwrap().0, "ss");
+        assert_eq!(c(&s, "ai chat local/o").unwrap().0, "ss");
     }
 
     fn c(s: &State, l: &str) -> Option<(String, String)> {

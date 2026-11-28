@@ -9,6 +9,11 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- Bare model aliases: `ai chat ds` works when only one provider has `ds`
+  (`provider/alias` still works and is required when names collide); roles in
+  the config accept them too, and `ai chat` suggests them.
+
 ### Fixed
 - `aish status`: a space between `complete` and the model name.
 

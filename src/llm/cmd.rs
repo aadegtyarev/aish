@@ -87,7 +87,7 @@ pub fn apply(llm: &Llm, cmd: &Cmd) -> String {
             }
         }
         Cmd::Usage => {
-            "ai | aish [status | chat <провайдер/модель> | complete <…> | on | off | config | init]"
+            "ai | aish [status | chat <модель> | complete <…> | on | off | config | init]"
                 .into()
         }
         Cmd::Status | Cmd::Config | Cmd::Init => String::new(),

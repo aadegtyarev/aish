@@ -22,6 +22,8 @@ providers:
         # web: native            # the provider searches the web itself (default for api.openai.com
         #                       # with type: responses; chat providers: set it only if the model does)
 
+# Roles take provider/alias, or just the alias when only one provider has it
+# (same for `ai chat <alias>`). Keep aliases short: they are what you type.
 roles:
   complete:
     id: local/coder

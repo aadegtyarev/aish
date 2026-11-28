@@ -207,11 +207,31 @@ impl Config {
             .map_err(|e| anyhow!("role '{role}': {e}"))
     }
 
-    /// Resolve a `provider/alias` reference; `effort` is the role-level setting.
+    /// Providers that have a model with this alias.
+    pub fn providers_with(&self, alias: &str) -> Vec<&str> {
+        self.providers
+            .iter()
+            .filter(|p| p.models.contains_key(alias))
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+
+    /// Resolve a `provider/alias` reference, or a bare `alias` that only one
+    /// provider has; `effort` is the role-level setting.
     pub fn resolve_ref(&self, id: &str, effort: &Setting<String>) -> Result<Resolved<'_>> {
-        let (pid, alias) = id
-            .split_once('/')
-            .ok_or_else(|| anyhow!("id '{id}' must be 'provider/alias'"))?;
+        let (pid, alias) = match id.split_once('/') {
+            Some(x) => x,
+            None => match self.providers_with(id).as_slice() {
+                [p] => (*p, id),
+                [] => return Err(anyhow!("no model alias '{id}'")),
+                ps => {
+                    return Err(anyhow!(
+                        "alias '{id}' is in several providers ({}): use provider/{id}",
+                        ps.join(", ")
+                    ))
+                }
+            },
+        };
         let provider = self
             .providers
             .iter()
@@ -263,6 +283,25 @@ mod tests {
     const EXAMPLE: &str = include_str!("../docs/config.example.yaml");
 
     #[test]
+    fn bare_alias_resolves_when_unique() {
+        let c = Config::parse(
+            "providers:\n  - id: a\n    url: http://x/v1\n    type: chat\n    models: {m: {id: m1}, both: {id: b1}}\n  - id: b\n    url: http://y/v1\n    type: chat\n    models: {both: {id: b2}}\nroles:\n  chat: {id: m}\n",
+        )
+        .unwrap();
+        assert_eq!(c.resolve("chat").unwrap().model.id, "m1");
+        assert_eq!(
+            c.resolve_ref("b/both", &Setting::Unset).unwrap().model.id,
+            "b2"
+        );
+        let e = c
+            .resolve_ref("both", &Setting::Unset)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("a, b"), "{e}");
+        assert!(c.resolve_ref("nope", &Setting::Unset).is_err());
+    }
+
+    #[test]
     fn parses_example_and_resolves() {
         let c = Config::parse(EXAMPLE).unwrap();
         assert_eq!(c.providers.len(), 2);
@@ -300,7 +339,7 @@ roles:
     fn bad_refs() {
         let base = "providers:\n  - {id: p, url: u, type: chat, models: {m: {id: a}}}\nroles:\n";
         for (role, want) in [
-            ("x: {id: pm}", "provider/alias"),
+            ("x: {id: pm}", "no model alias 'pm'"),
             ("x: {id: q/m}", "unknown provider 'q'"),
             ("x: {id: p/z}", "no model alias 'z'"),
         ] {
