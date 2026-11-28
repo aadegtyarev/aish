@@ -1,51 +1,21 @@
 //! LLM features under a real pty against an in-process mock server.
 
+mod common;
+
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use aish_llm::mock::{self, Mock};
+use common::{aish_cmd, mock_config, spawn, write_config};
 use expectrl::{Eof, Session};
 use tempfile::TempDir;
 
-fn config(url: &str) -> String {
-    format!(
-        "providers:\n  - id: mock\n    url: {url}\n    type: chat\n    models: {{m: {{id: test}}}}\nroles:\n  chat: {{id: mock/m}}\n  complete: {{id: mock/m}}\n"
-    )
-}
-
 fn base(home: &TempDir) -> Command {
-    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
-    std::fs::write(home.path().join("hist"), "").unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("HISTFILE", home.path().join("hist"))
-        .env("TERM", "xterm")
-        .env("XDG_STATE_HOME", home.path().join("state"))
-        // never reach the real release API from tests (refused at once)
-        .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
-    // ... and in release mode (override ignored) the daily check is not due
-    let st = home.path().join("state/aish");
-    std::fs::create_dir_all(&st).unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    std::fs::write(st.join("update-check"), format!("{now}\n\n{now}\n")).unwrap();
-    cmd
-}
-
-fn spawn(cmd: Command) -> Session {
-    let mut p = Session::spawn(cmd).unwrap();
-    p.set_expect_timeout(Some(Duration::from_secs(10)));
-    p
+    aish_cmd(home.path(), "PS1='E> '\n")
 }
 
 fn with_config(home: &TempDir, mock: &Mock) -> Session {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), config(&mock.url())).unwrap();
+    write_config(home.path(), &mock_config(&mock.url()));
     spawn(base(home))
 }
 
@@ -226,9 +196,7 @@ fn first_run_with_nothing_found_writes_nothing() {
 fn cli_subcommands_and_bash_passthrough() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+    write_config(home.path(), &mock_config(&m.url()));
     let run = |args: &[&str]| {
         let mut c = base(&home);
         c.args(args).stdin(std::process::Stdio::null());
@@ -423,13 +391,10 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
 }
 
 fn with_command(home: &TempDir, m: &Mock, command: &str) -> Session {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("command: {command}\n{}", config(&m.url())),
-    )
-    .unwrap();
+    write_config(
+        home.path(),
+        &format!("command: {command}\n{}", mock_config(&m.url())),
+    );
     spawn(base(home))
 }
 
@@ -442,9 +407,7 @@ fn ai_wins_even_over_an_executable_of_that_name() {
     let ai = bin.join("ai");
     std::fs::write(&ai, "#!/bin/sh\necho real-ai-ran\n").unwrap();
     std::fs::set_permissions(&ai, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+    write_config(home.path(), &mock_config(&m.url()));
     let mut cmd = base(&home);
     cmd.env(
         "PATH",
@@ -532,15 +495,13 @@ fn config_kind(url: &str, kind: &str) -> String {
 }
 
 fn config_kind_run(url: &str, kind: &str) -> String {
-    config(url)
+    mock_config(url)
         .replace("type: chat", &format!("type: {kind}"))
         .replace("  complete: {id: mock/m}\n", "")
 }
 
 fn with_kind(home: &TempDir, m: &Mock, kind: &str) -> Session {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), config_kind(&m.url(), kind)).unwrap();
+    write_config(home.path(), &config_kind(&m.url(), kind));
     spawn(base(home))
 }
 
@@ -746,13 +707,10 @@ fn tools_rejected_with_400_falls_back_once_and_is_remembered() {
 fn tools_off_in_config_sends_no_tools() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        config_kind(&m.url(), "chat").replace("{id: test}", "{id: test, tools: off}"),
-    )
-    .unwrap();
+    write_config(
+        home.path(),
+        &config_kind(&m.url(), "chat").replace("{id: test}", "{id: test, tools: off}"),
+    );
     let mut p = spawn(base(&home));
     p.expect("E> ").unwrap();
     settle();
@@ -1359,9 +1317,7 @@ fn agent_searches_then_reads_a_page_through_mock_backends() {
             ("Готово: web-done\n", vec![]),
         ],
     );
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), config_kind(&m.url(), "chat")).unwrap();
+    write_config(home.path(), &config_kind(&m.url(), "chat"));
     let mut cmd = base(&home);
     cmd.env(
         "AISH_TEST_WEB_DDG",
@@ -1442,10 +1398,8 @@ fn native_search_model_gets_the_builtin_tool_and_no_web_search_function() {
             r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}"#,
         );
     });
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
     let cfg = config_kind(&m.url(), "responses").replace("{id: test}", "{id: test, web: native}");
-    std::fs::write(dir.join("config.yaml"), cfg).unwrap();
+    write_config(home.path(), &cfg);
     let mut p = spawn(base(&home));
     p.expect("E> ").unwrap();
     settle();
@@ -1465,13 +1419,10 @@ fn native_search_model_gets_the_builtin_tool_and_no_web_search_function() {
 fn web_off_sends_no_web_tools_and_overlay_keeps_web_but_not_run() {
     let home = TempDir::new().unwrap();
     let m = stepped("chat", vec![("ok\n", vec![])]);
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("{}web: off\n", config_kind(&m.url(), "chat")),
-    )
-    .unwrap();
+    write_config(
+        home.path(),
+        &format!("{}web: off\n", config_kind(&m.url(), "chat")),
+    );
     let mut p = spawn(base(&home));
     p.expect("E> ").unwrap();
     settle();
@@ -1524,10 +1475,8 @@ fn native_search_rejection_retries_without_it_keeping_function_tools() {
             mock::resp_stream(c, &["plain-ok\n"], Duration::ZERO);
         }
     });
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
     let cfg = config_kind(&m.url(), "responses").replace("{id: test}", "{id: test, web: native}");
-    std::fs::write(dir.join("config.yaml"), cfg).unwrap();
+    write_config(home.path(), &cfg);
     let mut p = spawn(base(&home));
     p.expect("E> ").unwrap();
     settle();
@@ -1550,14 +1499,11 @@ fn native_search_rejection_retries_without_it_keeping_function_tools() {
 fn native_search_needs_provider_in_the_search_chain() {
     let home = TempDir::new().unwrap();
     let m = Mock::start(|_, c| mock::resp_stream(c, &["ok\n"], Duration::ZERO));
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
     let cfg = config_kind(&m.url(), "responses").replace("{id: test}", "{id: test, web: native}");
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("{cfg}web: {{search: [duckduckgo]}}\n"),
-    )
-    .unwrap();
+    write_config(
+        home.path(),
+        &format!("{cfg}web: {{search: [duckduckgo]}}\n"),
+    );
     let mut p = spawn(base(&home));
     p.expect("E> ").unwrap();
     settle();
@@ -1577,13 +1523,10 @@ fn native_search_needs_provider_in_the_search_chain() {
 
 /// Default config (run mode unset = ask) plus `extra` lines.
 fn with_run(home: &TempDir, m: &Mock, extra: &str) -> Session {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("{}{extra}", config_kind_run(&m.url(), "chat")),
-    )
-    .unwrap();
+    write_config(
+        home.path(),
+        &format!("{}{extra}", config_kind_run(&m.url(), "chat")),
+    );
     spawn(base(home))
 }
 
@@ -1933,9 +1876,7 @@ fn convo_mock() -> Mock {
 }
 
 fn with_yaml(home: &TempDir, yaml: &str) -> Session {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), yaml).unwrap();
+    write_config(home.path(), yaml);
     spawn(base(home))
 }
 
@@ -1964,7 +1905,7 @@ fn window_config(url: &str, window: u32) -> String {
 fn comma_prefix_asks_and_question_mark_is_a_command_again() {
     let home = TempDir::new().unwrap();
     let m = convo_mock();
-    let mut p = with_yaml(&home, &format!("prefix: ','\n{}", config(&m.url())));
+    let mut p = with_yaml(&home, &format!("prefix: ','\n{}", mock_config(&m.url())));
     p.expect("E> ").unwrap();
     settle();
     p.send(", say hi\r").unwrap();
@@ -2309,16 +2250,13 @@ fn judge_mock(steps: Vec<(&'static str, Calls)>, j: J) -> Mock {
 }
 
 fn judge_session(home: &TempDir, m: &Mock, extra: &str) -> Session {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!(
+    write_config(
+        home.path(),
+        &format!(
             "{}run: {{mode: judge{extra}}}\n",
             config_kind_run(&m.url(), "chat")
         ),
-    )
-    .unwrap();
+    );
     let mut cmd = base(home);
     cmd.env("AISH_JUDGE_TIMEOUT_MS", "800");
     spawn(cmd)

@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use aish_llm::mock::{self, Mock};
-use common::{spawn_sized, Term};
+use common::{aish_cmd, mock_config, spawn_sized, write_config, Term};
 use tempfile::TempDir;
 
 const W: u16 = 36;
@@ -25,28 +25,13 @@ fn utf8() -> bool {
 }
 const H: u16 = 20;
 
-fn config(url: &str) -> String {
-    format!(
-        "providers:\n  - id: mock\n    url: {url}\n    type: chat\n    models: {{m: {{id: test}}}}\nroles:\n  chat: {{id: mock/m}}\n  complete: {{id: mock/m}}\n"
-    )
-}
-
 fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
     let extra = std::fs::read_to_string(home.path().join("extra_rc")).unwrap_or_default();
-    std::fs::write(
-        home.path().join(".bashrc"),
-        format!("PS1='{ps1}'\ncd \"$HOME/dd\" 2>/dev/null\n{extra}"),
-    )
-    .unwrap();
+    let mut cmd = aish_cmd(
+        home.path(),
+        &format!("PS1='{ps1}'\ncd \"$HOME/dd\" 2>/dev/null\n{extra}"),
+    );
     std::fs::write(home.path().join("hist"), hist).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("HISTFILE", home.path().join("hist"))
-        .env("TERM", "xterm")
-        .env("XDG_STATE_HOME", home.path().join("state"))
-        .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
     // (readline only measures wide characters right in a UTF-8 locale; there it
     // also lets the terminal wrap long prompts instead of breaking them itself)
     // (explicit locale and no inputrc: nothing of the runner's setup may leak in)
@@ -56,13 +41,6 @@ fn command(home: &TempDir, ps1: &str, hist: &str) -> Command {
     } else {
         cmd.env("LC_ALL", "C");
     }
-    let st = home.path().join("state/aish");
-    std::fs::create_dir_all(&st).unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    std::fs::write(st.join("update-check"), format!("{now}\n\n{now}\n")).unwrap();
     cmd
 }
 
@@ -94,9 +72,7 @@ fn start_llm(home: &TempDir, m: &Mock, ps1: &str, cols: u16) -> Term {
 }
 
 fn start_llm_rows(home: &TempDir, m: &Mock, ps1: &str, cols: u16, rows: u16) -> Term {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+    write_config(home.path(), &mock_config(&m.url()));
     start_rows(home, ps1, "", cols, rows)
 }
 
@@ -420,9 +396,7 @@ fn update_notice_is_cut_to_the_width() {
     for cols in [36u16, 20] {
         let home = TempDir::new().unwrap();
         let m = Mock::start(|_, c| mock::json(c, 200, "{}"));
-        let dir = home.path().join(".config/aish");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+        write_config(home.path(), &mock_config(&m.url()));
         let ps1 = prompt(12);
         let cmd = command(&home, &ps1, "");
         let now = std::time::SystemTime::now()
@@ -755,9 +729,7 @@ fn two_line_prompt_update_notice() {
     for cols in [80u16, 36] {
         let home = TempDir::new().unwrap();
         let m = Mock::start(|_, c| mock::json(c, 200, "{}"));
-        let dir = home.path().join(".config/aish");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+        write_config(home.path(), &mock_config(&m.url()));
         let cmd = command(&home, TWO_LINE, "");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -942,9 +914,7 @@ fn late_update_notice() {
     });
     for (cols, ps1) in [(36u16, prompt(12)), (36, TWO_LINE.to_string())] {
         let home = TempDir::new().unwrap();
-        let dir = home.path().join(".config/aish");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.yaml"), config(&m.url())).unwrap();
+        write_config(home.path(), &mock_config(&m.url()));
         let mut cmd = command(&home, &ps1, "");
         let cache = home.path().join("state/aish/update-check");
         std::fs::remove_file(&cache).unwrap(); // a check is due
@@ -1388,13 +1358,10 @@ fn judge_lines_fit_the_width() {
         // ASK: the reason sits above the hint, the user decides
         let home = TempDir::new().unwrap();
         let m = judge_mock("ASK — modifies files outside the build directory entirely");
-        let dir = home.path().join(".config/aish");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("config.yaml"),
-            format!("{}run: {{mode: judge}}\n", config(&m.url())),
-        )
-        .unwrap();
+        write_config(
+            home.path(),
+            &format!("{}run: {{mode: judge}}\n", mock_config(&m.url())),
+        );
         let mut t = start_rows(&home, &prompt(12), "", cols, 40);
         t.send("? go\r");
         t.wait_for("Esc");
@@ -1436,13 +1403,10 @@ fn judge_lines_fit_the_width() {
         ] {
             let home = TempDir::new().unwrap();
             let m = judge_mock(v);
-            let dir = home.path().join(".config/aish");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("config.yaml"),
-                format!("{}run: {{mode: judge}}\n", config(&m.url())),
-            )
-            .unwrap();
+            write_config(
+                home.path(),
+                &format!("{}run: {{mode: judge}}\n", mock_config(&m.url())),
+            );
             let mut t = start_rows(&home, &prompt(12), "", cols, 40);
             t.send("? go\r");
             t.wait_for(want);

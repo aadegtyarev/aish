@@ -4,11 +4,10 @@
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 use std::time::Duration;
 
 use aish_llm::mock::{self, Mock};
-use common::{spawn_sized, Term};
+use common::{aish_cmd, spawn_sized, write_config, Term};
 use tempfile::TempDir;
 
 const LONG_ID: &str = "deepseek-chat-very-long-model-identifier-2026";
@@ -30,30 +29,11 @@ fn mock() -> Mock {
 }
 
 fn start(home: &TempDir, m: &Mock, cols: u16) -> Term {
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    let cfg = dir.join("config.yaml");
-    std::fs::write(&cfg, config(&m.url())).unwrap();
+    write_config(home.path(), &config(&m.url()));
+    let cfg = home.path().join(".config/aish/config.yaml");
     std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).unwrap();
-    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
-    std::fs::write(home.path().join("hist"), "").unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("HISTFILE", home.path().join("hist"))
-        .env("TERM", "xterm")
-        .env("LC_ALL", "C.UTF-8")
-        .env("INPUTRC", "/dev/null")
-        .env("XDG_STATE_HOME", home.path().join("state"))
-        .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
-    let st = home.path().join("state/aish");
-    std::fs::create_dir_all(&st).unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    std::fs::write(st.join("update-check"), format!("{now}\n\n{now}\n")).unwrap();
+    let mut cmd = aish_cmd(home.path(), "PS1='E> '\n");
+    cmd.env("LC_ALL", "C.UTF-8").env("INPUTRC", "/dev/null");
     let mut t = Term::new(spawn_sized(cmd, cols, 40), cols, 40);
     t.wait_for("E>");
     t.pump_for(Duration::from_millis(500));

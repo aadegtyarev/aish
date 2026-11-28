@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -604,4 +605,45 @@ impl Term {
             self.scr.unknown
         );
     }
+}
+
+/// An isolated aish: own HOME, `bashrc` as ~/.bashrc, an empty history, the
+/// update check refused (nothing listens on the test URL) and not due.
+pub fn aish_cmd(home: &Path, bashrc: &str) -> Command {
+    std::fs::write(home.join(".bashrc"), bashrc).unwrap();
+    std::fs::write(home.join("hist"), "").unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", home)
+        .env("HISTFILE", home.join("hist"))
+        .env("TERM", "xterm")
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("AISH_TEST_UPDATE_URL", "http://127.0.0.1:9/");
+    let st = home.join("state/aish");
+    std::fs::create_dir_all(&st).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(st.join("update-check"), format!("{now}\n\n{now}\n")).unwrap();
+    cmd
+}
+
+pub fn write_config(home: &Path, yaml: &str) {
+    let dir = home.join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), yaml).unwrap();
+}
+
+pub fn mock_config(url: &str) -> String {
+    format!(
+        "providers:\n  - id: mock\n    url: {url}\n    type: chat\n    models: {{m: {{id: test}}}}\nroles:\n  chat: {{id: mock/m}}\n  complete: {{id: mock/m}}\n"
+    )
+}
+
+pub fn spawn(cmd: Command) -> Session {
+    let mut p = Session::spawn(cmd).unwrap();
+    p.set_expect_timeout(Some(Duration::from_secs(10)));
+    p
 }

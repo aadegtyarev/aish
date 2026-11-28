@@ -1,9 +1,12 @@
 //! `aish update` against a mock release API, and the quiet update notice.
 
+mod common;
+
 use std::process::Command;
 use std::time::Duration;
 
 use aish_llm::mock::{self, Mock};
+use common::{aish_cmd, spawn, write_config};
 use expectrl::Session;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -153,29 +156,21 @@ fn latest_version_is_reported() {
 }
 
 fn session(home: &TempDir, m: &Mock, extra_cfg: &str) -> Session {
-    std::fs::write(home.path().join(".bashrc"), "PS1='E> '\n").unwrap();
-    std::fs::write(home.path().join("hist"), "").unwrap();
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("providers:\n  - id: p\n    url: http://127.0.0.1:9/v1\n    type: chat\n    models: {{m: {{id: t}}}}\nroles:\n  chat: {{id: p/m}}\n{extra_cfg}"),
-    )
-    .unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("HISTFILE", home.path().join("hist"))
-        .env("TERM", "xterm")
-        .env("XDG_STATE_HOME", home.path().join("state"))
-        .env(
-            "AISH_TEST_UPDATE_URL",
-            format!("http://127.0.0.1:{}/latest", m.port),
-        );
-    let mut p = Session::spawn(cmd).unwrap();
-    p.set_expect_timeout(Some(Duration::from_secs(10)));
-    p
+    write_config(
+        home.path(),
+        &format!("providers:\n  - id: p\n    url: http://127.0.0.1:9/v1\n    type: chat\n    models: {{m: {{id: t}}}}\nroles:\n  chat: {{id: p/m}}\n{extra_cfg}"),
+    );
+    let first = !home.path().join("state").exists();
+    let mut cmd = aish_cmd(home.path(), "PS1='E> '\n");
+    if first {
+        // the daily check must be due; a later start keeps the cache it wrote
+        std::fs::remove_file(home.path().join("state/aish/update-check")).unwrap();
+    }
+    cmd.env(
+        "AISH_TEST_UPDATE_URL",
+        format!("http://127.0.0.1:{}/latest", m.port),
+    );
+    spawn(cmd)
 }
 
 #[test]

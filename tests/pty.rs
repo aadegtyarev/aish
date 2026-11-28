@@ -1,24 +1,18 @@
 //! Drives the aish binary under a real pty.
 
 use std::process::Command;
+mod common;
+
 use std::time::Duration;
 
+use common::{aish_cmd, spawn};
 use expectrl::{Eof, Session};
 use tempfile::TempDir;
 
 fn session(home: &TempDir) -> Session {
-    std::fs::write(home.path().join(".bashrc"), "PS1='PROMPT> '\n").unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("TERM", "xterm")
-        .env("NO_COLOR", "1")
-        .env("RUST_LOG", "aish=debug")
-        .env("XDG_STATE_HOME", home.path().join("state"));
-    let mut p = Session::spawn(cmd).unwrap();
-    p.set_expect_timeout(Some(Duration::from_secs(10)));
-    p
+    let mut cmd = aish_cmd(home.path(), "PS1='PROMPT> '\n");
+    cmd.env("NO_COLOR", "1").env("RUST_LOG", "aish=debug");
+    spawn(cmd)
 }
 
 #[test]
@@ -63,19 +57,10 @@ fn status_line_blocks_and_exit_code() {
 #[test]
 fn array_prompt_command_and_user_ps1_preserved() {
     let home = TempDir::new().unwrap();
-    std::fs::write(
-        home.path().join(".bashrc"),
+    let mut p = spawn(aish_cmd(
+        home.path(),
         "PS1='U> '\nPROMPT_COMMAND=('echo pc1' 'echo pc2')\n",
-    )
-    .unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("TERM", "xterm")
-        .env("XDG_STATE_HOME", home.path().join("state"));
-    let mut p = Session::spawn(cmd).unwrap();
-    p.set_expect_timeout(Some(Duration::from_secs(10)));
+    ));
     p.expect("pc2").unwrap();
     p.expect("U> ").unwrap();
     p.send_line("exit").unwrap();
@@ -83,17 +68,9 @@ fn array_prompt_command_and_user_ps1_preserved() {
 }
 
 fn session_with_rc(home: &TempDir, bashrc: &str) -> Session {
-    std::fs::write(home.path().join(".bashrc"), bashrc).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("TERM", "xterm")
-        .env("RUST_LOG", "aish=debug")
-        .env("XDG_STATE_HOME", home.path().join("state"));
-    let mut p = Session::spawn(cmd).unwrap();
-    p.set_expect_timeout(Some(Duration::from_secs(10)));
-    p
+    let mut cmd = aish_cmd(home.path(), bashrc);
+    cmd.env("RUST_LOG", "aish=debug");
+    spawn(cmd)
 }
 
 #[test]
@@ -153,18 +130,9 @@ fn editor_session(home: &TempDir, history: &str) -> Session {
 }
 
 fn editor_session_rc(home: &TempDir, history: &str, bashrc: &str) -> Session {
-    std::fs::write(home.path().join(".bashrc"), bashrc).unwrap();
+    let cmd = aish_cmd(home.path(), bashrc);
     std::fs::write(home.path().join("hist"), history).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_aish"));
-    cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home.path())
-        .env("HISTFILE", home.path().join("hist"))
-        .env("TERM", "xterm")
-        .env("XDG_STATE_HOME", home.path().join("state"));
-    let mut p = Session::spawn(cmd).unwrap();
-    p.set_expect_timeout(Some(Duration::from_secs(10)));
-    p
+    spawn(cmd)
 }
 
 /// Wait until the editor has taken over the prompt (quiet timer + history load).
