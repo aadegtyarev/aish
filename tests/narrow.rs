@@ -1283,7 +1283,57 @@ macro_rules! both {
     };
 }
 
+fn conversation_commands_fit_the_width() {
+    let m = Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if r.body.contains("Write the notes now") {
+            std::thread::sleep(Duration::from_millis(1500));
+            mock::chat_stream(c, &["- notes\n"], Duration::ZERO);
+        } else {
+            mock::chat_stream(c, &["Hello there\n"], Duration::ZERO);
+        }
+    });
+    let ps1 = prompt(12);
+    for cols in [36u16, 80] {
+        let home = TempDir::new().unwrap();
+        let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+        t.type_only("?h\r");
+        t.see("this help");
+        t.pump_for(Duration::from_millis(300));
+        t.type_only("? hi\r");
+        t.see("Hello there");
+        t.pump_for(Duration::from_millis(300));
+        t.type_only("?c\r");
+        t.see("compacting");
+        let (_, row) = status_row(&t, "compacting").unwrap();
+        assert!(
+            row.starts_with("◇ ") && row.chars().count() < cols as usize,
+            "{row:?}"
+        );
+        t.see("compacted");
+        t.pump_for(Duration::from_millis(500));
+        t.type_only("?n\r");
+        t.see("new conversation");
+        t.pump_for(Duration::from_millis(300));
+        t.type_only("ai help\r");
+        t.see("compact conversation");
+        t.pump_for(Duration::from_millis(500));
+        for y in 0..t.scr.rows {
+            assert!(!t.scr.row_wrapped(y), "row {y} wrapped\n{}", t.scr.dump());
+        }
+        let all = t.scr.everything();
+        for want in ["◇ compacted", "◇ new conversation", "? text", "?N", "?h"] {
+            assert!(all.contains(want), "{want}\n{}", t.scr.dump());
+        }
+        // (the spinner row is gone; only the result stays)
+        assert!(!all.contains("compacting"), "{}", t.scr.dump());
+        t.assert_clean();
+    }
+}
+
 both!(
+    conversation_commands_fit_the_width,
     waiting_phases,
     waiting_error_replaces_the_row,
     waiting_ctrl_c_cancels_and_cleans_up,

@@ -9,6 +9,18 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- `prefix:` in the config picks the character that starts a question: `?` (default),
+  `,`, `@`, `#` or `;`. Detection, highlighting, the right-edge marker and all hints
+  follow it; anything else is a config error that names the allowed set.
+- Conversation commands: `?n` new conversation (`?!` stays as a hidden alias for one
+  release), `?c` compact now, `?h` short help; the forms are also in `ai help`.
+- Auto-compaction: `compact:` (`model`, `at`, `size`, `prompt`). Past `at` of the chat
+  model's context window the next `?` summarises the memory first (`◇ compacted
+  12.4k → 1.1k tokens`); on failure the oldest turns are dropped. The window comes from
+  `context_window`, a local llama.cpp's `/props`, or defaults to 8192, and `ai status`
+  shows it (`ctx 32k`).
+
 ### Changed — UI text is English
 - Every string aish prints (hints, notices, `ai help`/`models`/`profile`, errors, `init`
   and first-run lines, the waiting indicator, the overlay, the update notice) is

@@ -23,6 +23,8 @@ pub enum Phase {
     Waiting = 1,
     Loading = 2,
     Thinking = 3,
+    /// Summarising the conversation (`◇ ⠹ compacting…`).
+    Compacting = 4,
 }
 
 impl Phase {
@@ -31,6 +33,7 @@ impl Phase {
             1 => Phase::Waiting,
             2 => Phase::Loading,
             3 => Phase::Thinking,
+            4 => Phase::Compacting,
             _ => Phase::Connecting,
         }
     }
@@ -41,6 +44,7 @@ impl Phase {
             Phase::Waiting => "waiting",
             Phase::Loading => "loading model",
             Phase::Thinking => "thinking",
+            Phase::Compacting => "compacting…",
         }
     }
 }
@@ -79,12 +83,26 @@ pub struct Waiter {
 impl Waiter {
     /// `probe`: the local model server to ask whether the model is loading.
     pub fn start(task: &Task, probe: Option<Endpoint>) -> Waiter {
+        Self::start_with(task, probe, Phase::Connecting, bar_of(task))
+    }
+
+    /// The wait of a conversation summary: `◇ ⠹ compacting… · 4s`.
+    pub fn start_compacting(task: &Task) -> Waiter {
+        let bar = if task.theme.enabled {
+            format!("\x1b[{}m◇ \x1b[0m", task.theme.dim)
+        } else {
+            "◇ ".to_owned()
+        };
+        Self::start_with(task, None, Phase::Compacting, bar)
+    }
+
+    fn start_with(task: &Task, probe: Option<Endpoint>, first: Phase, bar: String) -> Waiter {
         let w = task.status_writer();
         w.reset();
-        let phase = Arc::new(AtomicU8::new(Phase::Connecting as u8));
+        let phase = Arc::new(AtomicU8::new(first as u8));
         let stop = Arc::new(AtomicBool::new(false));
         let (p, s) = (phase.clone(), stop.clone());
-        let (color, bar, cols) = (task.theme.enabled, bar_of(task), usize::from(task.cols));
+        let (color, cols) = (task.theme.enabled, usize::from(task.cols));
         let thread = std::thread::spawn(move || ticker(w, p, s, probe, color, bar, cols));
         Waiter {
             phase,
@@ -101,6 +119,9 @@ impl Waiter {
             _ => return,
         };
         let cur = Phase::from(self.phase.load(Relaxed));
+        if cur == Phase::Compacting {
+            return;
+        }
         // loading is a more specific "waiting"; thinking stays once seen
         if to == Phase::Waiting && cur != Phase::Connecting {
             return;

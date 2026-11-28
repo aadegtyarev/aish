@@ -213,7 +213,58 @@ pub struct Config {
     /// `update_check: off` — no daily check for a newer release.
     #[serde(default)]
     pub update_check: Setting<String>,
+    /// The character that starts a question to the model (`?` by default).
+    #[serde(default, deserialize_with = "scalar_string")]
+    pub prefix: Option<String>,
+    /// Conversation compaction (`compact:`).
+    #[serde(default)]
+    pub compact: Option<CompactCfg>,
 }
+
+/// Any scalar read as text (`prefix: 5` must reach our own message).
+fn scalar_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_yaml::Value::deserialize(d)? {
+        serde_yaml::Value::String(s) => Some(s),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    })
+}
+
+/// A share written as `70%` (or a bare `70`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Percent(pub f64);
+
+impl<'de> Deserialize<'de> for Percent {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = serde_yaml::Value::deserialize(d)?;
+        let n = match &v {
+            serde_yaml::Value::Number(n) => n.as_f64(),
+            serde_yaml::Value::String(s) => s.trim().trim_end_matches('%').trim().parse().ok(),
+            _ => None,
+        };
+        match n {
+            Some(n) if n.is_finite() => Ok(Percent(n)),
+            _ => Err(D::Error::custom("expected a percentage like 70%")),
+        }
+    }
+}
+
+/// `compact:` — when and how the conversation is summarised.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CompactCfg {
+    /// Model reference for the summary; default: the chat model in use.
+    pub model: Option<String>,
+    /// Compact when the conversation exceeds this share of the window.
+    pub at: Option<Percent>,
+    /// Target summary size as a share of the window.
+    pub size: Option<Percent>,
+    pub prompt: Option<String>,
+}
+
+pub const COMPACT_AT: f64 = 70.0;
+pub const COMPACT_SIZE: f64 = 10.0;
 
 /// Key bindings (`keys:` in the config).
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -270,6 +321,23 @@ impl Config {
                 }
             }
         }
+        if let Some(p) = &self.prefix {
+            crate::llm::prefix::from_config(p).map_err(|e| anyhow!(e))?;
+        }
+        if let Some(c) = &self.compact {
+            let at = c.at.map_or(COMPACT_AT, |p| p.0);
+            let size = c.size.map_or(COMPACT_SIZE, |p| p.0);
+            if !(10.0..=95.0).contains(&at) {
+                bail!("compact.at must be between 10% and 95%");
+            }
+            if !(1.0..=50.0).contains(&size) || size >= at {
+                bail!("compact.size must be between 1% and 50%, and below compact.at");
+            }
+            if let Some(m) = &c.model {
+                self.resolve_ref(m, &Setting::Unset)
+                    .map_err(|e| anyhow!("compact.model: {e}"))?;
+            }
+        }
         for (i, (n, _)) in self.profiles.0.iter().enumerate() {
             if self.profiles.0[..i].iter().any(|(m, _)| m == n) {
                 bail!("duplicate profile '{n}'");
@@ -290,6 +358,32 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The question prefix (`?` unless configured).
+    pub fn prefix(&self) -> char {
+        self.prefix
+            .as_deref()
+            .and_then(|p| crate::llm::prefix::from_config(p).ok())
+            .unwrap_or('?')
+    }
+
+    /// Share of the window at which the conversation is compacted (0..1).
+    pub fn compact_at(&self) -> f64 {
+        self.compact
+            .as_ref()
+            .and_then(|c| c.at)
+            .map_or(COMPACT_AT, |p| p.0)
+            / 100.0
+    }
+
+    /// Target summary size as a share of the window (0..1).
+    pub fn compact_size(&self) -> f64 {
+        self.compact
+            .as_ref()
+            .and_then(|c| c.size)
+            .map_or(COMPACT_SIZE, |p| p.0)
+            / 100.0
     }
 
     pub fn profile_roles(&self, name: &str) -> Option<&HashMap<String, Role>> {
@@ -520,5 +614,29 @@ roles:
     #[test]
     fn empty_config_ok() {
         assert!(Config::parse("{}").unwrap().providers.is_empty());
+    }
+
+    #[test]
+    fn prefix_and_compact_validation() {
+        let p = |x: &str| Config::parse(x);
+        assert_eq!(p("").unwrap().prefix(), '?');
+        for c in ["?", ",", "@", "#", ";"] {
+            assert_eq!(
+                p(&format!("prefix: '{c}'")).unwrap().prefix(),
+                c.chars().next().unwrap()
+            );
+        }
+        for bad in ["'.'", "'??'", "''", "'!'", "5"] {
+            let e = p(&format!("prefix: {bad}")).unwrap_err().to_string();
+            assert!(e.contains("? , @ # ;"), "{bad}: {e}");
+        }
+        let c = p("compact: {at: 80%, size: 5%}").unwrap();
+        assert!((c.compact_at() - 0.8).abs() < 1e-9 && (c.compact_size() - 0.05).abs() < 1e-9);
+        let c = p("").unwrap();
+        assert!((c.compact_at() - 0.7).abs() < 1e-9 && (c.compact_size() - 0.1).abs() < 1e-9);
+        assert!(p("compact: {at: 99%}").is_err());
+        assert!(p("compact: {at: 20%, size: 30%}").is_err());
+        assert!(p("compact: {at: lots}").is_err());
+        assert!(p("compact: {model: nope}").is_err());
     }
 }

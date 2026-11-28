@@ -39,10 +39,74 @@ UI text is English only; the conversation follows the user's language.
 A line `?` or `? text` (a question, then a space) goes to the model together
 with context (the last blocks, cwd, `git status`).
 
-In bash `?` is a glob, "any one character", so the rule is strict: only `?`,
-`?N`, `?!` and lines where a space follows them go to the model. `?.txt`,
-`?? *` and other glob patterns stay commands. To run a bare `?` as a glob,
-escape it: `\?`.
+In bash `?` is a glob, "any one character", so the rule is strict: only the
+prefix alone, prefix + space + text, prefix + digits (`?3`, `?3 text`) and
+prefix + one command letter (`?n`, `?c`, `?h`) go to the model. `?.txt`,
+`?? *`, `?foo` and other glob patterns stay commands. To run a bare `?` as a
+glob, escape it: `\?`. (The old `?!` still works as a hidden alias of `?n`.)
+
+### The prefix
+
+`?` is the default; `prefix:` in config.yaml picks another one of `?` `,` `@`
+`#` `;`. Everywhere below `?` means "your prefix": the recognition, the
+highlighting, the dim marker at the right edge, the hints and `ai help`.
+Chosen because none of them means anything at the start of a bash line
+(`?` only as a one-character glob, `,foo`, `@foo` and `;` are just errors, `#`
+is a comment). `#` is the one with a catch: `# text` (with a space) becomes a
+question, so real comments need no space (`#text`) once you pick it.
+
+Excluded, with the reason:
+
+| Char | Why not |
+|---|---|
+| `.` | `. file` is `source` |
+| `/` `~` | start of a path |
+| `!` | history expansion |
+| `%` | job spec (`%1`) |
+| `^` | quick substitution (`^a^b`) |
+| `:` | the shell no-op builtin |
+| `-` | looks like an option, `-` alone is `cd -` in some setups |
+| `*` | glob, matches files |
+| `\` | escape, line continuation |
+| `$` | expansion, a variable as a command |
+| `&` | control operator, background |
+
+A bad value is a config error that names the allowed set. In YAML quote it:
+`prefix: ","`, `prefix: "#"`.
+
+### Conversation commands
+
+Letters right after the prefix, no space (`? n` with a space is a question):
+
+| Line | Does |
+|---|---|
+| `?n` | new conversation: the memory is cleared, `◇ new conversation` |
+| `?c` | compact now: the conversation is summarised and replaced by the summary, `◇ compacted 12.4k → 1.1k tokens` |
+| `?h` | the forms above in six short rows (also at the end of `ai help`) |
+
+### Compaction
+
+The memory is the earlier `?` turns. When it grows past `compact.at` (default
+70%) of the chat model's context window, the next `?` first summarises it:
+`◇ ⠹ compacting…` (the waiting indicator, in place), then `◇ compacted a → b
+tokens`, then the answer. The summary is one message at the head of the memory
+and is folded into the next summary. The sizes are estimates (characters / 4).
+
+```yaml
+compact:
+  model: local/qwen     # optional; default: the chat model in use
+  at: 70%               # compact when the conversation exceeds this share of the window
+  size: 10%             # target summary size as a share of the window
+  prompt: |             # optional override of the default prompt
+    ...
+```
+
+The window is the model's `context_window` from the config; unset and the
+provider is a local llama.cpp, `n_ctx` from `GET <base>/props` (asked once per
+model, ignored if absent); else 8192. `ai status` shows it (`ctx 32k`). The
+summary request is masked like every other request: a non-local provider gets
+masked text. If compaction fails, the oldest turns are dropped instead, with one
+dim line (`◇ not compacted · dropped old turns`).
 
 ```
 $ cargo build
@@ -72,7 +136,7 @@ $ du -ah . | sort -rh | head -10             ← Enter runs it, editing works as
 - `?3 ...` takes the last 3 blocks into the context (default: 1).
 - `Ctrl-C` during an answer cuts the stream.
 - Continuing the dialogue: the next `?` in the session remembers the previous ones.
-  `?!` starts from a clean slate.
+  `?n` starts from a clean slate.
 
 ### The agent step
 

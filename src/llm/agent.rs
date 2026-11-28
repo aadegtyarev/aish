@@ -689,7 +689,7 @@ pub fn drive(
                         ""
                     }
                 ),
-                masked_history(&all, t.local),
+                masked_history(&super::compact::merge_user_runs(all), t.local),
             )
         };
         let mut r = Renderer::new(&task.theme, task.cols);
@@ -803,7 +803,11 @@ pub fn drive(
             }
             task.write(&out);
             turn.msgs.push(Message::assistant(full));
-            remember_turn(llm, &turn);
+            remember_turn(
+                llm,
+                &turn,
+                llm.window_known(t) as usize * context::CHARS_PER_TOKEN,
+            );
             return cmd;
         }
         r.finish(&mut out, false);

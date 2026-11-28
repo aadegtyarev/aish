@@ -1,5 +1,5 @@
-//! `?` questions and the `aish` command: the line stays on screen, the reply
-//! follows (dim `│` rows) and nothing reaches the shell.
+//! Questions (`?` or the configured prefix) and the `aish` command: the line
+//! stays on screen, the reply follows (dim `│` rows) and nothing reaches the shell.
 
 use lineedit_wip::plugins::{HintText, Intercept, RightHint};
 use lineedit_wip::{Class, Ctx, Handled, Plugin, Span};
@@ -10,27 +10,16 @@ use crate::blocks::BlockTracker;
 use crate::editor::overlay::toggle_prefix;
 use crate::llm::agent;
 use crate::llm::cmd::{self, is_aish_line, is_short_line, Cmd};
+use crate::llm::prefix::{self, Form};
 use crate::llm::render::{fit_line, Renderer};
 use crate::llm::suggest::{LsCache, ModelSuggest};
-use crate::llm::{ask, Llm};
+use crate::llm::{ask, compact, Llm};
 use crate::module::{Env, Module, Task};
 
-/// `?`, `?N`, `?!` — alone or followed by a space — go to the model; every
-/// other `?...` is a shell glob and stays a command.
-pub fn is_model_line(s: &str) -> bool {
-    let Some(r) = s.strip_prefix('?') else {
-        return false;
-    };
-    let r = if let Some(x) = r.strip_prefix('!') {
-        x
-    } else {
-        r.trim_start_matches(|c: char| c.is_ascii_digit())
-    };
-    r.is_empty() || r.starts_with(' ')
-}
+pub use crate::llm::prefix::is_model_line;
 
-/// Paints the `?` marker in the accent color and the rest as plain text.
-struct Accent;
+/// Paints the prefix in the accent color and the rest as plain text.
+struct Accent(char);
 
 impl Plugin for Accent {
     fn name(&self) -> &'static str {
@@ -40,7 +29,7 @@ impl Plugin for Accent {
         50
     }
     fn highlight(&self, text: &str, out: &mut Vec<Span>) {
-        if is_model_line(text) {
+        if is_model_line(text, self.0) {
             out.push(Span {
                 start: 1,
                 end: text.len(),
@@ -59,7 +48,7 @@ impl Plugin for Accent {
 /// puts a `? ` in front of the line, or takes it away again.
 pub const ASK_TOGGLE: &str = "ask-toggle";
 
-struct AskToggle;
+struct AskToggle(char);
 
 impl Plugin for AskToggle {
     fn name(&self) -> &'static str {
@@ -69,7 +58,7 @@ impl Plugin for AskToggle {
         if action != ASK_TOGGLE {
             return Handled::Pass;
         }
-        let (text, cursor) = toggle_prefix(ctx.text(), ctx.cursor());
+        let (text, cursor) = toggle_prefix(ctx.text(), ctx.cursor(), self.0);
         ctx.set_text(&text);
         ctx.set_cursor(cursor);
         Handled::Yes
@@ -82,10 +71,12 @@ pub struct ModelModule {
     ls: Arc<LsCache>,
 }
 
-/// Lines the model module takes: `?`, `aish ...` and the configured short
-/// command (`ai`), which wins over anything of that name in the system.
+/// Lines the model module takes: questions, `aish ...` and the configured
+/// short command (`ai`), which wins over anything of that name in the system.
 fn claims(line: &str, llm: &Llm) -> bool {
-    is_model_line(line) || is_aish_line(line) || is_short_line(line, llm.command().as_deref())
+    is_model_line(line, llm.prefix())
+        || is_aish_line(line)
+        || is_short_line(line, llm.command().as_deref())
 }
 
 impl Module for ModelModule {
@@ -96,16 +87,17 @@ impl Module for ModelModule {
     fn editor_plugins(&mut self, env: &Env) -> Vec<Box<dyn Plugin>> {
         self.env = Some((env.llm.clone(), env.tracker.clone()));
         let llm = env.llm.clone();
-        let hint = HintText::new("?");
+        let p = env.llm.prefix();
+        let hint = HintText::new(&p.to_string());
         let _ = env
             .llm
             .status
-            .set(crate::llm::status::Status::new(hint.clone()));
+            .set(crate::llm::status::Status::new(hint.clone(), p));
         vec![
             Box::new(Intercept::new(move |l| claims(l, &llm))),
             Box::new(RightHint::new(hint)),
-            Box::new(Accent),
-            Box::new(AskToggle),
+            Box::new(Accent(p)),
+            Box::new(AskToggle(p)),
             Box::new(crate::llm::cmdsuggest::CmdSuggest::new(env.llm.clone())),
             Box::new(ModelSuggest::new(
                 env.llm.clone(),
@@ -142,19 +134,27 @@ impl Module for ModelModule {
         if !claims(line, &llm) {
             return false;
         }
-        if !is_model_line(line) {
+        let Some(form) = prefix::parse(line, llm.prefix()) else {
             return aish_command(&llm, line, out, task);
+        };
+        if form == Form::Help {
+            let rows: Vec<String> = prefix::forms(llm.prefix())
+                .iter()
+                .map(|(h, d)| format!("│ {h:<8}{d}"))
+                .collect();
+            out.extend_from_slice(rows.join("\r\n").as_bytes());
+            return true;
         }
-        let p = ask::parse(line);
         if let Ok(mut pend) = llm.pending.lock() {
             *pend = None; // a new question ends a paused turn
         }
-        if p.reset {
+        let reset = matches!(form, Form::New | Form::Question { reset: true, .. });
+        if reset {
             if let Ok(mut c) = llm.convo.lock() {
                 c.clear();
             }
-            if p.question.is_empty() {
-                out.extend_from_slice("│ conversation reset".as_bytes());
+            if form == Form::New {
+                out.extend_from_slice("◇ new conversation".as_bytes());
                 return true;
             }
         }
@@ -163,9 +163,24 @@ impl Module for ModelModule {
             out.extend_from_slice(n.as_bytes());
             return true;
         };
-        match task.take() {
-            Some(t) => ask::spawn(llm, tracker, target, p, t),
-            None => out.extend_from_slice("│ busy".as_bytes()),
+        let Some(t) = task.take() else {
+            out.extend_from_slice("│ busy".as_bytes());
+            return true;
+        };
+        match form {
+            Form::Compact => ask::run_task(t, move |t| {
+                let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
+                compact::run_command(&llm, &target, t);
+                None
+            }),
+            Form::Question { blocks, text, .. } => {
+                let p = ask::Parsed {
+                    blocks,
+                    question: text,
+                };
+                ask::spawn(llm, tracker, target, p, t);
+            }
+            Form::New | Form::Help => {}
         }
         true
     }
@@ -229,11 +244,14 @@ mod tests {
 
     #[test]
     fn model_lines() {
-        for t in ["?", "? x", "?3 x", "?!", "?! ", "?12", "? "] {
-            assert!(is_model_line(t), "{t}");
+        for t in [
+            "?", "? x", "?3 x", "?!", "?! ", "?12", "? ", "?n", "?c", "?h",
+        ] {
+            assert!(is_model_line(t, '?'), "{t}");
         }
         for t in ["?.txt", "??", "?x", "?3x", "?!x", "", "ls ?", " ?", "\\?"] {
-            assert!(!is_model_line(t), "{t}");
+            assert!(!is_model_line(t, '?'), "{t}");
         }
+        assert!(is_model_line(", x", ',') && !is_model_line("? x", ','));
     }
 }

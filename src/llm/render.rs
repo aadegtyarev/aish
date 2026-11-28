@@ -151,6 +151,14 @@ impl Renderer {
         self.reset(out);
     }
 
+    /// A dim conversation row: `◇ text`.
+    pub fn mark(&self, text: &str, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\r\n");
+        self.sgr(out, &self.dim.clone());
+        out.extend_from_slice(format!("◇ {}", sanitize(text)).as_bytes());
+        self.reset(out);
+    }
+
     /// A row: `head` as is, `tail` dim.
     pub fn split_row(&self, head: &str, tail: &str, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\r\n");

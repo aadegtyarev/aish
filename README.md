@@ -121,10 +121,10 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
 
 ## Model features
 
-- `?`, `? text`, `?N text`, `?!` ask the chat model (context: last N blocks trimmed to a token
+- `?`, `? text`, `?N text` ask the chat model (the character is `prefix:` in the config) (context: last N blocks trimmed to a token
   budget, cwd, OS, git). The answer streams under the line with a dim `│ `; Ctrl-C stops it
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
-  Ctrl-C clears). `?!` starts a fresh conversation. Secrets are masked before text goes to a
+  Ctrl-C clears). `?n` starts a fresh conversation, `?c` compacts it into a summary (also automatic near the context window, see `compact:`), `?h` is the short help. Secrets are masked before text goes to a
   non-local provider. Keys typed while it streams are applied afterwards.
 - Background jobs: when one finishes while you are at the prompt, a single line appears above it
   (` ✓ [1] cargo build · 2m13s` / ` ✗ [2] npm test · 41s · exit 1`) in place of bash's `[1]+ Done`; the hint at

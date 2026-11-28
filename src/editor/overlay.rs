@@ -295,17 +295,19 @@ pub fn insert_bytes(cmd: &str, bracketed: bool) -> Option<Vec<u8>> {
     })
 }
 
-/// Toggle the `? ` marker at the start of the line (the editor action).
-/// Returns the new text and cursor; the cursor stays on the same character.
-pub fn toggle_prefix(text: &str, cursor: usize) -> (String, usize) {
+/// Toggle the `? ` marker (`p` is the configured prefix) at the start of the
+/// line (the editor action). Returns the new text and cursor; the cursor
+/// stays on the same character.
+pub fn toggle_prefix(text: &str, cursor: usize, p: char) -> (String, usize) {
+    let marker = format!("{p} ");
     if let Some(rest) = text
-        .strip_prefix("? ")
-        .or_else(|| text.strip_prefix('?').filter(|r| r.is_empty()))
+        .strip_prefix(marker.as_str())
+        .or_else(|| text.strip_prefix(p).filter(|r| r.is_empty()))
     {
         let cut = text.len() - rest.len();
         (rest.to_owned(), cursor.saturating_sub(cut))
     } else {
-        (format!("? {text}"), cursor + 2)
+        (format!("{marker}{text}"), cursor + marker.len())
     }
 }
 
@@ -1031,14 +1033,17 @@ mod tests {
 
     #[test]
     fn prefix_toggle() {
-        assert_eq!(toggle_prefix("ls", 2), ("? ls".into(), 4));
-        assert_eq!(toggle_prefix("ls", 0), ("? ls".into(), 2));
-        assert_eq!(toggle_prefix("", 0), ("? ".into(), 2));
-        assert_eq!(toggle_prefix("? ls", 4), ("ls".into(), 2));
-        assert_eq!(toggle_prefix("? ls", 1), ("ls".into(), 0));
-        assert_eq!(toggle_prefix("? ", 2), ("".into(), 0));
-        assert_eq!(toggle_prefix("?", 1), ("".into(), 0));
-        assert_eq!(toggle_prefix("?x", 2), ("? ?x".into(), 4)); // a glob stays a command
+        assert_eq!(toggle_prefix("ls", 2, '?'), ("? ls".into(), 4));
+        assert_eq!(toggle_prefix("ls", 0, '?'), ("? ls".into(), 2));
+        assert_eq!(toggle_prefix("", 0, '?'), ("? ".into(), 2));
+        assert_eq!(toggle_prefix("? ls", 4, '?'), ("ls".into(), 2));
+        assert_eq!(toggle_prefix("? ls", 1, '?'), ("ls".into(), 0));
+        assert_eq!(toggle_prefix("? ", 2, '?'), ("".into(), 0));
+        assert_eq!(toggle_prefix("?", 1, '?'), ("".into(), 0));
+        assert_eq!(toggle_prefix("ls", 2, ','), (", ls".into(), 4));
+        assert_eq!(toggle_prefix(", ls", 4, ','), ("ls".into(), 2));
+        assert_eq!(toggle_prefix("? ls", 4, ','), (", ? ls".into(), 6));
+        assert_eq!(toggle_prefix("?x", 2, '?'), ("? ?x".into(), 4)); // a glob stays a command
     }
 
     #[test]

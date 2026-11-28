@@ -171,10 +171,14 @@ const HELP: &[(&str, &str)] = &[
     ("help", "this help"),
 ];
 
-pub fn help_lines(w: usize) -> Vec<Ln> {
+pub fn help_lines(w: usize, prefix: char) -> Vec<Ln> {
     let mut v = vec![Ln::dim("ai or aish + command:")];
     for (h, d) in HELP {
         v.extend(help_rows(h, d, w));
+    }
+    v.push(Ln::dim("at the prompt:"));
+    for (h, d) in super::prefix::forms(prefix) {
+        v.extend(help_rows(&h, d, w));
     }
     v
 }
@@ -390,7 +394,7 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
                 if *on { "on" } else { "off" }
             ))]
         }
-        Cmd::Help => help_lines(width),
+        Cmd::Help => help_lines(width, llm.prefix()),
         Cmd::Models => models_lines(llm, width),
         Cmd::Model(role, r) => set_model(llm, role, r),
         Cmd::Profile(n) => profile_lines(llm, n.as_deref()),
@@ -399,8 +403,11 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
             if let Some(c) = closest(w, SUBS.iter().copied()) {
                 v.push(Ln::dim(format!("unknown {w} · did you mean {c}?")));
             }
-            v.push(Ln::dim("ask the model: ? <question>"));
-            v.extend(help_lines(width));
+            v.push(Ln::dim(format!(
+                "ask the model: {} <question>",
+                llm.prefix()
+            )));
+            v.extend(help_lines(width, llm.prefix()));
             v
         }
         Cmd::Status | Cmd::Config | Cmd::Init => Vec::new(),
@@ -438,9 +445,15 @@ pub fn status_lines(llm: &Arc<Llm>) -> Vec<String> {
         .iter()
         .map(|r| {
             let ts = llm.targets(r);
+            let llm = llm.clone();
+            let chat = *r == "chat";
             std::thread::spawn(move || {
                 let first = ts.first()?;
-                let line = format!("{} · {} · {}", first.label, first.ep.model, probe(first));
+                let mut line = format!("{} · {} · {}", first.label, first.ep.model, probe(first));
+                if chat {
+                    let w = super::compact::fmt_window(llm.window(first));
+                    line.push_str(&format!(" · ctx {w}"));
+                }
                 let rest: Vec<&str> = ts[1..].iter().map(|t| t.label.as_str()).collect();
                 Some((line, rest.join(" · ")))
             })
@@ -613,9 +626,14 @@ mod tests {
 
     #[test]
     fn help_fits_narrow_width() {
-        for l in help_lines(33) {
+        for l in help_lines(33, '?') {
             assert!(chars(&l.0) + chars(&l.1) <= 33, "{l:?}");
         }
-        assert!(help_lines(33).len() > HELP.len());
+        assert!(help_lines(33, '?').len() > HELP.len());
+        let all: String = help_lines(80, ',')
+            .iter()
+            .map(|l| format!("{}{}\n", l.0, l.1))
+            .collect();
+        assert!(all.contains(",c") && all.contains(", text") && !all.contains("?c"));
     }
 }

@@ -150,7 +150,7 @@ impl ModelSuggest {
         let t = ctx.text();
         !t.is_empty()
             && ctx.cursor() == t.len()
-            && !is_model_line(t)
+            && !is_model_line(t, self.llm.prefix())
             && !is_aish_line(t)
             && !self.llm.is_own_line(t)
             && self.llm.suggest_on.load(Ordering::Relaxed)

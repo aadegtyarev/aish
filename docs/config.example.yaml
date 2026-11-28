@@ -74,5 +74,21 @@ roles:
 #   jina_key: $JINA_API_KEY
 # web: off                                  # no web tools at all
 
+# The character that starts a question to the model: one of ? , @ # ; (default ?).
+# Quote it. `#` makes `# text` a question (a comment then has no space: `#text`).
+# Read at the start of a session.
+# prefix: ","
+
+# Conversation memory. When it grows past `at` of the chat model's context window
+# (`context_window` on the model; else a local llama.cpp's n_ctx from /props; else 8192),
+# the next question first replaces it with a summary of about `size` of the window.
+# `?c` compacts at once, `?n` starts a new conversation, `?h` lists the forms.
+# compact:
+#   model: local/qwen    # default: the chat model in use
+#   at: 70%
+#   size: 10%
+#   prompt: |            # override the default summary prompt
+#     Summarise the conversation as terse bullet points ...
+
 # Daily background check for a newer release (one dim line); off disables.
 # update_check: off

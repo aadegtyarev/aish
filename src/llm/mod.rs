@@ -7,10 +7,12 @@ pub mod allow;
 pub mod ask;
 pub mod cmd;
 pub mod cmdsuggest;
+pub mod compact;
 pub mod context;
 pub mod firstrun;
 pub mod jobs;
 pub mod mask;
+pub mod prefix;
 pub mod render;
 pub mod status;
 pub mod suggest;
@@ -75,6 +77,10 @@ pub struct Llm {
     /// The job poller found a dead pid: the controller should poke the shell.
     pub job_poll: AtomicBool,
     job_notices: Mutex<Vec<jobs::Finished>>,
+    /// The question prefix, read once per session.
+    prefix: std::sync::OnceLock<char>,
+    /// Context windows asked from the server (`url model` -> `n_ctx`, if it said).
+    windows: Mutex<HashMap<String, Option<u64>>>,
 }
 
 impl Llm {
@@ -96,7 +102,70 @@ impl Llm {
             status: std::sync::OnceLock::new(),
             job_poll: AtomicBool::new(false),
             job_notices: Mutex::default(),
+            prefix: std::sync::OnceLock::new(),
+            windows: Mutex::default(),
         })
+    }
+
+    /// The character that starts a question (`prefix:` in the config, `?`
+    /// by default). Read once: the editor's marker and highlighting follow it.
+    pub fn prefix(&self) -> char {
+        *self
+            .prefix
+            .get_or_init(|| self.config().map_or('?', |c| c.prefix()))
+    }
+
+    /// The context window of the model in tokens: `context_window` from the
+    /// config, else what a local llama.cpp server says (`/props`, asked once
+    /// per model), else 8192.
+    pub fn window(&self, t: &Target) -> u64 {
+        if let Some(w) = t.window {
+            return w;
+        }
+        if t.local {
+            let key = format!("{} {}", t.ep.url, t.ep.model);
+            let known = self.windows.lock().ok().and_then(|w| w.get(&key).copied());
+            let n_ctx = match known {
+                Some(n) => n,
+                None => {
+                    let n = compact::fetch_n_ctx(&t.ep.url, &t.ep.key);
+                    if let Ok(mut w) = self.windows.lock() {
+                        w.insert(key, n);
+                    }
+                    n
+                }
+            };
+            if let Some(n) = n_ctx {
+                return n;
+            }
+        }
+        compact::DEFAULT_WINDOW
+    }
+
+    /// The window as far as it is known without asking the server.
+    pub fn window_known(&self, t: &Target) -> u64 {
+        let key = format!("{} {}", t.ep.url, t.ep.model);
+        t.window
+            .or_else(|| {
+                self.windows
+                    .lock()
+                    .ok()
+                    .and_then(|w| w.get(&key).copied().flatten())
+            })
+            .unwrap_or(compact::DEFAULT_WINDOW)
+    }
+
+    /// The model that writes summaries: `compact.model`, else `chat`.
+    pub fn compact_target(&self, chat: &Target) -> Target {
+        let cfg = self.config();
+        cfg.as_ref()
+            .and_then(|c| {
+                let id = c.compact.as_ref()?.model.as_deref()?;
+                c.resolve_ref(id, &Setting::Unset)
+                    .ok()
+                    .map(|r| self.make_target(&r))
+            })
+            .unwrap_or_else(|| chat.clone())
     }
 
     pub fn path(&self) -> Option<&PathBuf> {

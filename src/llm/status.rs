@@ -1,4 +1,4 @@
-//! The right-edge hint of the input line: `?` normally, `[N] ?` with N
+//! The right-edge hint of the input line: the prefix (`?`) normally, `[N] ?` with N
 //! background jobs, `⋯` while a ghost suggestion is being fetched (only if it
 //! takes longer than 300 ms, and then for at least 200 ms: no flicker).
 
@@ -20,6 +20,7 @@ struct Busy {
 
 struct Inner {
     hint: HintText,
+    prefix: char,
     jobs: AtomicUsize,
     busy: Mutex<Busy>,
     after: Duration,
@@ -30,13 +31,14 @@ struct Inner {
 pub struct Status(Arc<Inner>);
 
 impl Status {
-    pub fn new(hint: HintText) -> Self {
-        Self::with_timing(hint, SHOW_AFTER, MIN_SHOWN)
+    pub fn new(hint: HintText, prefix: char) -> Self {
+        Self::with_timing(hint, prefix, SHOW_AFTER, MIN_SHOWN)
     }
 
-    pub fn with_timing(hint: HintText, after: Duration, min: Duration) -> Self {
+    pub fn with_timing(hint: HintText, prefix: char, after: Duration, min: Duration) -> Self {
         Status(Arc::new(Inner {
             hint,
+            prefix,
             jobs: AtomicUsize::new(0),
             busy: Mutex::default(),
             after,
@@ -46,8 +48,8 @@ impl Status {
 
     fn normal(&self) -> String {
         match self.0.jobs.load(Ordering::Relaxed) {
-            0 => "?".to_owned(),
-            n => format!("[{n}] ?"),
+            0 => self.0.prefix.to_string(),
+            n => format!("[{n}] {}", self.0.prefix),
         }
     }
 
@@ -113,11 +115,22 @@ mod tests {
         (
             Status::with_timing(
                 h.clone(),
+                '?',
                 Duration::from_millis(40),
                 Duration::from_millis(80),
             ),
             h,
         )
+    }
+
+    #[test]
+    fn the_marker_is_the_configured_prefix() {
+        let h = HintText::new(",");
+        let s = Status::new(h.clone(), ',');
+        s.set_jobs(3);
+        assert_eq!(h.get(), "[3] ,");
+        s.set_jobs(0);
+        assert_eq!(h.get(), ",");
     }
 
     #[test]

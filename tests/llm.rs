@@ -1567,3 +1567,238 @@ fn native_search_needs_provider_in_the_search_chain() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- prefix, conversation commands, compaction -------------------------
+
+/// Plain answers; a summary request (it says "Write the notes now") gets
+/// `SUMSUM` bullets.
+fn convo_mock() -> Mock {
+    Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if r.body.contains("Write the notes now") {
+            mock::chat_stream(c, &["- SUMSUM goal\n"], Duration::ZERO);
+        } else {
+            mock::chat_stream(c, &["Hello there\n"], Duration::ZERO);
+        }
+    })
+}
+
+fn with_yaml(home: &TempDir, yaml: &str) -> Session {
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), yaml).unwrap();
+    spawn(base(home))
+}
+
+fn chat_bodies(m: &Mock) -> Vec<String> {
+    m.requests()
+        .into_iter()
+        .filter(|r| r.path.ends_with("/chat/completions") && r.body.contains("Question: "))
+        .map(|r| r.body)
+        .collect()
+}
+
+fn ask_and_wait(p: &mut Session, line: &str) {
+    p.send(format!("{line}\r")).unwrap();
+    p.expect("Hello there").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+}
+
+fn window_config(url: &str, window: u32) -> String {
+    format!(
+        "providers:\n  - id: mock\n    url: {url}\n    type: chat\n    models: {{m: {{id: test, context_window: {window}}}}}\nroles:\n  chat: {{id: mock/m}}\n  complete: {{id: mock/m}}\n"
+    )
+}
+
+#[test]
+fn comma_prefix_asks_and_question_mark_is_a_command_again() {
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let mut p = with_yaml(&home, &format!("prefix: ','\n{}", config(&m.url())));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send(", say hi\r").unwrap();
+    p.expect("Hello there").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert!(chat_bodies(&m)[0].contains("say hi"));
+    // `?` is bash's again: nothing reaches the model
+    p.send("? say hi\r").unwrap();
+    p.expect("command not found").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert_eq!(chat_bodies(&m).len(), 1);
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn new_conversation_forgets_the_turns() {
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    ask_and_wait(&mut p, "? first-question");
+    ask_and_wait(&mut p, "? second-question");
+    assert!(chat_bodies(&m)[1].contains("first-question"));
+    p.send("?n\r").unwrap();
+    p.expect("◇ new conversation").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    ask_and_wait(&mut p, "? third-question");
+    let b = chat_bodies(&m);
+    assert!(b.len() == 3 && b[2].contains("third-question"));
+    assert!(
+        !b[2].contains("first-question") && !b[2].contains("second-question"),
+        "{}",
+        b[2]
+    );
+    // the old spelling still works
+    p.send("?!\r").unwrap();
+    p.expect("◇ new conversation").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn compact_now_replaces_the_turns_with_the_summary() {
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    ask_and_wait(&mut p, "? first-question");
+    p.send("?c\r").unwrap();
+    p.expect("◇ compacted").unwrap();
+    p.expect("tokens").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    let all = m.requests();
+    let sum = all
+        .iter()
+        .find(|r| r.body.contains("Write the notes now"))
+        .expect("a summary request");
+    assert!(sum.body.contains("first-question"));
+    ask_and_wait(&mut p, "? next-question");
+    let b = chat_bodies(&m);
+    let last = b.last().unwrap();
+    assert!(
+        last.contains("SUMSUM")
+            && last.contains("next-question")
+            && !last.contains("first-question"),
+        "{last}"
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn compact_with_nothing_to_compact_says_so() {
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("?c\r").unwrap();
+    p.expect("◇ nothing to compact").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn small_window_triggers_auto_compaction_before_the_next_answer() {
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let mut p = with_yaml(&home, &window_config(&m.url(), 400));
+    p.expect("E> ").unwrap();
+    settle();
+    // ~330 tokens: over 70% of 400 once remembered
+    let long = format!("? first-question {}", "word ".repeat(260));
+    ask_and_wait(&mut p, &long);
+    assert!(!m
+        .requests()
+        .iter()
+        .any(|r| r.body.contains("Write the notes now")));
+    p.send("? next-question\r").unwrap();
+    p.expect("◇ compacted").unwrap();
+    p.expect("Hello there").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    let b = chat_bodies(&m);
+    let last = b.last().unwrap();
+    assert!(
+        last.contains("SUMSUM") && !last.contains("first-question"),
+        "{last}"
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn failed_compaction_drops_old_turns_and_says_so() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if r.body.contains("Write the notes now") {
+            mock::json(c, 500, r#"{"error":{"message":"boom"}}"#);
+        } else {
+            mock::chat_stream(c, &["Hello there\n"], Duration::ZERO);
+        }
+    });
+    let mut p = with_yaml(&home, &window_config(&m.url(), 400));
+    p.expect("E> ").unwrap();
+    settle();
+    ask_and_wait(&mut p, &format!("? first-question {}", "word ".repeat(140)));
+    ask_and_wait(
+        &mut p,
+        &format!("? second-question {}", "word ".repeat(140)),
+    );
+    p.send("? third-question\r").unwrap();
+    p.expect("dropped old turns").unwrap();
+    p.expect("Hello there").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    let b = chat_bodies(&m);
+    assert!(!b.last().unwrap().contains("first-question"));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn status_shows_the_context_window() {
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let mut p = with_yaml(&home, &window_config(&m.url(), 32768));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("aish status").unwrap();
+    p.expect("ctx 32k").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn llama_props_gives_the_window() {
+    let home = TempDir::new().unwrap();
+    let m = Mock::start(|r, c| {
+        if r.path.ends_with("/props") {
+            mock::json(c, 200, r#"{"default_generation_settings":{"n_ctx":16384}}"#);
+        } else {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        }
+    });
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("aish status").unwrap();
+    p.expect("ctx 16k").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

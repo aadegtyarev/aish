@@ -1,4 +1,4 @@
-//! `?` questions: context, request, streaming render, command handoff.
+//! Questions to the model: context, request, streaming render, command handoff.
 
 use std::sync::{Arc, Mutex};
 
@@ -19,29 +19,10 @@ When a shell command is the answer, put exactly one command in a final ```bash f
 You cannot run anything: the user reads the command and presses Enter. \
 Use the provided context (recent commands and their output, cwd, OS, git) instead of asking for it.";
 
-/// Conversation size cap (characters, ~4 per token).
-const CONVO_CAP: usize = 24_000;
-
+/// A question: how many blocks of context, and the text.
 pub struct Parsed {
-    pub reset: bool,
     pub blocks: usize,
     pub question: String,
-}
-
-/// Split a `?` line into reset flag, block count and question text.
-pub fn parse(line: &str) -> Parsed {
-    let r = line.strip_prefix('?').unwrap_or(line);
-    let (reset, r) = match r.strip_prefix('!') {
-        Some(x) => (true, x),
-        None => (false, r),
-    };
-    let digits = r.chars().take_while(char::is_ascii_digit).count();
-    let blocks = r[..digits].parse().unwrap_or(1usize).clamp(1, 20);
-    Parsed {
-        reset,
-        blocks: if digits == 0 { 1 } else { blocks },
-        question: r[digits..].trim().to_owned(),
-    }
 }
 
 /// Short, user-facing reason for an error.
@@ -100,7 +81,7 @@ fn msg_chars(m: &Message) -> usize {
         .sum()
 }
 
-fn convo_chars(c: &[Message]) -> usize {
+pub(crate) fn convo_chars(c: &[Message]) -> usize {
     c.iter().map(msg_chars).sum()
 }
 
@@ -156,6 +137,9 @@ fn answer(
         p.question.clone()
     };
     let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
+    if !super::compact::before_turn(llm, t, task) {
+        return None;
+    }
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
     let turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
     agent::drive(llm, tracker, t, turn, task)
@@ -235,6 +219,9 @@ pub fn overlay_answer(
         question.to_owned()
     };
     let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
+    if !super::compact::before_turn(llm, t, task) {
+        return None;
+    }
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
     let mut turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
     turn.overlay = true;
@@ -246,12 +233,14 @@ pub fn overlay_answer(
 }
 
 /// Keep a finished turn: the bare question, the tool traffic, the answer.
-pub fn remember_turn(llm: &Llm, turn: &agent::Turn) {
+/// (The memory is cut to `cap_chars` as a last resort; compaction normally
+/// acts long before.)
+pub fn remember_turn(llm: &Llm, turn: &agent::Turn, cap_chars: usize) {
     let Ok(mut c) = llm.convo.lock() else { return };
     c.push(Message::user(turn.q.clone()));
     c.extend(turn.msgs.iter().skip(1).cloned());
     // drop whole old turns (up to the next plain question), never half of one
-    while c.len() > 2 && convo_chars(&c) > CONVO_CAP {
+    while c.len() > 2 && convo_chars(&c) > cap_chars {
         let next = c.iter().skip(1).position(|m| {
             m.role == aish_llm::Role::User && matches!(m.parts.first(), Some(Part::Text(_)))
         });
@@ -312,14 +301,16 @@ mod tests {
     }
 
     #[test]
-    fn parsing() {
-        let p = parse("?");
-        assert!(!p.reset && p.blocks == 1 && p.question.is_empty());
-        let p = parse("?3 why  is it slow");
-        assert!(p.blocks == 3 && p.question == "why  is it slow");
-        let p = parse("?! new");
-        assert!(p.reset && p.question == "new");
-        let p = parse("? hello");
-        assert_eq!((p.blocks, p.question.as_str()), (1, "hello"));
+    fn memory_is_cut_at_the_cap_by_whole_turns() {
+        let llm = Llm::new();
+        for i in 0..5 {
+            let mut turn = agent::start_turn(Vec::new(), "ctx".into(), format!("q{i}"));
+            turn.msgs.push(Message::assistant("a".repeat(100)));
+            remember_turn(&llm, &turn, 450);
+        }
+        let c = llm.convo.lock().unwrap();
+        assert!(
+            convo_chars(&c) <= 450 && c.len().is_multiple_of(2) && c[0].text().starts_with('q')
+        );
     }
 }
