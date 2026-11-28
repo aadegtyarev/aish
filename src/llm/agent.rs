@@ -725,7 +725,20 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                     let n = s.lines().count().saturating_sub(1);
                     (s, format!(" · {n} lines"))
                 }
-                Err(e) => (format!("error: {e}"), " · refused".to_owned()),
+                Err(e) => {
+                    let why = if e.contains("secret") {
+                        "secret file"
+                    } else if e.contains("binary") {
+                        "binary file"
+                    } else if e.contains("regular file") {
+                        "not a file"
+                    } else {
+                        "cannot read"
+                    };
+                    // reason first: on a narrow screen the path gets cut, not it
+                    let line = format!("read_file refused: {why} · {}", short(&path, cols));
+                    return done(format!("error: {e}"), line);
+                }
             };
             done(r, format!("read_file {}{tail}", short(&path, cols)))
         }
