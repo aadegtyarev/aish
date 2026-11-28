@@ -34,27 +34,27 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
         [part] => {
             let (toggle, other) = if st.suggest_on {
                 (
-                    ("off", "подсказки: сейчас вкл"),
-                    ("on", "включить подсказки"),
+                    ("off", "suggestions: now on"),
+                    ("on", "turn suggestions on"),
                 )
             } else {
                 (
-                    ("on", "подсказки: сейчас выкл"),
-                    ("off", "выключить подсказки"),
+                    ("on", "suggestions: now off"),
+                    ("off", "turn suggestions off"),
                 )
             };
             let subs = [
-                ("status", "статус моделей"),
-                ("chat", "сменить модель чата"),
-                ("complete", "сменить модель подсказок"),
-                ("model", "сменить модель роли"),
-                ("models", "список моделей"),
-                ("profile", "профили"),
+                ("status", "model status"),
+                ("chat", "switch the chat model"),
+                ("complete", "switch the suggestion model"),
+                ("model", "switch a role's model"),
+                ("models", "list models"),
+                ("profile", "profiles"),
                 toggle,
                 other,
-                ("config", "открыть конфиг"),
-                ("init", "настроить запуск и модели"),
-                ("help", "список команд"),
+                ("config", "open the config"),
+                ("init", "set up launch and models"),
+                ("help", "list commands"),
             ];
             // a full command name is not completed into a longer one
             if subs.iter().any(|(n, _)| n == part) {
@@ -87,7 +87,7 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 .into_iter()
                 .find(|r| r.starts_with(part) && r != part && (!part.is_empty() || *r == "chat"));
             match role {
-                Some(r) => Some((r[part.len()..].to_owned(), "· роль".to_owned())),
+                Some(r) => Some((r[part.len()..].to_owned(), "· role".to_owned())),
                 None => complete_ref(st, "chat", part),
             }
         }
@@ -99,7 +99,7 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 .find(|p| st.profile.as_ref() != Some(p))?;
             Some((
                 pick[part.len()..].to_owned(),
-                format!("· сейчас {}", st.profile.as_deref().unwrap_or("нет")),
+                format!("· now {}", st.profile.as_deref().unwrap_or("none")),
             ))
         }
         _ => None,
@@ -128,7 +128,7 @@ fn complete_ref(st: &State, role: &str, part: &str) -> Option<(String, String)> 
     let pick = pick.filter(|m| !is_cur(m))?;
     Some((
         pick[part.len()..].to_owned(),
-        format!("· сейчас {}", cur.as_deref().unwrap_or("не задана")),
+        format!("· now {}", cur.as_deref().unwrap_or("unset")),
     ))
 }
 
@@ -315,10 +315,10 @@ mod tests {
     fn toggle_shows_the_opposite_state() {
         let on = c(&st(true), "ai o").unwrap();
         assert_eq!(on.0, "ff");
-        assert!(on.1.contains("сейчас вкл"));
+        assert!(on.1.contains("now on"));
         let off = c(&st(false), "ai o").unwrap();
         assert_eq!(off.0, "n");
-        assert!(off.1.contains("сейчас выкл"));
+        assert!(off.1.contains("now off"));
         // typed far enough to name the other one: that one
         assert_eq!(c(&st(false), "ai of").unwrap().0, "f");
         assert_eq!(c(&st(true), "ai on"), None);
@@ -329,7 +329,7 @@ mod tests {
         let s = st(true);
         let r = c(&s, "ai chat ").unwrap();
         assert_eq!(r.0, "local/big");
-        assert_eq!(r.1, "· сейчас cloud/main");
+        assert_eq!(r.1, "· now cloud/main");
         assert_eq!(c(&s, "ai chat lo").unwrap().0, "cal/big");
         // only the current one matches: nothing to suggest
         assert_eq!(c(&s, "ai chat cl"), None);

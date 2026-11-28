@@ -477,14 +477,14 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
     if env.overlay && matches!(call.name.as_str(), "run" | "read_file") {
         return done(
             "error: not available now: a program is running, possibly on another machine".into(),
-            format!("{} недоступен", call.name),
+            format!("{} unavailable", call.name),
         );
     }
     match call.name.as_str() {
         "web_search" | "web_read" => {
             let search = call.name == "web_search";
             let Some(w) = env.web else {
-                return done("error: web tools are off".into(), "web выключен".into());
+                return done("error: web tools are off".into(), "web is off".into());
             };
             let arg = arg_str(&v, if search { "query" } else { "url" }).unwrap_or_default();
             let r = if search {
@@ -495,7 +495,7 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
             match r {
                 Ok(o) => {
                     let shown = if search {
-                        format!("↗ поиск: {} · {}", short(&o.shown, cols), o.backend)
+                        format!("↗ search: {} · {}", short(&o.shown, cols), o.backend)
                     } else {
                         format!("↗ {} · {}", short_url(&o.shown, cols), o.backend)
                     };
@@ -503,7 +503,7 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 }
                 Err(e) => {
                     let reason: String = e.chars().take(80).collect();
-                    done(format!("error: {e}"), format!("↗ не удалось: {reason}"))
+                    done(format!("error: {e}"), format!("↗ failed: {reason}"))
                 }
             }
         }
@@ -522,11 +522,11 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 let (out, code, timed_out) = run_plan(&pl, &cwd, env.cancel);
                 let lines = out.lines().count();
                 let tail = if timed_out {
-                    " · таймаут 10 с".to_owned()
+                    " · timeout 10 s".to_owned()
                 } else if code != Some(0) {
                     format!(" · exit {}", code.map_or("?".into(), |c| c.to_string()))
                 } else {
-                    format!(" · {lines} строк")
+                    format!(" · {lines} lines")
                 };
                 let result = format!(
                     "exit: {}\n{}",
@@ -542,12 +542,12 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
             if unsafe_cmd(&cmd) {
                 return done(
                     "error: the command contains control characters and was refused".into(),
-                    "команда с управляющими символами отклонена".into(),
+                    "command with control characters rejected".into(),
                 );
             }
             if bg {
                 let Some(dir) = jobs_dir() else {
-                    return done("error: no state directory".into(), "run: нет HOME".into());
+                    return done("error: no state directory".into(), "run: no HOME".into());
                 };
                 let _ = std::fs::create_dir_all(&dir);
                 let n = env.llm.jobs.lock().map_or(0, |mut j| {
@@ -610,15 +610,15 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
             let (r, tail) = match read_file(&path, &cwd, start, max) {
                 Ok(s) => {
                     let n = s.lines().count().saturating_sub(1);
-                    (s, format!(" · {n} строк"))
+                    (s, format!(" · {n} lines"))
                 }
-                Err(e) => (format!("error: {e}"), " · отказ".to_owned()),
+                Err(e) => (format!("error: {e}"), " · refused".to_owned()),
             };
             done(r, format!("read_file {}{tail}", short(&path, cols)))
         }
         other => done(
             format!("error: unknown tool {other}"),
-            format!("неизвестный инструмент {other}"),
+            format!("unknown tool {other}"),
         ),
     }
 }
@@ -759,7 +759,7 @@ pub fn drive(
                     .into_iter()
                     .find(|n| !tried.contains(&n.label))?;
                 let alias = |l: &str| l.split_once('/').map_or(l.to_owned(), |x| x.1.to_owned());
-                let note = format!("↪ {} · {} недоступна", alias(&next.label), alias(&t.label));
+                let note = format!("↪ {} · {} unavailable", alias(&next.label), alias(&t.label));
                 r.note(
                     &fit_line(&note, usize::from(task.cols).saturating_sub(2)),
                     &mut out,
@@ -799,7 +799,7 @@ pub fn drive(
             let cmd = r.finish(&mut out, !usage.truncated);
             search_notes(&r, &searches, &mut out);
             if usage.truncated {
-                r.note("ответ оборван (лимит токенов)", &mut out);
+                r.note("answer cut off (token limit)", &mut out);
             }
             task.write(&out);
             turn.msgs.push(Message::assistant(full));
@@ -825,7 +825,7 @@ pub fn drive(
             }
             turn.steps += 1;
             if turn.steps > MAX_STEPS {
-                note_only(task, &format!("лимит шагов ({MAX_STEPS})"));
+                note_only(task, &format!("step limit ({MAX_STEPS})"));
                 return None;
             }
             match exec_tool(&env, c, task.cols as usize) {
@@ -860,9 +860,9 @@ pub fn drive(
 fn search_notes(r: &Renderer, searches: &[String], out: &mut Vec<u8>) {
     for q in searches {
         let line = if q.trim().is_empty() {
-            "↗ поиск · provider".to_owned()
+            "↗ search · provider".to_owned()
         } else {
-            format!("↗ поиск: {} · provider", short(q, 80))
+            format!("↗ search: {} · provider", short(q, 80))
         };
         r.note(&line, out);
     }

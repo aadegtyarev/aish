@@ -1,5 +1,5 @@
 //! The waiting indicator of an answer: one dim status row where the answer
-//! will start, `│ ⠹ думает · 4с`, updated in place and replaced by the first
+//! will start, `│ ⠹ thinking · 4s`, updated in place and replaced by the first
 //! output row (see `Task::write`).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
@@ -37,10 +37,10 @@ impl Phase {
 
     fn label(self) -> &'static str {
         match self {
-            Phase::Connecting => "подключение",
-            Phase::Waiting => "ждёт ответ",
-            Phase::Loading => "загружает модель",
-            Phase::Thinking => "думает",
+            Phase::Connecting => "connecting",
+            Phase::Waiting => "waiting",
+            Phase::Loading => "loading model",
+            Phase::Thinking => "thinking",
         }
     }
 }
@@ -57,10 +57,10 @@ pub fn status_text(phase: Phase, secs: u64, tick: usize, color: bool, cols: usiz
     let base = format!("{spin} {}", phase.label());
     let mut parts = vec![base];
     if secs >= 1 {
-        parts.push(format!("{secs}с"));
+        parts.push(format!("{secs}s"));
     }
     if secs >= 10 {
-        parts.push("Ctrl-C — отмена".to_owned());
+        parts.push("Ctrl-C — cancel".to_owned());
     }
     // drop the hint, then the time, while it does not fit
     while parts.len() > 1 && parts.join(" · ").chars().count() > room {
@@ -206,17 +206,14 @@ mod tests {
     #[test]
     fn text_shrinks_before_it_wraps() {
         let full = status_text(Phase::Thinking, 12, 2, true, 80);
-        assert_eq!(full, "⠹ думает · 12с · Ctrl-C — отмена");
-        assert_eq!(status_text(Phase::Thinking, 0, 2, true, 80), "⠹ думает");
+        assert_eq!(full, "⠹ thinking · 12s · Ctrl-C — cancel");
+        assert_eq!(status_text(Phase::Thinking, 0, 2, true, 80), "⠹ thinking");
         // 36 columns: the hint does not fit, the time does
         let t = status_text(Phase::Loading, 12, 0, true, 36);
-        assert_eq!(t, "⠋ загружает модель · 12с");
+        assert_eq!(t, "⠋ loading model · 12s");
         // very narrow: only the phase, cut with an ellipsis if it must be
         let t = status_text(Phase::Loading, 12, 0, true, 14);
         assert!(t.chars().count() < 14 - 2, "{t}");
-        assert_eq!(
-            status_text(Phase::Waiting, 0, 2, false, 80),
-            "... ждёт ответ"
-        );
+        assert_eq!(status_text(Phase::Waiting, 0, 2, false, 80), "... waiting");
     }
 }

@@ -154,18 +154,18 @@ impl Module for ModelModule {
                 c.clear();
             }
             if p.question.is_empty() {
-                out.extend_from_slice("│ диалог сброшен".as_bytes());
+                out.extend_from_slice("│ conversation reset".as_bytes());
                 return true;
             }
         }
         let Some(target) = llm.target("chat") else {
-            let n = format!("│ модель не настроена · {} config", llm.command_label());
+            let n = format!("│ no model configured · {} config", llm.command_label());
             out.extend_from_slice(n.as_bytes());
             return true;
         };
         match task.take() {
             Some(t) => ask::spawn(llm, tracker, target, p, t),
-            None => out.extend_from_slice("│ занято".as_bytes()),
+            None => out.extend_from_slice("│ busy".as_bytes()),
         }
         true
     }

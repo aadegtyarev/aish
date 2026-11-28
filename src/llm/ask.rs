@@ -13,7 +13,7 @@ use crate::blocks::BlockTracker;
 use crate::module::Task;
 
 pub(crate) const SYSTEM: &str = "You are a terse, practical assistant inside the user's bash terminal. \
-Answer in the user's language. Use light markdown only (**bold**, `code`, short lists). \
+Answer in the language of the user's question. Use light markdown only (**bold**, `code`, short lists). \
 When a shell command is the answer, put exactly one command in a final ```bash fenced block at the end of the reply \
 (multi-line only if unavoidable). If the user only asks for a command, reply with just that block and no prose. \
 You cannot run anything: the user reads the command and presses Enter. \
@@ -47,14 +47,14 @@ pub fn parse(line: &str) -> Parsed {
 /// Short, user-facing reason for an error.
 pub fn short_reason(e: &Error, t: &Target) -> String {
     match e {
-        Error::Connect(_) | Error::Timeout => format!("нет ответа от {}", t.label),
+        Error::Connect(_) | Error::Timeout => format!("no answer from {}", t.label),
         Error::Http { status, message } if matches!(status, 401 | 403) => {
             let _ = message;
-            format!("{status} от {}", t.provider)
+            format!("{status} from {}", t.provider)
         }
         Error::Http { status, message } => {
             let m: String = message.chars().take(60).collect();
-            format!("{status} от {}: {m}", t.provider)
+            format!("{status} from {}: {m}", t.provider)
         }
         Error::Api(m) => format!("{}: {}", t.label, m.chars().take(60).collect::<String>()),
         Error::Cancelled => "⏹".into(),

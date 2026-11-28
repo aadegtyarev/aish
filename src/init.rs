@@ -162,7 +162,7 @@ fn ask(prompt: &str, default: &str) -> Option<String> {
 }
 
 fn yes(a: &str) -> bool {
-    matches!(a.to_lowercase().as_str(), "y" | "yes" | "д" | "да" | "1")
+    matches!(a.to_lowercase().as_str(), "y" | "yes" | "1")
 }
 
 /// `aish init [--remove] [--yes]`; the exit code.
@@ -195,16 +195,16 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         let tm = if tmux_installed() {
             ""
         } else {
-            " (tmux не найден)"
+            " (tmux not found)"
         };
         let a = ask(
-            &format!("Запускать aish: 1 — в каждом интерактивном bash, 2 — ещё и в tmux{tm}, 3 — только вручную"),
+            &format!("Start aish: 1 — in every interactive bash, 2 — also in tmux{tm}, 3 — manually only"),
             "1",
         );
         match a {
             Some(a) if matches!(a.as_str(), "1" | "2" | "3") => mode = a,
             Some(_) => {
-                eprintln!("aish: ожидалось 1, 2 или 3");
+                eprintln!("aish: expected 1, 2 or 3");
                 return 1;
             }
             None => return 1,
@@ -217,10 +217,10 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     let mut regenerate = !cfg_exists;
     if cfg_exists {
         let shown = cfg_path.as_deref().map(tilde).unwrap_or_default();
-        println!("{}конфиг уже есть, оставляю: {shown}{}", st.dim, st.off);
+        println!("{}config exists, keeping: {shown}{}", st.dim, st.off);
         if interactive && !yes_all {
             if let Some(a) = ask(
-                "Перегенерировать по автоопределению (старый уйдёт в .bak)?",
+                "Regenerate from autodetect (the old one goes to .bak)?",
                 "n",
             ) {
                 regenerate = yes(&a);
@@ -233,7 +233,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         match d.config() {
             Some((yaml, chat, comp)) => new_cfg = Some((yaml, chat, comp, d.names())),
             None => println!(
-                "{}модели не найдены (llama.cpp :8080, ollama, LM Studio, $OPENAI_API_KEY, $DEEPSEEK_API_KEY) — конфиг не создаю{}",
+                "{}no models found (llama.cpp :8080, ollama, LM Studio, $OPENAI_API_KEY, $DEEPSEEK_API_KEY) — config not created{}",
                 st.dim, st.off
             ),
         }
@@ -266,11 +266,11 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         .filter(|c| std::fs::read_to_string(&c.path).ok().as_deref() != Some(c.new.as_str()))
         .collect();
     for c in &changes {
-        println!("  {}  +{} стр.", tilde(&c.path), c.added);
+        println!("  {}  +{} lines", tilde(&c.path), c.added);
     }
     if let (Some((_, chat, comp, names)), Some(p)) = (&new_cfg, &cfg_path) {
         let bak = if cfg_exists {
-            ", старый → config.yaml.bak"
+            ", old → config.yaml.bak"
         } else {
             ""
         };
@@ -280,20 +280,20 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         );
     }
     if changes.is_empty() && new_cfg.is_none() {
-        println!("{}всё уже настроено{}", st.dim, st.off);
+        println!("{}already set up{}", st.dim, st.off);
         return 0;
     }
     if !interactive && !yes_all {
         eprintln!(
-            "aish init: ввод не из терминала — ничего не меняю (--yes применит это без вопросов)"
+            "aish init: input is not a terminal — nothing changed (--yes applies it without asking)"
         );
         return 1;
     }
     if !yes_all {
-        match ask("Применить?", "Y") {
-            Some(a) if !matches!(a.to_lowercase().as_str(), "n" | "no" | "н" | "нет") => {}
+        match ask("Apply?", "Y") {
+            Some(a) if !matches!(a.to_lowercase().as_str(), "n" | "no") => {}
             _ => {
-                println!("{}отменено{}", st.dim, st.off);
+                println!("{}cancelled{}", st.dim, st.off);
                 return 1;
             }
         }
@@ -322,11 +322,11 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         }
     }
     println!(
-        "{}готово. Новый bash запустит aish; отключить на раз: AISH_DISABLE=1 bash{}",
+        "{}done. A new bash starts aish; to skip once: AISH_DISABLE=1 bash{}",
         st.dim, st.off
     );
     println!(
-        "{}логин-шелл: добавьте путь aish в /etc/shells и выполните chsh -s <путь>{}",
+        "{}login shell: add aish's path to /etc/shells and run chsh -s <path>{}",
         st.dim, st.off
     );
     0
@@ -337,13 +337,13 @@ fn do_remove(files: &[PathBuf]) -> i32 {
     for f in files {
         match std::fs::read_to_string(f) {
             Ok(t) if has_block(&t) => match std::fs::write(f, without_block(&t)) {
-                Ok(()) => println!("{}: блок удалён (копия .aish-bak осталась)", tilde(f)),
+                Ok(()) => println!("{}: block removed (.aish-bak copy kept)", tilde(f)),
                 Err(e) => {
                     eprintln!("aish: {}: {e}", tilde(f));
                     code = 1;
                 }
             },
-            _ => println!("{}: блока нет", tilde(f)),
+            _ => println!("{}: no block", tilde(f)),
         }
     }
     code

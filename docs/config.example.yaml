@@ -33,7 +33,7 @@ roles:
 
 # A role may list several models, tried in order: if the first refuses the
 # connection, times out, answers 5xx or 404 before any output, the next one answers
-# (a dim `↪ ds · mellum недоступна` line; the failed one is skipped for 60 s).
+# (a dim `↪ ds · mellum unavailable` line; the failed one is skipped for 60 s).
 # `ai model chat ds` saves the choice here and moves it to the front of the list.
 # roles:
 #   chat: {id: [local/big, cloud/main]}

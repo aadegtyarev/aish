@@ -555,16 +555,16 @@ fn is_ctrl_c(b: &[u8]) -> bool {
 
 /// The dim context line: the command and how much output the model sees.
 pub fn header(cmd: Option<&str>, lines: usize, alt: bool, cols: usize) -> String {
-    let one: String = sanitize(cmd.unwrap_or("команда"))
+    let one: String = sanitize(cmd.unwrap_or("command"))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     let meta = if alt {
-        "полноэкранное приложение".to_owned()
+        "full-screen app".to_owned()
     } else if lines == 0 {
-        "вывода нет".to_owned()
+        "no output".to_owned()
     } else {
-        format!("последние {lines} строк")
+        format!("last {lines} lines")
     };
     let max = cols.saturating_sub(1 + 2 + 3 + meta.chars().count()).max(4);
     let c = if one.chars().count() > max {
@@ -581,12 +581,12 @@ pub fn header(cmd: Option<&str>, lines: usize, alt: bool, cols: usize) -> String
 pub fn footer_text(insert: bool, cols: usize) -> &'static str {
     let tiers: &[&str] = if insert {
         &[
-            "  Enter — вставить · Esc — закрыть",
-            "  Enter — вставить · Esc",
+            "  Enter — insert · Esc — close",
+            "  Enter — insert · Esc",
             "  Enter · Esc",
         ]
     } else {
-        &["  Esc — закрыть", "  Esc"]
+        &["  Esc — close", "  Esc"]
     };
     tiers
         .iter()
@@ -687,7 +687,7 @@ impl Overlay {
         self.last_q = q.clone();
         let Some(target) = self.s.llm.target("chat") else {
             let msg = format!(
-                "модель не настроена · {} config",
+                "no model configured · {} config",
                 self.s.llm.command_label()
             );
             let mut o = Vec::new();
@@ -1043,8 +1043,8 @@ mod tests {
 
     #[test]
     fn footer_shortens_to_fit() {
-        assert_eq!(footer_text(true, 80), "  Enter — вставить · Esc — закрыть");
-        assert_eq!(footer_text(true, 30), "  Enter — вставить · Esc");
+        assert_eq!(footer_text(true, 80), "  Enter — insert · Esc — close");
+        assert_eq!(footer_text(true, 30), "  Enter — insert · Esc");
         assert_eq!(footer_text(true, 20), "  Enter · Esc");
         assert_eq!(footer_text(false, 10), "  Esc");
     }
@@ -1053,13 +1053,10 @@ mod tests {
     fn header_line() {
         assert_eq!(
             header(Some("ssh prod"), 200, false, 80),
-            "  ssh prod · последние 200 строк"
+            "  ssh prod · last 200 lines"
         );
-        assert_eq!(header(Some("cat"), 0, false, 80), "  cat · вывода нет");
-        assert_eq!(
-            header(None, 3, true, 80),
-            "  команда · полноэкранное приложение"
-        );
+        assert_eq!(header(Some("cat"), 0, false, 80), "  cat · no output");
+        assert_eq!(header(None, 3, true, 80), "  command · full-screen app");
         let long = header(Some(&"x".repeat(200)), 5, false, 40);
         assert!(long.chars().count() <= 40 && long.contains('…'), "{long}");
         assert!(!header(Some("a\x1b[31m\tb"), 1, false, 80).contains('\x1b'));

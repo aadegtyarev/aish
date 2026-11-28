@@ -214,7 +214,7 @@ fn model_line_does_not_reach_bash() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? hello\r").unwrap();
-    p.expect("модель не настроена · ").unwrap();
+    p.expect("no model configured · ").unwrap();
     p.expect(expectrl::Regex("(ai|aish) config")).unwrap();
     p.expect("E> ").unwrap();
     settle();

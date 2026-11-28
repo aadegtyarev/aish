@@ -1,364 +1,391 @@
 # aish — UX
 
-> Лучший интерфейс — отсутствие интерфейса.
+> The best interface is no interface.
 
-aish выглядит и ведёт себя как ваш обычный bash. Никаких баннеров, панелей,
-рамок и режимов. Модель появляется только когда нужна — и исчезает сразу после.
+aish looks and behaves like your ordinary bash. No banners, panels, frames or
+modes. The model appears only when it is needed, and disappears right after.
 
-## Принципы
+UI text is English only; the conversation follows the user's language.
 
-1. **Невидимость по умолчанию.** Если вы не обращаетесь к модели, aish
-   неотличим от `bash`. PS1, алиасы, `.bashrc`, `vim`, `ssh` — всё ваше.
-2. **2–3 шага до любого действия.** Нет меню настроек, нет диалогов.
-3. **Предлагай, а не делай.** Модель никогда не выполняет команду сама —
-   она кладёт её в вашу строку ввода. Enter — это и есть подтверждение.
-4. **Мгновенность.** Ввод никогда не ждёт сеть. LLM-подсказки догоняют,
-   а не блокируют. Задержка нажатия < 1 мс, история < 5 мс.
-5. **Тишина.** Ошибки сети и модели — одна тусклая строка, не стектрейс.
-6. **Палитра терминала.** Только 16 ANSI-цветов (уважаем тему пользователя),
-   `dim` для вторичного, один акцент. `NO_COLOR` выключает всё.
+## Principles
 
-## Что подсмотрено и у кого
+1. **Invisible by default.** If you don't talk to the model, aish is
+   indistinguishable from `bash`. PS1, aliases, `.bashrc`, `vim`, `ssh` are all yours.
+2. **2–3 steps to any action.** No settings menu, no dialogs.
+3. **Propose, don't do.** The model never runs a command itself; it puts the
+   command into your input line. Enter is the confirmation.
+4. **Instant.** Typing never waits for the network. LLM suggestions catch up,
+   they don't block. Keypress latency < 1 ms, history < 5 ms.
+5. **Quiet.** Network and model errors are one dim line, not a stack trace.
+6. **The terminal's palette.** Only the 16 ANSI colors (the user's theme is
+   respected), `dim` for secondary things, one accent. `NO_COLOR` turns it all off.
 
-| Решение | Откуда | Как адаптировано |
+## What was borrowed, and from whom
+
+| Decision | From | How it is adapted |
 |---|---|---|
-| Серая подсказка, `→` принять | fish, zsh-autosuggestions | история мгновенно, LLM догоняет |
-| `?` + естественный язык | Warp (AI command search) | единая точка входа: вопрос или команда |
-| Блоки команд (cmd/output/exit) | Warp, iTerm2 shell integration (OSC 133) | контекст для модели, «спроси про вывод выше» |
-| Команда от модели в строку ввода | Butterfish, Copilot CLI | Enter = подтверждение, без диалогов |
-| Inline-поиск по истории, не fullscreen | atuin (`--inline-height`), fzf `--height` | список 6–8 строк под приглашением |
-| Длительность и код возврата | starship `cmd_duration`, `status` | только если > 5 с или exit ≠ 0 |
-| Уведомление о завершении фона | zsh `notify`, undistract-me | одна строка над приглашением |
-| Pager дополнений | fish | колонки с описаниями флагов |
-| Ноль настройки на старте | ollama/LM Studio автодетект | первый запуск сам находит модели |
+| Grey suggestion, `→` accepts | fish, zsh-autosuggestions | history instantly, the LLM catches up |
+| `?` + natural language | Warp (AI command search) | one entry point: a question or a command |
+| Command blocks (cmd/output/exit) | Warp, iTerm2 shell integration (OSC 133) | context for the model, "ask about the output above" |
+| A command from the model goes into the input line | Butterfish, Copilot CLI | Enter = confirmation, no dialogs |
+| Inline history search, not fullscreen | atuin (`--inline-height`), fzf `--height` | a list of 6–8 rows under the prompt |
+| Duration and exit code | starship `cmd_duration`, `status` | only if > 5 s or exit ≠ 0 |
+| Notice when a background job ends | zsh `notify`, undistract-me | one line above the prompt |
+| Completion pager | fish | columns with flag descriptions |
+| Zero configuration at the start | ollama/LM Studio autodetect | the first run finds the models itself |
 
-## Единственный новый жест: `?`
+## The one new gesture: `?`
 
-Строка `?` или `? текст` (вопрос, затем пробел) уходит модели вместе с контекстом
-(последние блоки, cwd, `git status`).
+A line `?` or `? text` (a question, then a space) goes to the model together
+with context (the last blocks, cwd, `git status`).
 
-В bash `?` — glob «один любой символ», поэтому правило строгое: модели
-уходят только `?`, `?N`, `?!` и строки, где после них идёт пробел.
-`?.txt`, `?? *` и прочие glob-шаблоны остаются командами. Чтобы выполнить
-голый `?` как glob, его можно экранировать: `\?`.
+In bash `?` is a glob, "any one character", so the rule is strict: only `?`,
+`?N`, `?!` and lines where a space follows them go to the model. `?.txt`,
+`?? *` and other glob patterns stay commands. To run a bare `?` as a glob,
+escape it: `\?`.
 
 ```
 $ cargo build
 error[E0425]: cannot find value `x` in this scope
  ✗ 101
 
-$ ?                        ← пустой ?: «что тут не так?» про последний блок
- │ `x` не объявлена в main.rs:12 — вероятно, опечатка, имелось в виду `xs`.
- │ Исправить можно так:
-$ sed -i '12s/\bx\b/xs/' src/main.rs        ← команда уже в строке ввода
+$ ?                        ← an empty ?: "what's wrong here?" about the last block
+ │ `x` is not declared in main.rs:12 — probably a typo, you meant `xs`.
+ │ You can fix it like this:
+$ sed -i '12s/\bx\b/xs/' src/main.rs        ← the command is already in the input line
 
-$ ? найди 10 самых больших файлов тут
-$ du -ah . | sort -rh | head -10             ← Enter — выполнить, правка — как обычно
+$ ? find the 10 biggest files here
+$ du -ah . | sort -rh | head -10             ← Enter runs it, editing works as usual
 ```
 
-- Ответ стримится строками с тусклой чертой `│` слева. Без рамок.
-- Если в ответе есть команда — она **вставляется в строку ввода**.
-  Enter выполнит, Esc/Ctrl-C очистит, можно отредактировать.
-- `?3 ...` — взять в контекст 3 последних блока (по умолчанию — 1).
-- `Ctrl-C` во время ответа — оборвать стрим.
-- Продолжение диалога: следующий `?` в течение сессии помнит предыдущие.
-  `?!` — начать с чистого листа.
+- The answer streams by lines with a dim bar `│` on the left. No frames.
+- While the answer is on its way, one dim status row shows where it will start:
+  `│ ⠹ waiting · 4s`. It is updated in place and replaced by the answer. Phases:
+  `connecting`, `waiting` (request sent), `thinking` (only reasoning or
+  keep-alive data so far), `loading model` (a local llama.cpp server in router
+  mode reports the model as `unloaded`/`loading`). The elapsed time shows after
+  1 s, `Ctrl-C — cancel` after 10 s; both are dropped first when the row does not
+  fit. Without color the spinner is `.`/`..`/`...`. The Ctrl-Q overlay shows the
+  same row; an error replaces it with the usual dim error line.
+- If the answer contains a command, it is **inserted into the input line**.
+  Enter runs it, Esc/Ctrl-C clears it, you can edit it.
+- `?3 ...` takes the last 3 blocks into the context (default: 1).
+- `Ctrl-C` during an answer cuts the stream.
+- Continuing the dialogue: the next `?` in the session remembers the previous ones.
+  `?!` starts from a clean slate.
 
-### Агентный шаг
+### The agent step
 
-Если модель умеет вызывать функции, `?` — маленький агентный цикл. Модель
-собирает факты сама и предлагает изменяющие команды **по одной**:
+If the model can call functions, `?` is a small agent loop. The model collects
+facts itself and proposes commands that change things **one at a time**:
 
 ```
-$ ? почему не собирается
- │ Смотрю статус.
- │ $ git status · 12 строк                 ← читающая команда выполнилась сама
- │ Нужно собрать с логами:
-$ cargo build 2>&1 | tail -30               ← в строке ввода; Enter — выполнить
-...                                          ← после завершения блока цикл продолжается
- │ Ошибка в main.rs:12, исправляем…
+$ ? why doesn't it build
+ │ Checking the status.
+ │ $ git status · 12 lines                 ← a read-only command ran by itself
+ │ Needs a build with logs:
+$ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
+...                                          ← the loop continues when the block ends
+ │ The error is in main.rs:12, fixing…
 ```
 
-- **Читающие команды** (allowlist: `ls`, `cat`, `head`, `tail` без `-f`, `wc`,
-  `grep`/`rg`, `find` без `-exec/-delete`, `stat`, `file`, `du`, `df`, `free`,
-  `uname`, `whoami`, `id`, `ps`, `which`, `type`, `pwd`, `date`, `git status|log|
-  diff|show|branch|remote -v|rev-parse|ls-files|blame`, `cargo metadata`,
-  `systemctl status`, `journalctl` без `-f/--vacuum/--rotate`) aish запускает
-  сам, не в вашем терминале: `bash -c` в текущем cwd, stdin `/dev/null`,
-  10 с, вывод до 16 КБ. В ответе — одна тусклая строка `│ $ cmd · N строк`
-  (или `· exit 1`); вывод идёт модели. Разбор — настоящим токенайзером:
-  `;`, `&`, `$(…)`, обратные кавычки, `<(…)`, редиректы в файлы, присваивания
-  окружения и пайп в неразрешённую команду делают команду «не читающей».
-  Свои префиксы — `allow:` в config.yaml.
-- **Всё остальное** кладётся в строку ввода (те же проверки, что у блока
-  ```` ```bash ````), ход приостанавливается. Выполните команду (можно
-  отредактировать — модель узнает, что именно было запущено) — и после
-  завершения блока модель продолжает в новой секции `│`. Ctrl-C на
-  строке или другая команда вместо предложенной — агент молча останавливается.
-- Инструменты: `run(command, background?)`, `read_block(n)`, `jobs()`,
+- **Read-only commands** (an allowlist: `ls`, `cat`, `head`, `tail` without `-f`,
+  `wc`, `grep`/`rg`, `find` without `-exec/-delete`, `stat`, `file`, `du`, `df`,
+  `free`, `uname`, `whoami`, `id`, `ps`, `which`, `type`, `pwd`, `date`,
+  `git status|log|diff|show|branch|remote -v|rev-parse|ls-files|blame`,
+  `cargo metadata`, `systemctl status`, `journalctl` without
+  `-f/--vacuum/--rotate`) are run by aish itself, not in your terminal:
+  `bash -c` in the current cwd, stdin `/dev/null`, 10 s, output up to 16 KB.
+  The answer gets one dim line `│ $ cmd · N lines` (or `· exit 1`); the output
+  goes to the model. Parsing uses a real tokenizer: `;`, `&`, `$(…)`, backticks,
+  `<(…)`, redirects into files, environment assignments and a pipe into a
+  command that is not allowed make a command "not read-only".
+  Your own prefixes go in `allow:` in config.yaml.
+- **Everything else** is put into the input line (the same checks as for a
+  ```` ```bash ```` block), and the turn pauses. Run the command (you may edit
+  it; the model learns what was actually run), and when the block ends the model
+  continues in a new `│` section. Ctrl-C on the line, or a different command
+  instead of the proposed one, stops the agent silently.
+- Tools: `run(command, background?)`, `read_block(n)`, `jobs()`,
   `job_output(id, lines)`, `read_file(path, start_line?, max_lines?)`
-  (до 200 строк / 32 КБ; секретные файлы — `~/.ssh/*`, `*.pem`, `.env*`,
-  `~/.aws/credentials`, `~/.netrc`, конфиг aish — отказ). Фон:
-  `run(…, background=true)` кладёт в строку `<cmd> &>…/jobs/<n>.log &` —
-  честно и видимо, а `job_output` читает этот лог.
-- До 12 шагов на один `?`, затем тусклая заметка. Ctrl-C останавливает
-  агента в любой момент (`│ ⏹`). Выводы команд для нелокального провайдера
-  маскируются, как и весь контекст.
-- Модель без поддержки функций: на HTTP 400 про tools/functions aish один
-  раз повторяет запрос без инструментов и запоминает это на сессию (дальше —
-  прежний одношаговый режим с блоком ```` ```bash ````). Явно: `tools: off`
-  у модели в конфиге.
+  (up to 200 lines / 32 KB; secret files — `~/.ssh/*`, `*.pem`, `.env*`,
+  `~/.aws/credentials`, `~/.netrc`, aish's own config — are refused).
+  Background: `run(…, background=true)` puts `<cmd> &>…/jobs/<n>.log &` into the
+  line (honest and visible), and `job_output` reads that log.
+- Up to 12 steps per `?`, then a dim note. Ctrl-C stops the agent at any moment
+  (`│ ⏹`). Command outputs are masked for a non-local provider, like the whole
+  context.
+- A model without function support: on HTTP 400 about tools/functions aish
+  repeats the request once without tools and remembers that for the session
+  (afterwards the old single-step mode with a ```` ```bash ```` block). Explicitly:
+  `tools: off` on the model in the config.
 
-## Спросить из любой программы: `Ctrl-Q`
+## Ask from any program: `Ctrl-Q`
 
-`?` работает только на приглашении. Когда команда уже идёт — `ssh`, REPL
-(`python`, `psql`), `docker exec`, долгая сборка — нажмите **Ctrl-Q**. Клавиша
-настраивается: `keys: {ask: ctrl-q}` в config.yaml (`ctrl-<буква>` или `off`).
+`?` works only at the prompt. When a command is already running — `ssh`, a REPL
+(`python`, `psql`), `docker exec`, a long build — press **Ctrl-Q**. The key is
+configurable: `keys: {ask: ctrl-q}` in config.yaml (`ctrl-<letter>` or `off`).
 
 ```
-  ssh prod · последние 200 строк        ← тусклый контекст: команда и объём вывода
-? почему тут тормозит                   ← обычная строка ввода (emacs-клавиши)
-│ Похоже, диск забит логами: ...
+  ssh prod · last 200 lines             ← dim context: the command and how much output
+? why is this slow                      ← an ordinary input line (emacs keys)
+│ Looks like the disk is full of logs: ...
 │   du -sh /var/log/* | sort -h | tail
-  Enter — вставить · Esc — закрыть
+  Enter — insert · Esc — close
 ```
 
-- Оверлей открывается на альтернативном экране: закрыли — экран программы
-  вернулся как был. Если программа сама на альтернативном экране (vim, htop),
-  оверлей рисуется поверх, а при закрытии программе посылается «перерисуйся»
-  (размер окна на миг меняется и возвращается; по ssh это доходит как
-  window-change).
-- Пока оверлей открыт, вывод программы не читается: она просто блокируется на
-  записи, ничего не теряется. Накопившееся появляется после закрытия. Введённое
-  в это время программе не передаётся.
-- Пустой Enter = голый `?`: объяснить, что происходит в выводе. Контекст —
-  хвост вывода команды (до 200 строк), сама команда и cwd. Для программы на
-  альтернативном экране модель предупреждается, что поток вывода может не
-  совпадать с картинкой.
-- Инструменты только `read_block`, `jobs`, `job_output`. Команд (`run`) и
-  чтения файлов (`read_file`) нет: идущая команда может быть на другой машине
-  (ssh, docker exec), локальные файлы и команды были бы не те. Память диалога
-  общая с обычным `?`; маскирование секретов для нелокальных провайдеров — как
-  обычно.
-- Если ответ кончается блоком ```` ```bash ````, команда показана, а под ней
-  `Enter — вставить`. Enter закрывает оверлей и **печатает команду в программу
-  без Enter** — запускаете вы. Многострочная команда вставляется только если
-  программа включила bracketed paste (иначе показана, но без «вставить»).
-- `Esc` закрывает. `Ctrl-C` обрывает идущий ответ (второй — закрывает).
-  Любая печать после ответа — уточняющий вопрос. `Ctrl-Q` на пустой строке
-  закрывает оверлей и отправляет программе один настоящий Ctrl-Q (двойной
-  Ctrl-Q для emacs/micro). Это же способ послать программе настоящий XON/Ctrl-Q.
+- The overlay opens on the alternate screen: when closed, the program's screen
+  is back as it was. If the program itself is on the alternate screen (vim,
+  htop), the overlay is drawn on top, and on close the program is told to
+  "redraw" (the window size changes for a moment and comes back; over ssh this
+  arrives as a window-change).
+- While the overlay is open the program's output is not read: it just blocks on
+  write, nothing is lost. What piled up appears after closing. What you type in
+  the meantime is not passed to the program.
+- An empty Enter = a bare `?`: explain what is going on in the output. The
+  context is the tail of the command's output (up to 200 lines), the command
+  itself and cwd. For a program on the alternate screen the model is warned
+  that the output stream may not match the picture.
+- The tools are only `read_block`, `jobs`, `job_output`. No commands (`run`) and
+  no file reading (`read_file`): the running command may be on another machine
+  (ssh, docker exec), so local files and commands would be the wrong ones. The
+  dialogue memory is shared with the ordinary `?`; secret masking for non-local
+  providers is as usual.
+- If the answer ends with a ```` ```bash ```` block, the command is shown and
+  under it `Enter — insert`. Enter closes the overlay and **types the command
+  into the program without Enter**; you are the one who runs it. A multi-line
+  command is inserted only if the program enabled bracketed paste (otherwise it
+  is shown, but without "insert").
+- `Esc` closes. `Ctrl-C` cuts an answer in progress (a second one closes).
+  Any typing after the answer is a follow-up question. `Ctrl-Q` on an empty line
+  closes the overlay and sends the program one real Ctrl-Q (a double Ctrl-Q for
+  emacs/micro). This is also the way to send the program a real XON/Ctrl-Q.
 
-## Веб: поиск и чтение страниц
+## Web: search and reading pages
 
-У агента два инструмента: `web_search(query)` и `web_read(url)`. Оба только читают и
-запускаются сами, без вопросов; каждый оставляет в ответе одну тусклую строку:
-`↗ поиск: запрос · duckduckgo`, `↗ host/path… · direct`. Показывается только бэкенд,
-который сработал; если не вышло ни у кого — `↗ не удалось: причина`. Работают и в
-оверлее `Ctrl-Q` (они не зависят от хоста), и считаются в лимит шагов хода.
+The agent has two tools: `web_search(query)` and `web_read(url)`. Both only read
+and run by themselves, without asking; each leaves one dim line in the answer:
+`↗ search: query · duckduckgo`, `↗ host/path… · direct`. Only the backend that
+worked is shown; if none worked — `↗ failed: reason`. They work in the `Ctrl-Q`
+overlay too (they don't depend on the host) and count toward the turn's step limit.
 
-Каждый инструмент идёт по цепочке бэкендов (`web:` в конфиге): поиск `[provider,
-duckduckgo, brave]` (по умолчанию `[provider, duckduckgo]`), чтение `[provider, direct,
-jina]` (по умолчанию `[provider, direct]`). Недоступный бэкенд (нет ключа, пустой
-результат, страница без текста из-за JS) молча пропускается. `provider` — встроенный
-поиск модели: для OpenAI Responses включается сам, для остальных — `web: native` у
-модели (запрос уходит как обычно, предполагается, что модель ищет сама); тогда наш
-`web_search` модели не предлагается, а `web_read` остаётся. `direct` ходит только на
-публичные адреса (loopback, LAN, link-local, CGNAT и т. п. отклоняются, в том числе
-после редиректов), без cookies, до 2 МБ. `web: off` выключает оба инструмента.
+Each tool goes through a chain of backends (`web:` in the config): search
+`[provider, duckduckgo, brave]` (default `[provider, duckduckgo]`), reading
+`[provider, direct, jina]` (default `[provider, direct]`). An unavailable backend
+(no key, an empty result, a page with no text because of JS) is skipped silently.
+`provider` is the model's built-in search: for OpenAI Responses it is on by
+itself, for the others it is `web: native` on the model (the request goes out as
+usual, and the model is assumed to search by itself); then our `web_search` is not
+offered to the model, and `web_read` stays. `direct` goes only to public addresses
+(loopback, LAN, link-local, CGNAT and the like are rejected, also after
+redirects), without cookies, up to 2 MB. `web: off` turns both tools off.
 
-Приватность: запрос или URL уходит стороннему сервису (поиску, Jina), поэтому всегда
-проходит через маскирование секретов, даже для локального провайдера; URL, который
-маскирование изменило, не открывается. Текст страниц отдаётся модели как недоверенные
-данные, не как инструкции.
+Privacy: the query or URL goes to a third-party service (a search engine, Jina),
+so it always passes through secret masking, even for a local provider; a URL that
+masking changed is not opened. Page text is given to the model as untrusted data,
+not as instructions.
 
-## Подсказки при вводе
+## Suggestions while typing
 
 ```
-$ git che█ckout -b feature/      ← серым: из истории (мгновенно)
-$ docker run -it --rm █ubuntu bash   ← серым: от модели (после паузы ~150 мс)
+$ git che█ckout -b feature/      ← grey: from history (instant)
+$ docker run -it --rm █ubuntu bash   ← grey: from the model (after a ~150 ms pause)
 ```
 
-| Клавиша | Действие |
+| Key | Action |
 |---|---|
-| `→` / `End` / `Ctrl-F` | принять подсказку целиком |
-| `Alt-→` / `Alt-F` | принять одно слово |
-| `Tab` | дополнение bash (файлы, флаги, ветки) — pager как в fish |
-| `Ctrl-R` | inline-поиск по истории (fuzzy, 8 строк) |
-| `Ctrl-Space` | спросить модель сейчас, не дожидаясь паузы |
-| `Ctrl-Q` | на приглашении — добавить/убрать `? ` в начале строки; во время команды — спросить модель (см. ниже) |
+| `→` / `End` / `Ctrl-F` | accept the whole suggestion |
+| `Alt-→` / `Alt-F` | accept one word |
+| `Tab` | bash completion (files, flags, branches), a pager like in fish |
+| `Ctrl-R` | inline history search (fuzzy, 8 rows) |
+| `Ctrl-Space` | ask the model now, without waiting for the pause |
+| `Ctrl-Q` | at the prompt — add/remove `? ` at the start of the line; while a command runs — ask the model (see above) |
 
-Приоритет источников: история → bash-completion → модель.
-Модель не вызывается для пустой строки и для строк, где история уже дала
-точное продолжение.
+Source priority: history → bash-completion → model.
+The model is not called for an empty line, nor for lines where history already
+gave the exact continuation.
 
-## Обратная связь о командах
+## Feedback about commands
 
-Показываем только то, что несёт информацию:
+We show only what carries information:
 
 ```
 $ make test
 ...
- ✗ 2 · 14.2s          ← exit ≠ 0 или дольше 5 с; иначе — ничего
+ ✗ 2 · 14.2s          ← exit ≠ 0 or longer than 5 s; otherwise nothing
 ```
 
-Никаких отметок для быстрых успешных команд.
+No marks for fast successful commands.
 
-## Фоновые задачи
+## Background jobs
 
-Обычный bash: `cmd &`, `jobs`, `fg`, `Ctrl-Z` работают как всегда.
-aish лишь добавляет:
+Ordinary bash: `cmd &`, `jobs`, `fg`, `Ctrl-Z` work as always.
+aish only adds:
 
-- когда фоновая задача завершилась, пока вы стоите на приглашении, — одна строка
-  над ним: ` ✓ [1] cargo build --release · 2m13s` или
-  ` ✗ [2] npm test · 41s · exit 1` (команда обрезается до одной строки,
-  время считается от момента, когда aish увидел задачу). Собственную строку bash
-  `[1]+ Done …` aish в этот момент прячет. Как это устроено: rc-хук шлёт
-  таблицу задач (`jobs -l` в локали C, приватный OSC), aish раз в полсекунды
-  проверяет pid и, когда pid умер, «толкает» bash (`bind -x`): тот печатает свою
-  строку и забывает задачу, а статус отдаёт `wait`. Если задача завершилась,
-  пока шла другая команда, bash печатает свою строку как обычно, а наша не
-  печатается (иначе вышел бы дубль);
-- `? что с джобой 2`: список задач сам попадает в контекст, модель может вызвать
-  `jobs`/`job_output` (лог есть у задач, запущенных агентом через `background`).
+- when a background job ends while you are at the prompt, one line above it:
+  ` ✓ [1] cargo build --release · 2m13s` or
+  ` ✗ [2] npm test · 41s · exit 1` (the command is cut to one line, time is
+  counted from the moment aish saw the job). bash's own line `[1]+ Done …` is
+  hidden by aish at that moment. How it works: an rc hook sends the job table
+  (`jobs -l` in the C locale, a private OSC), aish checks the pids twice a second
+  and, when a pid is dead, "pokes" bash (`bind -x`): it prints its own line and
+  forgets the job, and `wait` gives the status. If the job ended while another
+  command was running, bash prints its line as usual and ours is not printed
+  (it would be a duplicate);
+- `? what about job 2`: the job list goes into the context by itself, the model
+  can call `jobs`/`job_output` (there is a log for jobs started by the agent
+  with `background`).
 
-Для модели aish ведёт свой журнал задач (pid, лог, exit) — вам он не нужен.
+For the model aish keeps its own job journal (pid, log, exit); you don't need it.
 
-## Управление aish
+## Controlling aish
 
-Внутри сессии короткая команда `ai` (и всегда доступная длинная форма
-`aish`) с одинаковыми подкомандами. Имя `ai` всегда главнее чего-либо
-одноимённого в системе; сменить или отключить его можно в конфиге
-(`command: mm` или `command: off`; `aish` работает в любом случае).
-Голое `llm` не трогаем. `aish status` и `aish config` работают и как обычные
-CLI-команды; прочие аргументы уходят в bash:
+Inside a session the short command `ai` (and the always available long form
+`aish`) has the same subcommands. The name `ai` always wins over anything of the
+same name in the system; it can be changed or turned off in the config
+(`command: mm` or `command: off`; `aish` works in any case). A bare `llm` is not
+touched. `aish status` and `aish config` also work as ordinary CLI commands;
+other arguments go to bash:
 
-Аргументы команды получают серую подсказку мгновенно и локально (без модели,
-приоритетнее истории): `ai ` → `status`; `ai c` → `hat`; `ai chat ` → ссылка на
-модель, предпочтительно **не текущая** (вероятная цель переключения), затем
-по порядку конфига; `ai o` → `n`/`ff` — противоположное текущему состоянию.
-Справа от строки — короткое тусклое пояснение (`· сейчас cloud/main`), если
-есть место. `→` принимает, Tab показывает pager со всеми вариантами. Работает
-и для `aish`, и для имени из `command:`.
+The command's arguments get a grey suggestion instantly and locally (no model,
+higher priority than history): `ai ` → `status`; `ai c` → `hat`; `ai chat ` → a
+model reference, preferably **not the current one** (the likely switch target),
+then in config order; `ai o` → `n`/`ff` — the opposite of the current state.
+To the right of the line there is a short dim explanation (`· now cloud/main`)
+if there is room. `→` accepts, Tab shows a pager with all the options. Works for
+`aish` and for the name from `command:`.
 
 ```
-$ ai               ← статус: провайдеры, роли, доступность (одна строка на роль)
-$ ai help          ← команды: `команда — что делает`, длинное переносится (влезает в 36 колонок); и `ai -h`
-$ ai models        ← модели по провайдерам: алиас, id (тусклый, обрезается …), роли (`chat`, `complete`)
-$ ai model chat ds ← сменить модель роли И сохранить в конфиг (`ai model ds` = chat; `ai chat ds` то же)
-$ ai profile       ← профили (активный отмечен `*`); `ai profile inet` — переключить и сохранить
-$ ai off / ai on          ← выключить/включить подсказки модели
-$ ai config                ← кладёт `${EDITOR:-vi} ~/.config/aish/config.yaml` в строку ввода (Enter — открыть)
+$ ai               ← status: providers, roles, availability (one line per role)
+$ ai help          ← commands: `command — what it does`, long ones wrap (fits 36 columns); also `ai -h`
+$ ai models        ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
+$ ai model chat ds ← switch a role's model AND save it to the config (`ai model ds` = chat; `ai chat ds` is the same)
+$ ai profile       ← profiles (the active one is marked `*`); `ai profile inet` switches and saves
+$ ai off / ai on          ← turn model suggestions off/on
+$ ai config                ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)
 ```
 
-Ссылка на модель — `алиас` (если он один) или `провайдер/алиас`. Смена модели
-правит в конфиге только значение роли (целевой текстовый патч: комментарии, ключи и порядок
-не трогаются; запись атомарная, права файла сохраняются). Если форма файла
-необычна, модель меняется только в сессии, о чём говорит тусклая строка. Роль
-может быть списком (`chat: {id: [mellum, ds]}`): `ai model chat ds` ставит
-модель **в начало**, остальные остаются запасными.
+A model reference is an `alias` (if it is unique) or `provider/alias`. Switching
+a model edits only the role's value in the config (a targeted text patch:
+comments, keys and order are not touched; the write is atomic, file permissions
+are kept). If the file's shape is unusual, the model changes for the session
+only, and a dim line says so. A role can be a list (`chat: {id: [mellum, ds]}`):
+`ai model chat ds` puts the model **first**, the rest stay as fallbacks.
 
-**Запасные модели.** Если модель не подключилась / таймаут / 5xx / 404 до первого токена, берётся
-следующая из списка, одной тусклой строкой `↪ ds · mellum недоступна`. Ошибки после начала
-ответа не повторяются. Упавшая модель помнится 60 с: следующие запросы идут сразу к рабочей
-(так же для подсказок `complete`, но молча). Маскирование секретов — по той модели, что ответила.
+**Fallback models.** If a model fails to connect / times out / answers 5xx / 404
+before the first token, the next one in the list is used, with one dim line
+`↪ ds · mellum unavailable`. Errors after the answer has started are not retried.
+A failed model is remembered for 60 s: the following requests go straight to the
+working one (the same for `complete` suggestions, but silently). Secret masking
+follows the model that answered.
 
-**Профили.** `profiles:` — именованные наборы ролей, `profile:` — активный (нет — раздел
-`roles:`). С активным профилем `ai model` правит запись профиля.
+**Profiles.** `profiles:` are named sets of roles, `profile:` is the active one
+(none — the `roles:` section). With an active profile `ai model` edits the
+profile's entry.
 
-**Любая строка с `ai`.** Строка, начинающаяся с `ai` (или имени из `command:`), — наша и никогда
-не уходит в bash или к модели. Если первое слово — точно подкоманда (`help`, `models`, `model`,
-`chat`, `complete`, `profile`, `status`, `on`, `off`, `config`, `init`), она выполняется. Всё
-остальное (опечатка, русский текст, любые слова) печатает тусклым: `нет команды chst · может,
-chat?` (только если подкоманда близка: правка ≤2 или единственный префикс), строку
-`спросить модель: ? <вопрос>` и обычный `ai help`. Голый `ai` = `ai help`. Для опечаток в аргументах: то же для неизвестной модели (`нет модели: x · может, ds?`, иначе
-`· есть: a, b, …`), роли и профиля. `ai` и `aish` не подсвечиваются красным как неизвестные
-команды; при опечатке в подкоманде справа появляется подсказка `→ chat`.
+**Any line with `ai`.** A line starting with `ai` (or the name from `command:`)
+is ours and never goes to bash or to the model. If the first word is exactly a
+subcommand (`help`, `models`, `model`, `chat`, `complete`, `profile`, `status`,
+`on`, `off`, `config`, `init`), it runs. Anything else (a typo, text in another
+language, any words) prints, dimmed: `unknown chst · did you mean chat?` (only if
+a subcommand is close: edit distance ≤ 2 or a unique prefix), the line
+`ask the model: ? <question>` and the ordinary `ai help`. A bare `ai` = `ai help`.
+For typos in arguments: the same for an unknown model (`no model: x · did you
+mean ds?`, otherwise `· have: a, b, …`), role and profile. `ai` and `aish` are not
+highlighted red as unknown commands; with a typo in a subcommand a `→ chat`
+suggestion appears on the right.
 
-## Обновление: `aish update`
+## Updating: `aish update`
 
-`aish update` — установка из tarball/`install.sh` (`~/.local/bin`): берёт последний релиз
-с GitHub, проверяет sha256 и атомарно заменяет бинарь, одной строкой:
-`aish 0.1.0 → 0.2.0` или `aish 0.2.0 — последняя версия` (`--check` только сообщает).
-Если бинарь от dpkg, печатает `sudo apt update && sudo apt install --only-upgrade aish`
-и выходит; sudo сам не запускает.
+`aish update` — for an install from the tarball/`install.sh` (`~/.local/bin`):
+takes the latest release from GitHub, checks sha256 and atomically replaces the
+binary, in one line: `aish 0.1.0 → 0.2.0` or `aish 0.2.0 — up to date` (`--check`
+only reports). If the binary came from dpkg, it prints
+`sudo apt update && sudo apt install --only-upgrade aish` and exits; it does not
+run sudo itself.
 
-Тихая подсказка: не чаще раза в сутки, в фоне (на старте сети нет, кэш в
-`~/.local/state/aish/update-check`), одна тусклая строка после завершения команды:
+A quiet hint: at most once a day, in the background (no network at startup, the
+cache is in `~/.local/state/aish/update-check`), one dim line after a command
+finishes:
 
 ```
  ↑ aish 0.2.0 — aish update
 ```
 
-Без конфига (первый запуск) молчит: тогда говорит только строка первого запуска.
-`update_check: off` в конфиге отключает проверку.
+Without a config (first run) it stays silent: then only the first-run line
+speaks. `update_check: off` in the config turns the check off.
 
-## Установка: `aish init`
+## Installing: `aish init`
 
-`./install.sh` (или `curl -fsSL https://aadegtyarev.github.io/aish/install.sh | bash`: apt или tarball) собирает и кладёт `aish` в `~/.local/bin`, затем запускает `aish init`
-(в сессии то же: `ai init`). Не больше трёх вопросов, по одной строке, Enter берёт
-значение по умолчанию (оно тусклое):
-
-```
-Запускать aish: 1 — в каждом интерактивном bash, 2 — ещё и в tmux, 3 — только вручную [1]
-конфиг уже есть, оставляю: ~/.config/aish/config.yaml          ← или автоопределение моделей
-  ~/.bashrc  +3 стр.
-Применить? [Y]
-```
-
-В `~/.bashrc` добавляется блок `# >>> aish >>>` … `# <<< aish <<<` (повторный запуск
-заменяет его, оригинал — в `~/.bashrc.aish-bak`, один раз): интерактивный bash с терминалом
-делает `exec` aish по абсолютному пути; блок стоит в самом начале `.bashrc`, чтобы внешний bash ничего не выполнил (и не напечатал) до aish. Петли нет: aish сам выставляет `AISH` на время чтения `.bashrc`;
-`AISH_DISABLE=1 bash` — запасной выход. `aish init --remove` убирает блоки. Без терминала
-команда только печатает, что сделала бы, и выходит с кодом 1 (`--yes` применяет умолчания).
-Ключи из окружения пишутся в конфиг как `$VAR`, никогда не значением. `chsh` не вызывается.
-
-## Первый запуск
-
-Конфига нет → aish сам проверяет `localhost:11434` (ollama),
-`localhost:1234` (LM Studio), `$OPENAI_API_KEY`, пишет конфиг и говорит
-об этом одной строкой:
+`./install.sh` (or `curl -fsSL https://aadegtyarev.github.io/aish/install.sh | bash`:
+apt or tarball) builds and puts `aish` into `~/.local/bin`, then runs `aish init`
+(in a session the same: `ai init`). No more than three questions, one line each,
+Enter takes the default (it is dim):
 
 ```
-aish · chat: cloud/gpt-6 · complete: local/qwen2.5-coder:1.5b · ai config — изменить
+Start aish: 1 — in every interactive bash, 2 — also in tmux, 3 — manually only [1]
+config exists, keeping: ~/.config/aish/config.yaml          ← or model autodetection
+  ~/.bashrc  +3 lines
+Apply? [Y]
 ```
 
-Это единственный раз, когда aish говорит без спроса.
+A block `# >>> aish >>>` … `# <<< aish <<<` is added to `~/.bashrc` (a rerun
+replaces it, the original is in `~/.bashrc.aish-bak`, once): an interactive bash
+with a terminal `exec`s aish by absolute path; the block sits at the very top of
+`.bashrc`, so that the outer bash runs nothing (and prints nothing) before aish.
+There is no loop: aish itself sets `AISH` while reading `.bashrc`;
+`AISH_DISABLE=1 bash` is the escape hatch. `aish init --remove` removes the
+blocks. Without a terminal the command only prints what it would do and exits
+with code 1 (`--yes` applies the defaults). Keys from the environment are written
+to the config as `$VAR`, never as a value. `chsh` is not called.
 
-## Маркер сессии
+## First run
 
-В режиме ввода на строке ввода, у правого края (последняя колонка минус одна), тусклый `?` —
-тихий признак того, что модель рядом. Он скрыт, если ввод (с подсказкой) подходит ближе
-чем на 3 колонки или переносится на другую строку, и при `NO_COLOR`. Он временный: при Enter
-строка перерисовывается без него, в scrollback его нет. Текст задаёт хост
-(в библиотеке — `RightHint`/`HintText`; `HintText::set` из любого потока сразу
-перерисовывает строку). Состояния: `?` обычно; `[N] ?` при N фоновых задачах;
-`⋯`, пока запрос подсказки к модели длится дольше 300 мс (и не короче 200 мс на экране —
-без мерцания).
+No config → aish probes `localhost:11434` (ollama), `localhost:1234`
+(LM Studio), `$OPENAI_API_KEY` itself, writes a config and says so in one line:
 
-## Узкие экраны
+```
+aish · chat: cloud/gpt-6 · complete: local/qwen2.5-coder:1.5b · ai config — change
+```
 
-Интерфейс должен работать вплоть до ~36 колонок (телефон): строка ввода,
-призраки, уведомления, ответ `?` и оверлей `Ctrl-Q` не ломаются и не
-вылезают за правый край. Маркер `?` справа скрывается, когда для него нет
-места (нужно ещё 3 свободные колонки после ввода). Длинные уведомления
-обрезаются до ширины с `…`, подсказки оверлея укорачиваются. Новые элементы
-интерфейса проверяются тестами на узкой ширине (`tests/narrow.rs`).
+This is the only time aish speaks unasked. The line is cut to the width of the
+terminal, and shown even if it arrives after the prompt is up.
 
-## Цвета
+## Session marker
 
-| Элемент | Стиль |
+In input mode, on the input line at the right edge (the last column minus one),
+a dim `?` is a quiet sign that the model is near. It is hidden if the input (with
+the suggestion) comes closer than 3 columns or wraps to another row, if the
+prompt fills its row, and with `NO_COLOR`. It is temporary: on Enter the line is
+redrawn without it, it is not in scrollback. The text is set by the host (in the
+library — `RightHint`/`HintText`; `HintText::set` from any thread redraws the line
+at once). States: `?` normally; `[N] ?` with N background jobs; `⋯` while a
+suggestion request to the model takes longer than 300 ms (and stays on screen at
+least 200 ms — no flicker).
+
+## Narrow screens
+
+The UI must work down to ~36 columns (a phone): the input line, ghosts, notices,
+the `?` answer and the `Ctrl-Q` overlay don't break and don't run past the right
+edge. The `?` marker on the right hides when there is no room for it (3 more free
+columns after the input are needed). Long notices are cut to the width with `…`,
+overlay hints get shorter. New UI elements are checked by tests at a narrow width
+(`tests/narrow.rs`).
+
+## Colors
+
+| Element | Style |
 |---|---|
-| подсказка (ghost) | `dim` |
-| черта ответа `│`, служебные строки | `dim` |
-| `✗`, ошибки | красный |
-| `✓` | зелёный |
-| код/команды в ответе | акцент (по умолчанию cyan) |
-| **жирный** в ответе | bold |
+| suggestion (ghost) | `dim` |
+| the answer bar `│`, service lines | `dim` |
+| `✗`, errors | red |
+| `✓` | green |
+| code/commands in the answer | accent (cyan by default) |
+| **bold** in the answer | bold |
 
-## Безопасность
+## Security
 
-- Перед отправкой в облако маскируются секреты: `*_KEY=`, `*TOKEN*`,
-  `Authorization:`, приватные ключи, пароли в URL.
-- Для локального провайдера маскирование можно отключить.
-- Ничего не выполняется без Enter, кроме allowlist-читающих команд.
+- Before sending to the cloud, secrets are masked: `*_KEY=`, `*TOKEN*`,
+  `Authorization:`, private keys, passwords in URLs.
+- For a local provider masking can be turned off.
+- Nothing runs without Enter, except allowlisted read-only commands.

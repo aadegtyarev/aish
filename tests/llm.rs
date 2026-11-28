@@ -141,7 +141,7 @@ fn http_error_is_one_dim_line() {
     settle();
     p.send("?\r").unwrap();
     p.expect("│ ").unwrap();
-    p.expect("401 от mock").unwrap();
+    p.expect("401 from mock").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
@@ -157,11 +157,11 @@ fn aish_status_switch_and_config_prefill() {
     p.send("aish status\r").unwrap();
     p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("complete").unwrap();
-    p.expect("подсказки: вкл").unwrap();
+    p.expect("suggestions: on").unwrap();
     p.expect("E> ").unwrap();
     settle();
     p.send("aish off\r").unwrap();
-    p.expect("подсказки: выкл").unwrap();
+    p.expect("suggestions: off").unwrap();
     p.expect("E> ").unwrap();
     settle();
     p.send("aish chat mock/m\r").unwrap();
@@ -237,7 +237,7 @@ fn cli_subcommands_and_bash_passthrough() {
     let o = run(&["status"]);
     let s = String::from_utf8_lossy(&o.stdout);
     assert!(
-        s.contains("chat     mock/m · test · ok") && s.contains("подсказки"),
+        s.contains("chat     mock/m · test · ok") && s.contains("suggestions"),
         "{s}"
     );
     let o = run(&["config"]);
@@ -330,7 +330,7 @@ fn aish_off_silences_suggestions() {
     p.expect("E> ").unwrap();
     settle();
     p.send("aish off\r").unwrap();
-    p.expect("выкл").unwrap();
+    p.expect("off").unwrap();
     p.expect("E> ").unwrap();
     settle();
     p.send("echo fo").unwrap();
@@ -400,16 +400,16 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
     settle();
     p.send("ai status\r").unwrap();
     p.expect("chat     mock/m · test · ok ").unwrap();
-    p.expect("подсказки: вкл").unwrap();
+    p.expect("suggestions: on").unwrap();
     p.expect("E> ").unwrap();
     settle();
     p.send("ai off\r").unwrap();
-    p.expect("подсказки: выкл").unwrap();
+    p.expect("suggestions: off").unwrap();
     p.expect("E> ").unwrap();
     settle();
     // the long form always works
     p.send("aish on\r").unwrap();
-    p.expect("подсказки: вкл").unwrap();
+    p.expect("suggestions: on").unwrap();
     p.expect("E> ").unwrap();
     settle();
     // Tab completes subcommands of both
@@ -584,7 +584,7 @@ fn agent_flow(kind: &'static str) {
     settle();
     p.send("? собери проект\r").unwrap();
     // read-only command ran by aish itself: dim line, no output shown
-    p.expect("$ ls Cargo.toml · 1 строк").unwrap();
+    p.expect("$ ls Cargo.toml · 1 lines").unwrap();
     // the mutating one waits in the input line
     p.expect("E> ").unwrap();
     p.expect("echo built").unwrap();
@@ -691,7 +691,7 @@ fn agent_step_cap() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? loop\r").unwrap();
-    p.expect("лимит шагов (12)").unwrap();
+    p.expect("step limit (12)").unwrap();
     p.expect("E> ").unwrap();
     assert_eq!(m.requests().len(), 13);
     p.send_line("exit").unwrap();
@@ -825,7 +825,7 @@ fn ai_arguments_get_instant_local_ghost_text() {
     settle();
     p.send("ai ").unwrap();
     p.expect("status").unwrap(); // ghost, dim
-    p.expect("статус моделей").unwrap(); // transient description
+    p.expect("model status").unwrap(); // transient description
     p.send("c").unwrap(); // `ai c` -> `hat`
     p.expect("hat").unwrap();
     p.send("\x03").unwrap();
@@ -983,7 +983,7 @@ fn init_is_idempotent_backs_up_once_and_removes_cleanly() {
     );
     let (code, out, _) = run_init(init_cmd(&home, &["--yes"], &[]));
     assert_eq!(code, 0);
-    assert!(out.contains("уже настроено"), "{out}");
+    assert!(out.contains("already set up"), "{out}");
     assert_eq!(
         std::fs::read_to_string(&bashrc).unwrap(),
         once,
@@ -996,14 +996,14 @@ fn init_is_idempotent_backs_up_once_and_removes_cleanly() {
     );
     let (code, out, _) = run_init(init_cmd(&home, &["--remove"], &[]));
     assert_eq!(code, 0);
-    assert!(out.contains(".bashrc") && out.contains("удалён"), "{out}");
+    assert!(out.contains(".bashrc") && out.contains("removed"), "{out}");
     assert_eq!(
         std::fs::read_to_string(&bashrc).unwrap(),
         "export A=1\nalias x=y\n"
     );
     assert!(bak.exists(), "backups are kept");
     let (_, out, _) = run_init(init_cmd(&home, &["--remove"], &[]));
-    assert!(out.contains("блока нет"), "{out}");
+    assert!(out.contains("no block"), "{out}");
 }
 
 #[test]
@@ -1022,7 +1022,7 @@ fn init_keeps_an_existing_config() {
         ],
     ));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("конфиг уже есть"), "{out}");
+    assert!(out.contains("config exists"), "{out}");
     assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "providers: []\n");
 }
 
@@ -1180,14 +1180,14 @@ fn overlay_asks_shows_command_and_inserts_it_without_newline() {
     p.send("cat\r").unwrap();
     settle();
     p.send("\x11").unwrap(); // Ctrl-Q while cat runs
-    let f = p.expect("вывода нет").unwrap(); // dim context line
+    let f = p.expect("no output").unwrap(); // dim context line
     assert!(
         String::from_utf8_lossy(f.before()).contains("\x1b[?1049h"),
         "alternate screen entered"
     );
     p.send("why\r").unwrap();
     p.expect("Try this:").unwrap();
-    p.expect("Enter — вставить · Esc — закрыть").unwrap();
+    p.expect("Enter — insert · Esc — close").unwrap();
     // the model got the context but no local tools
     let body = chat_body(&m);
     assert!(
@@ -1223,7 +1223,7 @@ fn overlay_holds_back_output_until_it_closes() {
     p.send("sleep 1.2; echo LATE-OUTPUT-XYZ; cat\r").unwrap();
     std::thread::sleep(Duration::from_millis(300));
     p.send("\x11").unwrap();
-    p.expect("вывода нет").unwrap();
+    p.expect("no output").unwrap();
     std::thread::sleep(Duration::from_millis(1800)); // the echo happens meanwhile
     p.send("\x1b").unwrap(); // Esc closes
     let f = p.expect("LATE-OUTPUT-XYZ").unwrap();
@@ -1248,7 +1248,7 @@ fn double_ctrl_q_sends_a_literal_ctrl_q() {
     p.send("stty -ixon; cat -v\r").unwrap();
     settle();
     p.send("\x11").unwrap();
-    p.expect("вывода нет").unwrap();
+    p.expect("no output").unwrap();
     p.send("\x11").unwrap(); // empty input: close and pass the key on
     p.expect("\x1b[?1049l").unwrap();
     settle();
@@ -1270,11 +1270,11 @@ fn overlay_multiline_command_is_not_offered_without_bracketed_paste() {
     p.send("cat\r").unwrap();
     settle();
     p.send("\x11").unwrap();
-    p.expect("вывода нет").unwrap();
+    p.expect("no output").unwrap();
     p.send("\r").unwrap(); // empty Enter = bare `?`
     p.expect("LINE-ONE").unwrap(); // shown
-    let f = p.expect("Esc — закрыть").unwrap();
-    assert!(!String::from_utf8_lossy(f.before()).contains("вставить"));
+    let f = p.expect("Esc — close").unwrap();
+    assert!(!String::from_utf8_lossy(f.before()).contains("insert"));
     p.send("\r").unwrap(); // nothing to insert: Enter does nothing
     std::thread::sleep(Duration::from_millis(200));
     p.send("\x1b").unwrap();
@@ -1300,7 +1300,7 @@ fn overlay_over_an_alternate_screen_app_redraws_it_by_resizing() {
     p.expect("APP-22").unwrap();
     settle();
     p.send("\x11").unwrap();
-    let f = p.expect("полноэкранное приложение").unwrap();
+    let f = p.expect("full-screen app").unwrap();
     let before = String::from_utf8_lossy(f.before()).into_owned();
     assert!(!before.contains("\x1b[?1049h"), "already in it: {before:?}");
     p.send("\x1b").unwrap();
@@ -1370,7 +1370,7 @@ fn agent_searches_then_reads_a_page_through_mock_backends() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? как сделать X\r").unwrap();
-    p.expect("↗ поиск: how to X · duckduckgo").unwrap();
+    p.expect("↗ search: how to X · duckduckgo").unwrap();
     p.expect(format!("↗ 127.0.0.1:{}/doc · direct", page.port))
         .unwrap();
     p.expect("web-done").unwrap();
@@ -1414,7 +1414,7 @@ fn web_read_of_a_private_address_fails_with_one_dim_line() {
     p.expect("E> ").unwrap();
     settle();
     p.send("? открой\r").unwrap();
-    p.expect("↗ не удалось: direct: blocked").unwrap();
+    p.expect("↗ failed: direct: blocked").unwrap();
     p.expect("конец").unwrap();
     p.expect("E> ").unwrap();
     assert!(m.requests()[1].body.contains("error: direct: blocked"));
@@ -1446,7 +1446,7 @@ fn native_search_model_gets_the_builtin_tool_and_no_web_search_function() {
     settle();
     p.send("? новости\r").unwrap();
     p.expect("found-it").unwrap();
-    p.expect("↗ поиск: native q · provider").unwrap();
+    p.expect("↗ search: native q · provider").unwrap();
     p.expect("E> ").unwrap();
     let b = m.requests()[0].body.clone();
     assert!(b.contains(r#"{"type":"web_search"}"#), "{b}");
@@ -1487,7 +1487,7 @@ fn web_off_sends_no_web_tools_and_overlay_keeps_web_but_not_run() {
     p.send("cat\r").unwrap();
     settle();
     p.send("\x11").unwrap();
-    p.expect("вывода нет").unwrap();
+    p.expect("no output").unwrap();
     p.send("why\r").unwrap();
     p.expect("Fine.").unwrap();
     let body = chat_body(&m);

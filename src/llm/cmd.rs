@@ -69,13 +69,13 @@ pub fn closest<'a>(w: &str, cands: impl IntoIterator<Item = &'a str>) -> Option<
         .map(|x| x.1)
 }
 
-/// ` · может, x?` or ` · есть: a, b, c, …` (cut to the width by the caller).
+/// ` · did you mean x?` or ` · have: a, b, c, …` (cut to the width by the caller).
 fn did_you_mean(w: &str, cands: &[&str], fallback: &str) -> String {
     match closest(w, cands.iter().copied()) {
-        Some(c) => format!("· может, {c}?"),
+        Some(c) => format!("· did you mean {c}?"),
         None if cands.is_empty() => format!("· {fallback}"),
         None => format!(
-            "· есть: {}, …",
+            "· have: {}, …",
             cands.iter().take(6).copied().collect::<Vec<_>>().join(", ")
         ),
     }
@@ -160,19 +160,19 @@ fn help_rows(head: &str, desc: &str, w: usize) -> Vec<Ln> {
 }
 
 const HELP: &[(&str, &str)] = &[
-    ("status", "модели и связь"),
-    ("models", "список моделей"),
-    ("model [роль] <мод>", "сменить модель и сохранить"),
-    ("chat|complete <мод>", "то же для роли"),
-    ("profile [имя]", "профили, смена"),
-    ("on | off", "подсказки"),
-    ("config", "открыть конфиг"),
-    ("init", "настроить запуск"),
-    ("help", "эта справка"),
+    ("status", "models and link"),
+    ("models", "list models"),
+    ("model [role] <model>", "switch model and save"),
+    ("chat|complete <model>", "same for a role"),
+    ("profile [name]", "profiles, switch"),
+    ("on | off", "suggestions"),
+    ("config", "open the config"),
+    ("init", "set up launch"),
+    ("help", "this help"),
 ];
 
 pub fn help_lines(w: usize) -> Vec<Ln> {
-    let mut v = vec![Ln::dim("ai или aish + команда:")];
+    let mut v = vec![Ln::dim("ai or aish + command:")];
     for (h, d) in HELP {
         v.extend(help_rows(h, d, w));
     }
@@ -183,7 +183,7 @@ pub fn help_lines(w: usize) -> Vec<Ln> {
 pub fn models_lines(llm: &Llm, w: usize) -> Vec<Ln> {
     let Some(cfg) = llm.config() else {
         return vec![Ln::dim(format!(
-            "модель не настроена · {} config",
+            "no model configured · {} config",
             llm.command_label()
         ))];
     };
@@ -193,7 +193,7 @@ pub fn models_lines(llm: &Llm, w: usize) -> Vec<Ln> {
         .collect();
     let mut v = Vec::new();
     if let Some(p) = &cfg.profile {
-        v.push(Ln::dim(format!("профиль {p}")));
+        v.push(Ln::dim(format!("profile {p}")));
     }
     for p in &cfg.providers {
         v.push(Ln::dim(p.id.clone()));
@@ -237,18 +237,18 @@ pub fn models_lines(llm: &Llm, w: usize) -> Vec<Ln> {
         }
     }
     if cfg.providers.is_empty() {
-        v.push(Ln::dim("моделей нет"));
+        v.push(Ln::dim("no models"));
     }
     v
 }
 
 fn profile_lines(llm: &Llm, name: Option<&str>) -> Vec<Ln> {
     let Some(cfg) = llm.config() else {
-        return vec![Ln::dim("модель не настроена")];
+        return vec![Ln::dim("no model configured")];
     };
     let Some(name) = name else {
         if cfg.profiles.0.is_empty() {
-            return vec![Ln::dim("профилей нет · см. config")];
+            return vec![Ln::dim("no profiles · see config")];
         }
         return cfg
             .profiles
@@ -262,11 +262,11 @@ fn profile_lines(llm: &Llm, name: Option<&str>) -> Vec<Ln> {
     };
     if cfg.profile_roles(name).is_none() {
         let names: Vec<&str> = cfg.profiles.0.iter().map(|(n, _)| n.as_str()).collect();
-        let hint = did_you_mean(name, &names, "профилей нет");
-        return vec![Ln::dim(format!("нет профиля: {name} {hint}"))];
+        let hint = did_you_mean(name, &names, "no profiles");
+        return vec![Ln::dim(format!("no profile: {name} {hint}"))];
     }
     if cfg.profile.as_deref() == Some(name) {
-        return vec![Ln::dim(format!("профиль {name} уже выбран"))];
+        return vec![Ln::dim(format!("profile {name} already selected"))];
     }
     let ok = persist(
         llm,
@@ -275,9 +275,9 @@ fn profile_lines(llm: &Llm, name: Option<&str>) -> Vec<Ln> {
     );
     if ok {
         llm.clear_overrides();
-        vec![Ln::dim(format!("профиль → {name}"))]
+        vec![Ln::dim(format!("profile → {name}"))]
     } else {
-        vec![Ln::dim("конфиг не изменён · правьте profile: вручную")]
+        vec![Ln::dim("config unchanged · edit profile: by hand")]
     }
 }
 
@@ -314,10 +314,7 @@ fn bad_ref(cfg: &Config, r: &str) -> String {
     match r.split_once('/') {
         Some((p, _)) if cfg.providers.iter().all(|x| x.id != p) => {
             let ps: Vec<&str> = cfg.providers.iter().map(|x| x.id.as_str()).collect();
-            format!(
-                "нет провайдера: {p} {}",
-                did_you_mean(p, &ps, "провайдеров нет")
-            )
+            format!("no provider: {p} {}", did_you_mean(p, &ps, "no providers"))
         }
         Some((p, a)) => {
             let own: Vec<&str> = cfg
@@ -326,17 +323,11 @@ fn bad_ref(cfg: &Config, r: &str) -> String {
                 .find(|x| x.id == p)
                 .map(|x| x.models.keys().map(String::as_str).collect())
                 .unwrap_or_default();
-            format!(
-                "нет модели {p}/{a} {}",
-                did_you_mean(a, &own, "моделей нет")
-            )
+            format!("no model {p}/{a} {}", did_you_mean(a, &own, "no models"))
         }
         None => match cfg.providers_with(r).as_slice() {
-            [] => format!(
-                "нет модели: {r} {}",
-                did_you_mean(r, &aliases, "моделей нет")
-            ),
-            ps => format!("{r}: у {} · укажите {}/{r}", ps.join(", "), ps[0]),
+            [] => format!("no model: {r} {}", did_you_mean(r, &aliases, "no models")),
+            ps => format!("{r}: on {} · use {}/{r}", ps.join(", "), ps[0]),
         },
     }
 }
@@ -344,11 +335,11 @@ fn bad_ref(cfg: &Config, r: &str) -> String {
 fn set_model(llm: &Llm, role: &str, r: &str) -> Vec<Ln> {
     if !matches!(role, "chat" | "complete") {
         let hint = did_you_mean(role, &["chat", "complete"], "chat | complete");
-        return vec![Ln::dim(format!("нет роли: {role} {hint}"))];
+        return vec![Ln::dim(format!("no role: {role} {hint}"))];
     }
     let Some(cfg) = llm.config() else {
         return vec![Ln::dim(format!(
-            "модель не настроена · {} config",
+            "no model configured · {} config",
             llm.command_label()
         ))];
     };
@@ -382,7 +373,7 @@ fn set_model(llm: &Llm, role: &str, r: &str) -> Vec<Ln> {
         llm.clear_override(role);
     } else {
         llm.set_override(role, r);
-        v.push(Ln::dim("только в сессии: конфиг не изменён"));
+        v.push(Ln::dim("session only: config unchanged"));
     }
     let shown = if ok { refs.join(" · ") } else { r.to_owned() };
     v.insert(0, Ln::dim(format!("{role} → {shown}")));
@@ -395,8 +386,8 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
         Cmd::Suggest(on) => {
             llm.suggest_on.store(*on, Ordering::Relaxed);
             vec![Ln::dim(format!(
-                "подсказки: {}",
-                if *on { "вкл" } else { "выкл" }
+                "suggestions: {}",
+                if *on { "on" } else { "off" }
             ))]
         }
         Cmd::Help => help_lines(width),
@@ -406,9 +397,9 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
         Cmd::Unknown(w) => {
             let mut v = Vec::new();
             if let Some(c) = closest(w, SUBS.iter().copied()) {
-                v.push(Ln::dim(format!("нет команды {w} · может, {c}?")));
+                v.push(Ln::dim(format!("unknown {w} · did you mean {c}?")));
             }
-            v.push(Ln::dim("спросить модель: ? <вопрос>"));
+            v.push(Ln::dim("ask the model: ? <question>"));
             v.extend(help_lines(width));
             v
         }
@@ -435,7 +426,7 @@ fn probe(t: &Target) -> String {
     match aish_llm::list_models(&t.ep.url, &t.ep.key, Duration::from_secs(1)) {
         Ok(_) => format!("ok {}ms", t0.elapsed().as_millis()),
         Err(aish_llm::Error::Http { status, .. }) => format!("{status}"),
-        Err(_) => "нет ответа".into(),
+        Err(_) => "no answer".into(),
     }
 }
 
@@ -464,11 +455,11 @@ pub fn status_lines(llm: &Arc<Llm>) -> Vec<String> {
                     v.push(format!("{:<9}↪ {rest}", ""));
                 }
             }
-            None => v.push(format!("{r:<9}не настроен")),
+            None => v.push(format!("{r:<9}not set")),
         }
     }
     let on = llm.suggest_on.load(Ordering::Relaxed);
-    v.push(format!("подсказки: {}", if on { "вкл" } else { "выкл" }));
+    v.push(format!("suggestions: {}", if on { "on" } else { "off" }));
     v
 }
 
@@ -513,7 +504,7 @@ pub fn cli(args: &[std::ffi::OsString]) -> Option<i32> {
         "status" if args.len() == 1 => {
             let llm = Llm::new();
             if llm.config().is_none() {
-                println!("модель не настроена · aish config");
+                println!("no model configured · aish config");
                 return Some(1);
             }
             for l in status_lines(&llm) {

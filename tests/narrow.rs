@@ -634,8 +634,8 @@ fn overlay_header_input_answer_and_footer_fit_and_the_screen_comes_back() {
         }
     });
     for (cols, footer) in [
-        (36u16, "  Enter — вставить · Esc — закрыть"),
-        (30, "  Enter — вставить · Esc"),
+        (36u16, "  Enter — insert · Esc — close"),
+        (30, "  Enter — insert · Esc"),
         (20, "  Enter · Esc"),
     ] {
         let home = TempDir::new().unwrap();
@@ -654,7 +654,7 @@ fn overlay_header_input_answer_and_footer_fit_and_the_screen_comes_back() {
             t.scr.dump()
         );
         assert!(
-            head.ends_with(" · вывода нет") && head.contains('…'),
+            head.ends_with(" · no output") && head.contains('…'),
             "{head:?}"
         );
         assert_eq!(t.scr.row_text(1), "?");
@@ -1073,8 +1073,7 @@ fn question_without_a_model() {
         t.assert_clean();
         assert_transcript(&t, &ps1, "? тест", &|rest| {
             rest.first()
-                .is_some_and(|r| r.contains("модель не настроена") || r.starts_with("модель"))
-                || rest.iter().any(|r| r.contains("не настроена"))
+                .is_some_and(|r| r.contains("no model configured"))
         });
     }
 }
@@ -1158,10 +1157,10 @@ fn spinner_residue(t: &Term) {
         "⠧",
         "⠇",
         "⠏",
-        "ждёт ответ",
-        "подключение",
-        "думает",
-        "загружает",
+        "waiting",
+        "connecting",
+        "thinking",
+        "loading",
     ] {
         assert!(!all.contains(g), "status residue {g:?}\n{}", t.scr.dump());
     }
@@ -1170,9 +1169,9 @@ fn spinner_residue(t: &Term) {
 fn waiting_phases() {
     let ps1 = prompt(12);
     for (kind, phase) in [
-        (Slow::Silent, "ждёт ответ"),
-        (Slow::Reasoning, "думает"),
-        (Slow::Unloaded, "загружает модель"),
+        (Slow::Silent, "waiting"),
+        (Slow::Reasoning, "thinking"),
+        (Slow::Unloaded, "loading model"),
     ] {
         for cols in [36u16, 80] {
             let m = slow_mock(kind, 2500);
@@ -1190,10 +1189,10 @@ fn waiting_phases() {
                 t.scr.lines().iter().filter(|r| r.contains(phase)).count(),
                 1
             );
-            if phase != "ждёт ответ" || cols == 36 {
+            if phase != "waiting" || cols == 36 {
                 // the elapsed time shows after a second and the row stays one row
-                t.see("1с");
-                assert_eq!(t.scr.lines().iter().filter(|r| r.contains("1с")).count(), 1);
+                t.see("1s");
+                assert_eq!(t.scr.lines().iter().filter(|r| r.contains("1s")).count(), 1);
             }
             t.wait_for("Привет");
             t.pump_for(Duration::from_millis(600));
@@ -1212,7 +1211,7 @@ fn waiting_error_replaces_the_row() {
     let home = TempDir::new().unwrap();
     let mut t = start_llm_rows(&home, &m, &ps1, 36, 40);
     t.type_only("? тест\r");
-    t.see("ждёт ответ");
+    t.see("waiting");
     t.wait_for("сервер упал");
     t.pump_for(Duration::from_millis(600));
     spinner_residue(&t);
@@ -1225,17 +1224,17 @@ fn waiting_error_replaces_the_row() {
 fn waiting_ctrl_c_cancels_and_cleans_up() {
     let ps1 = prompt(12);
     let m = slow_mock(Slow::Silent, 30_000);
-    for cols in [36u16, 80] {
+    for cols in [30u16, 36, 80] {
         let home = TempDir::new().unwrap();
         let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
         t.type_only("? тест\r");
-        t.see("ждёт ответ");
+        t.see("waiting");
         // after 10 s the hint shows when it fits, and the row stays one row
-        t.see("10с");
-        let (_, row) = status_row(&t, "10с").unwrap();
+        t.see("10s");
+        let (_, row) = status_row(&t, "10s").unwrap();
         assert_eq!(
-            row.contains("Ctrl-C — отмена"),
-            cols == 80,
+            row.contains("Ctrl-C — cancel"),
+            cols >= 36,
             "{row:?}\n{}",
             t.scr.dump()
         );
@@ -1257,8 +1256,8 @@ fn waiting_in_the_overlay() {
     t.send("cat\r");
     t.send("\x11");
     t.type_only("почему\r");
-    t.see("ждёт ответ");
-    let (y, row) = status_row(&t, "ждёт ответ").unwrap();
+    t.see("waiting");
+    let (y, row) = status_row(&t, "waiting").unwrap();
     assert!(
         row.starts_with("│ ") && !t.scr.row_wrapped(y),
         "{}",

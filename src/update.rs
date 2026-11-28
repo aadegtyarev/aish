@@ -399,7 +399,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         }
     };
     if !is_newer(&rel.version, cur) {
-        println!("aish {cur} — последняя версия");
+        println!("aish {cur} — up to date");
         return 0;
     }
     if check {

@@ -148,7 +148,7 @@ fn latest_version_is_reported() {
     assert!(ok);
     assert_eq!(
         out,
-        format!("aish {} — последняя версия\n", env!("CARGO_PKG_VERSION"))
+        format!("aish {} — up to date\n", env!("CARGO_PKG_VERSION"))
     );
 }
 

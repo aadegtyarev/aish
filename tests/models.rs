@@ -90,7 +90,7 @@ fn help_and_models_fit() {
         let home = TempDir::new().unwrap();
         let m = mock();
         let mut t = start(&home, &m, cols);
-        run(&mut t, "ai help", "эта справка");
+        run(&mut t, "ai help", "this help");
         rows_fit(&t);
         let all = t.scr.everything();
         for w in ["status", "models", "profile", "config"] {
@@ -116,7 +116,7 @@ fn help_and_models_fit() {
         } else {
             assert!(all.contains(LONG_ID));
         }
-        run(&mut t, "ai -h", "эта справка");
+        run(&mut t, "ai -h", "this help");
     }
 }
 
@@ -128,7 +128,11 @@ fn fallback_to_the_next_model_with_a_dim_line() {
         let mut t = start(&home, &m, cols);
         run(&mut t, "? hi", "ANSWER-OK");
         let all = t.scr.everything();
-        assert!(all.contains("↪ ds · mellum недоступна"), "{}", t.scr.dump());
+        assert!(
+            all.contains("↪ ds · mellum unavailable"),
+            "{}",
+            t.scr.dump()
+        );
         let y = t.scr.find_row("↪ ds").unwrap();
         assert!(t.scr.is_dim(2, y), "{}", t.scr.dump());
         rows_fit(&t);
@@ -191,7 +195,7 @@ fn profiles_switch_and_persist() {
     std::fs::write(&cfg, &src).unwrap();
     run(&mut t, "ai profile", "inet");
     t.assert_clean();
-    run(&mut t, "ai profile inet", "профиль →");
+    run(&mut t, "ai profile inet", "profile →");
     let got = std::fs::read_to_string(&cfg).unwrap();
     assert_eq!(got, format!("{src}profile: inet\n"));
     run(&mut t, "ai model chat mellum", "chat →");
@@ -204,7 +208,7 @@ fn profiles_switch_and_persist() {
         got.contains("chat: {id: [mellum, ds]}   # fallback"),
         "{got}"
     );
-    run(&mut t, "ai profile nope", "нет профиля");
+    run(&mut t, "ai profile nope", "no profile");
 }
 
 #[test]
@@ -213,7 +217,7 @@ fn typos_get_a_hint_never_bash() {
         let home = TempDir::new().unwrap();
         let m = mock();
         let mut t = start(&home, &m, cols);
-        run(&mut t, "ai chst тест", "может, chat?");
+        run(&mut t, "ai chst тест", "did you mean chat?");
         let chats = |m: &Mock| {
             m.requests()
                 .iter()
@@ -224,23 +228,19 @@ fn typos_get_a_hint_never_bash() {
         run(&mut t, "ai models", "cloud");
         assert_eq!(chats(&m), 0);
         // anything else: the hint and the help, no request, never bash
-        run(&mut t, "ai тест", "эта справка");
+        run(&mut t, "ai тест", "this help");
         assert!(
-            t.scr.everything().contains("спросить модель: ? <вопрос>"),
+            t.scr.everything().contains("ask the model: ? <question>"),
             "{}",
             t.scr.dump()
         );
         assert_eq!(chats(&m), 0);
-        run(&mut t, "ai chat dsx", "может, ds?");
-        run(&mut t, "ai chat zzzzz", "есть:");
-        run(&mut t, "ai model chta ds", "может, chat?");
+        run(&mut t, "ai chat dsx", "did you mean ds?");
+        run(&mut t, "ai chat zzzzz", "have:");
+        run(&mut t, "ai model chta ds", "did you mean chat?");
         rows_fit(&t);
         let all = t.scr.everything();
-        assert!(
-            !all.contains("не найдена") && !all.contains("not found"),
-            "{}",
-            t.scr.dump()
-        );
+        assert!(!all.contains("not found"), "{}", t.scr.dump());
     }
 }
 

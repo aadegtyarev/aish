@@ -135,7 +135,7 @@ impl Renderer {
             c => {
                 self.release_held(out);
                 if c.is_some_and(|c| allow_cmd && unsafe_cmd(&c)) {
-                    self.note("команда с управляющими символами не вставлена", out);
+                    self.note("command with control characters not inserted", out);
                 }
                 None
             }
@@ -577,7 +577,7 @@ mod tests {
         ] {
             let (o, c) = run(&[&format!("```bash\n{bad}\n```\n")], false, 80);
             assert_eq!(c, None, "{bad:?}");
-            assert!(o.contains("не вставлена"), "{o:?}");
+            assert!(o.contains("not inserted"), "{o:?}");
             assert!(
                 !o.contains('\u{1b}') && !o.contains('\u{202E}') && !o.contains('\u{200B}'),
                 "{o:?}"

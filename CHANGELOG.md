@@ -9,6 +9,12 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Changed — UI text is English
+- Every string aish prints (hints, notices, `ai help`/`models`/`profile`, errors, `init`
+  and first-run lines, the waiting indicator, the overlay, the update notice) is
+  English; the conversation with the model still follows your language
+  (the system prompt says so). Docs are English too.
+
 ### Fixed
 - `aish init` puts its `.bashrc` block at the very top and execs the binary by
   absolute path, so the outer bash runs nothing first: banners and other output
@@ -16,9 +22,9 @@ version and date, and the release notes on GitHub are taken from it.
 
 ### Added
 - A waiting indicator for `?` answers (also in the Ctrl-Q overlay): one dim
-  status row, `│ ⠹ ждёт ответ · 4с`, updated in place and replaced by the
-  answer; phases подключение / ждёт ответ / думает / загружает модель (llama.cpp
-  router mode), `Ctrl-C — отмена` after 10 s when it fits; cut to the width.
+  status row, `│ ⠹ waiting · 4s`, updated in place and replaced by the
+  answer; phases connecting / waiting / thinking / loading model (llama.cpp
+  router mode), `Ctrl-C — cancel` after 10 s when it fits; cut to the width.
 - Bare model aliases: `ai chat ds` works when only one provider has `ds`
   (`provider/alias` still works and is required when names collide); roles in
   the config accept them too, and `ai chat` suggests them.
@@ -28,11 +34,11 @@ version and date, and the release notes on GitHub are taken from it.
   if the file's shape is unusual the change is for the session only).
 - Fallback models: a role may be a list (`chat: {id: [mellum, ds]}`); when a
   model refuses, times out, answers 5xx or 404 before any output, the next one
-  answers (`↪ ds · mellum недоступна`) and the failed one is skipped for 60 s,
+  answers (`↪ ds · mellum unavailable`) and the failed one is skipped for 60 s,
   also for `complete`, silently. Secret masking follows the model that answers.
 - Profiles: `profiles:` and `profile:` in the config choose sets of roles.
 - Lines starting with `ai` never reach bash or the model: anything but a
-  subcommand prints a dim `может, chat?` (when close), `спросить модель: ? <вопрос>`
+  subcommand prints a dim `did you mean chat?` (when close), `ask the model: ? <question>`
   and the help (a bare `ai` shows the help too). Unknown models, roles and profiles
   get a dim hint with the closest name; `ai`/`aish` are no longer highlighted as unknown
   commands; ghost hint `→ chat` for a near-miss.
