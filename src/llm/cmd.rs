@@ -122,7 +122,7 @@ pub fn status_lines(llm: &Arc<Llm>) -> Vec<String> {
             .ok()
             .flatten()
             .unwrap_or_else(|| "не настроен".into());
-        v.push(format!("{r:<8}{body}"));
+        v.push(format!("{r:<9}{body}"));
     }
     let on = llm.suggest_on.load(Ordering::Relaxed);
     v.push(format!("подсказки: {}", if on { "вкл" } else { "выкл" }));

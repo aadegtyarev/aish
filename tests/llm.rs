@@ -155,7 +155,7 @@ fn aish_status_switch_and_config_prefill() {
     p.expect("E> ").unwrap();
     settle();
     p.send("aish\r").unwrap();
-    p.expect("chat    mock/m · test · ok ").unwrap();
+    p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("complete").unwrap();
     p.expect("подсказки: вкл").unwrap();
     p.expect("E> ").unwrap();
@@ -237,7 +237,7 @@ fn cli_subcommands_and_bash_passthrough() {
     let o = run(&["status"]);
     let s = String::from_utf8_lossy(&o.stdout);
     assert!(
-        s.contains("chat    mock/m · test · ok") && s.contains("подсказки"),
+        s.contains("chat     mock/m · test · ok") && s.contains("подсказки"),
         "{s}"
     );
     let o = run(&["config"]);
@@ -399,7 +399,7 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
     p.expect("E> ").unwrap();
     settle();
     p.send("ai\r").unwrap();
-    p.expect("chat    mock/m · test · ok ").unwrap();
+    p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("подсказки: вкл").unwrap();
     p.expect("E> ").unwrap();
     settle();
@@ -454,7 +454,7 @@ fn ai_wins_even_over_an_executable_of_that_name() {
     p.expect("E> ").unwrap();
     settle();
     p.send("ai\r").unwrap();
-    p.expect("chat    mock/m").unwrap();
+    p.expect("chat     mock/m").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
@@ -468,7 +468,7 @@ fn custom_command_name_works_and_ai_is_left_to_bash() {
     p.expect("E> ").unwrap();
     settle();
     p.send("mm\r").unwrap();
-    p.expect("chat    mock/m · test · ok ").unwrap();
+    p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("E> ").unwrap();
     settle();
     p.send("ai\r").unwrap();
@@ -490,7 +490,7 @@ fn command_off_leaves_ai_to_bash_but_aish_works() {
     p.expect("E> ").unwrap();
     settle();
     p.send("aish\r").unwrap();
-    p.expect("chat    mock/m · test · ok ").unwrap();
+    p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();

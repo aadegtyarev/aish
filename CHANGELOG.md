@@ -9,6 +9,9 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Fixed
+- `aish status`: a space between `complete` and the model name.
+
 ## [0.2.1] - 2026-11-28
 
 ### Fixed
