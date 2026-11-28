@@ -277,32 +277,6 @@ pub fn build_with(
     Some((yaml, chat, comp))
 }
 
-/// Create `path` with `content` unless it exists (never overwrites, even in a
-/// race with the user or another aish). Returns whether it was written.
-pub fn write_new(path: &std::path::Path, content: &str) -> std::io::Result<bool> {
-    use std::io::Write;
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    let r = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
-        // hard_link fails if `path` exists: the complete file appears atomically.
-        match std::fs::hard_link(&tmp, path) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(e),
-        }
-    })();
-    let _ = std::fs::remove_file(&tmp);
-    r
-}
-
 /// Start the detection in the background if there is no config yet.
 pub fn spawn(llm: Arc<Llm>) {
     if llm.path().is_none() || llm.config_exists() {
@@ -399,7 +373,7 @@ fn run(llm: &Llm) -> std::io::Result<()> {
         return Ok(());
     };
     let path = llm.path().expect("checked");
-    if !write_new(path, &yaml)? {
+    if !crate::fsio::write_new(path, &yaml)? {
         return Ok(()); // someone else created it first
     }
     llm.set_notice(format!(
@@ -464,8 +438,8 @@ mod tests {
     fn write_new_never_overwrites() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("sub/config.yaml");
-        assert!(write_new(&p, "one").unwrap());
-        assert!(!write_new(&p, "two").unwrap());
+        assert!(crate::fsio::write_new(&p, "one").unwrap());
+        assert!(!crate::fsio::write_new(&p, "two").unwrap());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "one");
         // no temp files left behind
         assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);

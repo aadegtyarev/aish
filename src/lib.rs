@@ -5,6 +5,7 @@ pub mod complete;
 pub mod config;
 pub mod config_edit;
 pub mod editor;
+pub mod fsio;
 pub mod init;
 pub mod llm;
 pub mod module;

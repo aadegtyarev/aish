@@ -143,10 +143,10 @@ impl Module for ModelModule {
                 return true;
             };
             let p = llm.prefix();
-            std::thread::spawn(move || {
+            ask::run_task(t, move |t| {
                 let w = usize::from(t.cols).saturating_sub(3).max(10);
-                write_rows(&t, &cmd::form_lines(w, p));
-                t.finish(None);
+                write_rows(t, &cmd::form_lines(w, p));
+                None
             });
             return true;
         }
@@ -198,14 +198,14 @@ fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option
         Cmd::Status => {
             let Some(t) = task.take() else { return false };
             let llm = llm.clone();
-            std::thread::spawn(move || {
+            ask::run_task(t, move |t| {
                 let r = Renderer::new(&t.theme, t.cols);
                 let mut b = Vec::new();
                 for l in cmd::status_lines(&llm) {
                     r.note(&l, &mut b);
                 }
                 t.write(&b);
-                t.finish(None);
+                None
             });
         }
         Cmd::Init => match task.take() {
@@ -226,10 +226,10 @@ fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option
             };
             // (on a worker, like status: the editor finishes its own line first)
             let (llm, cmd) = (llm.clone(), cmd);
-            std::thread::spawn(move || {
+            ask::run_task(t, move |t| {
                 let w = usize::from(t.cols).saturating_sub(3).max(10);
-                write_rows(&t, &cmd::run(&llm, &cmd, w));
-                t.finish(None);
+                write_rows(t, &cmd::run(&llm, &cmd, w));
+                None
             });
         }
     }

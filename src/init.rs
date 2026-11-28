@@ -128,7 +128,7 @@ fn write_with_backup(path: &Path, content: &str) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(path, content)
+    crate::fsio::write_atomic(path, content, None)
 }
 
 struct Style {
@@ -316,7 +316,7 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        if let Err(e) = std::fs::write(p, yaml) {
+        if let Err(e) = crate::fsio::write_atomic(p, yaml, Some(0o600)) {
             eprintln!("aish: {}: {e}", tilde(p));
             return 1;
         }

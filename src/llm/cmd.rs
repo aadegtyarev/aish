@@ -330,7 +330,7 @@ fn persist(
         Ok(c) if check(&c) => {}
         _ => return false,
     }
-    crate::config_edit::write_atomic(path, &new).is_ok()
+    crate::fsio::write_atomic(path, &new, None).is_ok()
 }
 
 /// Write `run: <mode>` to the config; false if the file's shape does not allow it.

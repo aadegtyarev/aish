@@ -27,9 +27,7 @@ pub fn install_file(name: &str, content: &str) -> Result<PathBuf> {
     if std::fs::read_to_string(&path).is_ok_and(|s| s == content) {
         return Ok(path);
     }
-    let tmp = dir.join(format!("{name}.{}", std::process::id()));
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, &path)?;
+    crate::fsio::write_atomic(&path, content, None)?;
     Ok(path)
 }
 

@@ -4,8 +4,6 @@
 //! file does not have the expected shape (the caller then applies the change
 //! for the session only).
 
-use std::path::Path;
-
 fn indent(l: &str) -> usize {
     l.len() - l.trim_start_matches(' ').len()
 }
@@ -449,69 +447,10 @@ fn set_nested(src: &str, top: &str, name: &str, value: &str) -> Option<String> {
     Some(join(&lines))
 }
 
-/// Replace the file atomically: a symlink is followed (the target changes, the
-/// link stays), the temp file is new and random next to it, owner and mode are
-/// kept, and the file and the directory are synced.
-pub fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{fchown, MetadataExt, OpenOptionsExt, PermissionsExt};
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let meta = std::fs::metadata(&path).ok();
-    let mode = meta
-        .as_ref()
-        .map_or(0o600, |m| m.permissions().mode() & 0o7777);
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("config");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let mut f = None;
-    let mut tmp = path.clone();
-    for i in 0..16u32 {
-        tmp = path.with_file_name(format!(
-            ".{name}.{:x}{:x}{i}.tmp",
-            std::process::id(),
-            nanos.wrapping_mul(2654435761).wrapping_add(i)
-        ));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-        {
-            Ok(x) => {
-                f = Some(x);
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
-    }
-    let mut f = f.ok_or_else(|| std::io::Error::other("no temp file"))?;
-    let r = (|| {
-        f.write_all(content.as_bytes())?;
-        if let Some(m) = &meta {
-            let _ = fchown(&f, Some(m.uid()), Some(m.gid()));
-        }
-        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, &path)?;
-        if let Some(d) = path.parent() {
-            std::fs::File::open(d)?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if r.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    r
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fsio::write_atomic;
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| (*s).to_owned()).collect()
@@ -631,7 +570,7 @@ mod tests {
         let link = d.path().join("config.yaml");
         std::fs::write(&real, "a: 1\n").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        write_atomic(&link, "b: 2\n").unwrap();
+        write_atomic(&link, "b: 2\n", None).unwrap();
         assert!(std::fs::symlink_metadata(&link)
             .unwrap()
             .file_type()
@@ -647,7 +586,7 @@ mod tests {
         let p = d.path().join("config.yaml");
         std::fs::write(&p, "a: 1\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
-        write_atomic(&p, "b: 2\n").unwrap();
+        write_atomic(&p, "b: 2\n", None).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "b: 2\n");
         assert_eq!(
             std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,

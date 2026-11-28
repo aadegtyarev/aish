@@ -19,6 +19,7 @@ description = "bash wrapper with LLM assistance"
 
 [dependencies]
 anyhow = "1"
+tempfile = "3"
 crossterm = "0.28"
 # Direct pty via nix instead of portable-pty: we only target unix, need a plain
 # master fd for a zero-copy blocking read/write loop, and portable-pty's
@@ -45,7 +46,6 @@ sha2 = "0.10"
 
 [dev-dependencies]
 expectrl = "0.7"
-tempfile = "3"
 aish-llm = { path = "crates/aish-llm", features = ["mock"] }
 
 # Static musl builds, see pack.sh. panic stays "unwind": main() relies on catch_unwind.

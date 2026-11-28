@@ -9,6 +9,13 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Fixed
+- `aish init` wrote `config.yaml` readable by everyone; it is now private
+  (0600) like every other write of the config. If your config holds API keys,
+  run `chmod 600 ~/.config/aish/config.yaml`.
+- A crash inside `ai` help or status no longer leaves the terminal in the wrong
+  mode.
+
 ## [0.3.3] - 2026-11-28
 
 ### Fixed
