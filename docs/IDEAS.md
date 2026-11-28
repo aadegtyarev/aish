@@ -68,3 +68,20 @@ instead of growing. The model can draft a skill from the current conversation
 
 Open questions: versioning when a skill goes stale; conflicts between two
 skills with the same name from different sources.
+
+## Language coach
+
+Optional: while answering, the model also corrects the user's own message
+when it has mistakes (grammar, word order, typos), so asking questions doubles
+as practice. Off by default; `coach: on` or `coach: en` (only for messages in
+that language).
+
+- One dim line before the answer, only when there is something to fix:
+  `✎ Better: How do I find the biggest files in this directory?`
+  Nothing is shown for a correct message: no praise, no noise.
+- The task is still done as asked; the correction never replaces the answer.
+- Implementation: a short addition to the system prompt plus a marker the
+  renderer turns into the dim line (for example the model starts with
+  `✎ ` on the first line). Costs a few tokens, works with any chat model.
+- `ai coach on|off` to toggle for the session.
+- Could ship as a built-in skill once skills exist.
