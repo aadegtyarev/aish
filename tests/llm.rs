@@ -1785,6 +1785,35 @@ fn an_alias_or_function_named_like_a_plain_program_makes_it_ask() {
 }
 
 #[test]
+fn default_ubuntu_style_aliases_keep_plain_commands_unasked() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&[PRINT]));
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("{}run: auto\n", config_kind_run(&m.url(), "chat")),
+    )
+    .unwrap();
+    let cmd = base(&home);
+    std::fs::write(
+        home.path().join(".bashrc"),
+        "PS1='E> '\nalias ls='ls --color=auto'\nalias grep='grep --color=auto'\n\
+         alias basename='basename --suffix=.zz'\nalias ll='ls -alF'\n",
+    )
+    .unwrap();
+    let mut p = spawn(cmd);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    let c = p.expect("out-42\r\n").unwrap();
+    assert!(!String::from_utf8_lossy(c.before()).contains("Enter run"));
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
 fn a_line_bash_never_started_is_reported_not_taken_for_the_next_command() {
     let home = TempDir::new().unwrap();
     let m = stepped("chat", run_steps(&["echo 'unclosed"]));

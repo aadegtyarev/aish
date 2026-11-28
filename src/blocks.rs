@@ -25,6 +25,9 @@ pub struct Block {
     pub duration: Duration,
 }
 
+/// A program the shell redefines: its alias value, `None` for a function.
+pub type Shadow = (String, Option<String>);
+
 /// A live background job as reported by the shell (`jobs -l`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobRow {
@@ -156,7 +159,7 @@ struct Collector {
     nonce: Option<String>,
     path: Option<String>,
     /// Programs the shell redefines as aliases or functions (`sh=` report).
-    shadowed: Vec<String>,
+    shadowed: Vec<Shadow>,
     path_version: u64,
     jobs: Vec<JobRow>,
     jobs_changed: bool,
@@ -306,7 +309,18 @@ impl Perform for Collector {
                         .as_ref()
                         .is_none_or(|n| tag == format!("aish={n}"))
                     {
-                        self.shadowed = names.split_whitespace().map(str::to_owned).collect();
+                        self.shadowed = percent_decode(names)
+                            .lines()
+                            .filter_map(|l| {
+                                let mut f = l.splitn(3, '\t');
+                                let kind = f.next()?;
+                                let name = f.next()?.to_owned();
+                                Some((
+                                    name,
+                                    (kind == "a").then(|| f.next().unwrap_or("").to_owned()),
+                                ))
+                            })
+                            .collect();
                     }
                     return;
                 }
@@ -391,7 +405,7 @@ impl BlockTracker {
     }
 
     /// Programs the user's shell redefines as aliases or functions.
-    pub fn shadowed(&self) -> &[String] {
+    pub fn shadowed(&self) -> &[Shadow] {
         &self.state.shadowed
     }
 
@@ -516,10 +530,14 @@ mod tests {
     #[test]
     fn shadowed_programs_are_reported_with_the_nonce() {
         let mut t = BlockTracker::with_nonce("n1".into());
-        t.feed(b"\x1b]1337;aish;sh=ls grep;aish=n1\x07");
-        assert_eq!(t.shadowed(), ["ls", "grep"]);
+        t.feed(b"\x1b]1337;aish;sh=a%09ls%09ls%20--color=auto%0Af%09grep%0A;aish=n1\x07");
+        let want = [
+            ("ls".to_owned(), Some("ls --color=auto".to_owned())),
+            ("grep".to_owned(), None),
+        ];
+        assert_eq!(t.shadowed(), want);
         t.feed(b"\x1b]1337;aish;sh=;aish=other\x07");
-        assert_eq!(t.shadowed(), ["ls", "grep"]);
+        assert_eq!(t.shadowed(), want);
         t.feed(b"\x1b]1337;aish;sh=;aish=n1\x07");
         assert!(t.shadowed().is_empty());
     }

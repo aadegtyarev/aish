@@ -13,7 +13,8 @@ version and date, and the release notes on GitHub are taken from it.
 - `run: auto` and `judge` run unasked only an allowlist of read-only programs with
   exact flags (`ls`, `cat`, `grep` without `-r`, `sort` without `-o`, `git log`, ...);
   everything else asks. `echo`/`printf`, `curl`, `env`, pagers, secret paths,
-  `~`/`$HOME` tricks and programs your shell redefines as aliases or functions ask too.
+  `~`/`$HOME` tricks and functions named like an allowed program ask too; an alias
+  is judged by its value, so the default `alias ls='ls --color=auto'` stays plain.
 - The hard list now also sees a command behind any wrapper (`setarch x86_64 rm -rf`),
   so a judge ALLOW is turned into a question.
 - Commands too long to be shown whole (12 rows, 1000 characters) are refused in every

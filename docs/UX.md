@@ -204,8 +204,10 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     Everything else asks: `echo`/`printf`, `env`, `curl`/`wget`, pagers, `rm`, `cd`,
     interpreters, wrappers, builtins, `make`, ... An argument that is a secret path
     (`~/.ssh`, `.env`, `~/.config/aish`, ...; relative ones are resolved against the
-    cwd) or names `environ` asks too, and so does a program the shell redefines as
-    an alias or function (reported at each prompt). The **hard list** (sudo/su,
+    cwd) or names `environ` asks too, and so does a function named like an allowed
+    program. An alias is judged by its value (reported at each prompt): `alias
+    ls='ls --color=auto'` stays plain; one that is another program, several commands
+    or ends in a blank asks. The **hard list** (sudo/su,
     `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown/reboot, `curl | sh`, `chmod/chown
     -R`, `git push --force`, ...) is looked for at every word of a command, so
     `setarch x86_64 rm -rf x` is on it too. Multi-line commands always ask.

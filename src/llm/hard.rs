@@ -5,6 +5,7 @@
 //! is not understood counts as hard: a false positive costs one Enter.
 
 use super::allow::is_secret_path;
+use crate::blocks::Shadow;
 
 /// A word with its quoting facts.
 #[derive(Debug, Clone)]
@@ -593,7 +594,7 @@ fn needs_ask_depth(cmd: &str, depth: usize) -> bool {
 /// of allowlisted programs with allowlisted arguments? `shadowed`: names the
 /// user's shell redefines as aliases or functions; `cwd` resolves relative
 /// paths for the secret check.
-pub fn plain(cmd: &str, shadowed: &[String], cwd: &str) -> bool {
+pub fn plain(cmd: &str, shadowed: &[Shadow], cwd: &str) -> bool {
     plain_split(cmd).is_some_and(|cs| cs.iter().all(|c| argv_ok(c, shadowed, cwd)))
 }
 
@@ -788,12 +789,28 @@ fn secret_arg(a: &str, cwd: &str) -> bool {
         })
 }
 
-fn argv_ok(argv: &[String], shadowed: &[String], cwd: &str) -> bool {
+/// An alias is judged by its value: one simple command of the same program
+/// (so `ls --color=auto` is fine, `ls; rm x` and `rm` are not), not ending in
+/// a blank (bash would alias-expand the next word). A function never is.
+fn argv_ok(argv: &[String], shadowed: &[Shadow], cwd: &str) -> bool {
     let name = argv[0].as_str();
+    let expanded;
+    let argv = match shadowed.iter().find(|(n, _)| n == name) {
+        None => argv,
+        Some((_, Some(v))) if !v.ends_with([' ', '\t']) => match plain_split(v).as_deref() {
+            Some([c]) if c[0] == name => {
+                expanded = [c.as_slice(), &argv[1..]].concat();
+                &expanded
+            }
+            _ => return false,
+        },
+        Some(_) => return false,
+    };
     let args = &argv[1..];
-    if shadowed.iter().any(|s| s == name) || args.iter().any(|a| secret_arg(a, cwd)) {
+    if args.iter().any(|a| secret_arg(a, cwd)) {
         return false;
     }
+    let name = argv[0].as_str();
     match name {
         n if ANY_ARGS.contains(&n) => true,
         "grep" | "egrep" | "fgrep" => grep_ok(args),
@@ -1601,13 +1618,38 @@ mod tests {
     #[test]
     fn redefined_programs_and_relative_secrets_are_not_plain() {
         assert!(plain("ls | wc -l", &[], "/home/u"));
-        let shadow = ["ls".to_owned()];
+        let shadow = [("ls".to_owned(), None)];
         assert!(!plain("ls", &shadow, "/home/u"));
         assert!(!plain("pwd; ls", &shadow, "/home/u"));
         assert!(plain("wc -l a", &shadow, "/home/u"));
         assert!(!plain("cat key", &[], "/home/u/.ssh"));
         assert!(!plain("cat ../.ssh/key", &[], "/home/u/src"));
         assert!(plain("cat key", &[], "/home/u/src"));
+    }
+
+    #[test]
+    fn an_alias_is_judged_by_its_value() {
+        let alias = |v: &str| [("ls".to_owned(), Some(v.to_owned()))];
+        let ok = |v: &str, c: &str| plain(c, &alias(v), "/home/u");
+        assert!(ok("ls --color=auto", "ls -la"));
+        assert!(ok("ls --color=auto", "pwd; ls | wc -l"));
+        assert!(!ok("ls; rm -rf x", "ls -la"));
+        assert!(!ok("ls && rm -rf x", "ls"));
+        assert!(!ok("rm", "ls x"));
+        assert!(!ok("ls ", "ls x"));
+        assert!(!ok("ls\t", "ls x"));
+        assert!(!ok("ls -o /tmp/x | tee x", "ls"));
+        assert!(!ok("ls > x", "ls"));
+        // the value's arguments are checked like typed ones
+        let sort = [("sort".to_owned(), Some("sort -o x".to_owned()))];
+        assert!(!plain("sort a", &sort, "/"));
+        // the value's first word must not be another alias
+        let two = [
+            ("ls".to_owned(), Some("grep x".to_owned())),
+            ("grep".to_owned(), Some("grep --color=auto".to_owned())),
+        ];
+        assert!(!plain("ls", &two, "/"));
+        assert!(plain("grep a", &two, "/"));
     }
 
     #[test]
