@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aish_llm::{Error, Event, Message, Request, Tool, ToolCall};
+use aish_llm::{Error, Event, Message, Request, Tool, ToolCall, Usage};
 use serde_json::Value;
 
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
@@ -537,26 +537,46 @@ fn expand(path: &str, cwd: &str) -> PathBuf {
     }
 }
 
+/// Why `read_file` refused: a short label for the user, the message for the model.
+#[derive(Debug)]
+pub struct ReadErr {
+    why: &'static str,
+    msg: String,
+}
+
+fn refuse(why: &'static str, msg: String) -> ReadErr {
+    ReadErr { why, msg }
+}
+
 /// Lines `start..start+max` of the file at `path` (read-only, capped).
-pub fn read_file(path: &str, cwd: &str, start: usize, max: usize) -> Result<String, String> {
+pub fn read_file(path: &str, cwd: &str, start: usize, max: usize) -> Result<String, ReadErr> {
+    let secret = || {
+        refuse(
+            "secret file",
+            format!("refused: {path} looks like a secret file"),
+        )
+    };
+    let cannot = |e: std::io::Error| refuse("cannot read", format!("cannot read {path}: {e}"));
     if is_secret_path(path) {
-        return Err(format!("refused: {path} looks like a secret file"));
+        return Err(secret());
     }
     let p = expand(path, cwd);
-    let real = std::fs::canonicalize(&p).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let real = std::fs::canonicalize(&p).map_err(cannot)?;
     if is_secret_path(&real.to_string_lossy()) || is_secret_path(&p.to_string_lossy()) {
-        return Err(format!("refused: {path} looks like a secret file"));
+        return Err(secret());
     }
-    let meta = std::fs::metadata(&real).map_err(|e| format!("cannot read {path}: {e}"))?;
-    if !meta.is_file() {
-        return Err(format!("{path} is not a regular file"));
+    if !std::fs::metadata(&real).map_err(cannot)?.is_file() {
+        return Err(refuse(
+            "not a file",
+            format!("{path} is not a regular file"),
+        ));
     }
     let mut data = Vec::new();
     std::fs::File::open(&real)
         .and_then(|f| f.take(4 * 1024 * 1024).read_to_end(&mut data))
-        .map_err(|e| format!("cannot read {path}: {e}"))?;
+        .map_err(cannot)?;
     if data[..data.len().min(1024)].contains(&0) {
-        return Err(format!("{path} is a binary file"));
+        return Err(refuse("binary file", format!("{path} is a binary file")));
     }
     let text = String::from_utf8_lossy(&data);
     let all: Vec<&str> = text.lines().collect();
@@ -592,14 +612,19 @@ fn shell_path(p: &std::path::Path) -> String {
     }
 }
 
+fn done(result: impl Into<String>, shown: impl Into<String>) -> ToolOut {
+    ToolOut::Done {
+        result: result.into(),
+        shown: shown.into(),
+    }
+}
+
 fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
     let v: Value = serde_json::from_str(&call.arguments).unwrap_or_default();
-    let done = |result: String, shown: String| ToolOut::Done { result, shown };
     if let Some(spec) = TOOLS.iter().find(|s| s.name == call.name) {
         if env.overlay && !spec.overlay_ok {
             return done(
-                "error: not available now: a program is running, possibly on another machine"
-                    .into(),
+                "error: not available now: a program is running, possibly on another machine",
                 format!("{} unavailable", call.name),
             );
         }
@@ -611,170 +636,19 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
         }
     }
     match call.name.as_str() {
-        "web_search" | "web_read" => {
-            let search = call.name == "web_search";
-            let Some(w) = env.web else {
-                return done("error: web tools are off".into(), "web is off".into());
-            };
-            let arg = arg_str(&v, if search { "query" } else { "url" }).unwrap_or_default();
-            let r = if search {
-                web::search(w, &arg, env.cancel)
-            } else {
-                web::read(w, &arg, env.cancel)
-            };
-            match r {
-                Ok(o) => {
-                    let shown = if search {
-                        format!("↗ search: {} · {}", short(&o.shown, cols), o.backend)
-                    } else {
-                        format!("↗ {} · {}", short_url(&o.shown, cols), o.backend)
-                    };
-                    done(o.text, shown)
-                }
-                Err(e) => {
-                    let reason: String = e.chars().take(80).collect();
-                    done(format!("error: {e}"), format!("↗ failed: {reason}"))
-                }
-            }
-        }
-        "run" => {
-            let Some(cmd) = arg_str(&v, "command").filter(|c| !c.trim().is_empty()) else {
-                return done("error: missing command".into(), "run: ?".into());
-            };
-            let bg = v["background"].as_bool().unwrap_or(false);
-            let cwd = cwd_of(env.tracker);
-            let read_only = if bg {
-                None
-            } else {
-                plan(&cmd, &env.llm.allow(), &cwd)
-            };
-            if let Some(pl) = read_only {
-                let (out, code, timed_out) = run_plan(&pl, &cwd, env.cancel);
-                let lines = out.lines().count();
-                let tail = if timed_out {
-                    " · timeout 10 s".to_owned()
-                } else if code != Some(0) {
-                    format!(" · exit {}", code.map_or("?".into(), |c| c.to_string()))
-                } else {
-                    format!(" · {lines} lines")
-                };
-                let result = format!(
-                    "exit: {}\n{}",
-                    if timed_out {
-                        "timeout after 10 s".to_owned()
-                    } else {
-                        code.map_or("?".into(), |c| c.to_string())
-                    },
-                    cap(&out)
-                );
-                return done(result, format!("$ {}{tail}", short(&cmd, cols)));
-            }
-            if unsafe_cmd(&cmd) {
-                return done(
-                    "error: the command contains control characters and was refused".into(),
-                    "command with control characters rejected".into(),
-                );
-            }
-            let mode = env.llm.run_mode();
-            if cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12 {
-                return done(
-                    "error: command too long to review: split it into smaller commands".into(),
-                    "command too long to review".into(),
-                );
-            }
-            let listed = super::hard::on_hard_list(&cmd);
-            let (line, bgj) = if bg {
-                let Some(dir) = jobs_dir() else {
-                    return done("error: no state directory".into(), "run: no HOME".into());
-                };
-                let _ = std::fs::create_dir_all(&dir);
-                let n = env.llm.jobs.lock().map_or(0, |mut j| {
-                    j.seq += 1;
-                    j.seq
-                });
-                // unique across sessions too
-                let n = format!("{}-{n}", std::process::id());
-                let log = dir.join(format!("{n}.log"));
-                let line = format!("{} &>{} &", cmd.trim_end(), shell_path(&log));
-                (line, Some(Bg { log }))
-            } else {
-                (cmd.clone(), None)
-            };
-            if mode == RunMode::Off {
-                return ToolOut::Handoff { line, bg: bgj };
-            }
-            ToolOut::Run {
-                line,
-                bg: bgj,
-                cmd: if bg {
-                    format!("{} &", cmd.trim_end())
-                } else {
-                    cmd
-                },
-                listed,
-            }
-        }
+        "web_search" => tool_web(env, true, &v, cols),
+        "web_read" => tool_web(env, false, &v, cols),
+        "run" => tool_run(env, &v, cols),
         "read_block" => {
             let n = arg_u(&v, "n").unwrap_or(1);
             done(read_block(env, n), format!("read_block {n}"))
         }
         "jobs" => {
-            let d = env
-                .llm
-                .jobs
-                .lock()
-                .map(|j| j.describe())
-                .unwrap_or_default();
-            done(d, "jobs".into())
+            let d = env.llm.jobs.lock().map(|j| j.describe());
+            done(d.unwrap_or_default(), "jobs")
         }
-        "job_output" => {
-            let id = arg_u(&v, "id").unwrap_or(0) as u32;
-            let lines = arg_u(&v, "lines").unwrap_or(40).clamp(1, 500);
-            let log = env.llm.jobs.lock().ok().and_then(|j| j.log_of(id));
-            let r = match log {
-                None => format!(
-                    "error: job {id} has no log (only jobs started with run(background=true) do)"
-                ),
-                Some(p) => match std::fs::read_to_string(&p) {
-                    Ok(s) => {
-                        let all: Vec<&str> = s.lines().collect();
-                        let from = all.len().saturating_sub(lines);
-                        cap(&all[from..].join("\n"))
-                    }
-                    Err(e) => format!("error: cannot read the log: {e}"),
-                },
-            };
-            done(r, format!("job_output {id}"))
-        }
-        "read_file" => {
-            let Some(path) = arg_str(&v, "path") else {
-                return done("error: missing path".into(), "read_file: ?".into());
-            };
-            let cwd = cwd_of(env.tracker);
-            let start = arg_u(&v, "start_line").unwrap_or(1);
-            let max = arg_u(&v, "max_lines").unwrap_or(FILE_LINES);
-            let (r, tail) = match read_file(&path, &cwd, start, max) {
-                Ok(s) => {
-                    let n = s.lines().count().saturating_sub(1);
-                    (s, format!(" · {n} lines"))
-                }
-                Err(e) => {
-                    let why = if e.contains("secret") {
-                        "secret file"
-                    } else if e.contains("binary") {
-                        "binary file"
-                    } else if e.contains("regular file") {
-                        "not a file"
-                    } else {
-                        "cannot read"
-                    };
-                    // reason first: on a narrow screen the path gets cut, not it
-                    let line = format!("read_file refused: {why} · {}", short(&path, cols));
-                    return done(format!("error: {e}"), line);
-                }
-            };
-            done(r, format!("read_file {}{tail}", short(&path, cols)))
-        }
+        "job_output" => tool_job_output(env, &v),
+        "read_file" => tool_read_file(env, &v, cols),
         other => done(
             format!("error: unknown tool {other}"),
             format!("unknown tool {other}"),
@@ -782,171 +656,419 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
     }
 }
 
+fn tool_web(env: &Env, search: bool, v: &Value, cols: usize) -> ToolOut {
+    let Some(w) = env.web else {
+        return done("error: web tools are off", "web is off");
+    };
+    let arg = arg_str(v, if search { "query" } else { "url" }).unwrap_or_default();
+    let r = if search {
+        web::search(w, &arg, env.cancel)
+    } else {
+        web::read(w, &arg, env.cancel)
+    };
+    match r {
+        Ok(o) if search => done(
+            o.text,
+            format!("↗ search: {} · {}", short(&o.shown, cols), o.backend),
+        ),
+        Ok(o) => done(
+            o.text,
+            format!("↗ {} · {}", short_url(&o.shown, cols), o.backend),
+        ),
+        Err(e) => {
+            let reason: String = e.chars().take(80).collect();
+            done(format!("error: {e}"), format!("↗ failed: {reason}"))
+        }
+    }
+}
+
+/// A read-only command runs on the spot; anything else is handed to the user.
+fn tool_run(env: &Env, v: &Value, cols: usize) -> ToolOut {
+    let Some(cmd) = arg_str(v, "command").filter(|c| !c.trim().is_empty()) else {
+        return done("error: missing command", "run: ?");
+    };
+    let bg = v["background"].as_bool().unwrap_or(false);
+    let cwd = cwd_of(env.tracker);
+    let read_only = if bg {
+        None
+    } else {
+        plan(&cmd, &env.llm.allow(), &cwd)
+    };
+    if let Some(pl) = read_only {
+        let (out, code, timed_out) = run_plan(&pl, &cwd, env.cancel);
+        let lines = out.lines().count();
+        let tail = if timed_out {
+            " · timeout 10 s".to_owned()
+        } else if code != Some(0) {
+            format!(" · exit {}", code.map_or("?".into(), |c| c.to_string()))
+        } else {
+            format!(" · {lines} lines")
+        };
+        let result = format!(
+            "exit: {}\n{}",
+            if timed_out {
+                "timeout after 10 s".to_owned()
+            } else {
+                code.map_or("?".into(), |c| c.to_string())
+            },
+            cap(&out)
+        );
+        return done(result, format!("$ {}{tail}", short(&cmd, cols)));
+    }
+    if unsafe_cmd(&cmd) {
+        return done(
+            "error: the command contains control characters and was refused",
+            "command with control characters rejected",
+        );
+    }
+    if cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12 {
+        return done(
+            "error: command too long to review: split it into smaller commands",
+            "command too long to review",
+        );
+    }
+    let listed = super::hard::on_hard_list(&cmd);
+    let (line, bgj) = if bg {
+        let Some(dir) = jobs_dir() else {
+            return done("error: no state directory", "run: no HOME");
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        let n = env.llm.jobs.lock().map_or(0, |mut j| {
+            j.seq += 1;
+            j.seq
+        });
+        // unique across sessions too
+        let n = format!("{}-{n}", std::process::id());
+        let log = dir.join(format!("{n}.log"));
+        let line = format!("{} &>{} &", cmd.trim_end(), shell_path(&log));
+        (line, Some(Bg { log }))
+    } else {
+        (cmd.clone(), None)
+    };
+    if env.llm.run_mode() == RunMode::Off {
+        return ToolOut::Handoff { line, bg: bgj };
+    }
+    ToolOut::Run {
+        line,
+        bg: bgj,
+        cmd: if bg {
+            format!("{} &", cmd.trim_end())
+        } else {
+            cmd
+        },
+        listed,
+    }
+}
+
+fn tool_job_output(env: &Env, v: &Value) -> ToolOut {
+    let id = arg_u(v, "id").unwrap_or(0) as u32;
+    let lines = arg_u(v, "lines").unwrap_or(40).clamp(1, 500);
+    let log = env.llm.jobs.lock().ok().and_then(|j| j.log_of(id));
+    let r = match log {
+        None => {
+            format!("error: job {id} has no log (only jobs started with run(background=true) do)")
+        }
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(s) => {
+                let all: Vec<&str> = s.lines().collect();
+                let from = all.len().saturating_sub(lines);
+                cap(&all[from..].join("\n"))
+            }
+            Err(e) => format!("error: cannot read the log: {e}"),
+        },
+    };
+    done(r, format!("job_output {id}"))
+}
+
+fn tool_read_file(env: &Env, v: &Value, cols: usize) -> ToolOut {
+    let Some(path) = arg_str(v, "path") else {
+        return done("error: missing path", "read_file: ?");
+    };
+    let cwd = cwd_of(env.tracker);
+    let start = arg_u(v, "start_line").unwrap_or(1);
+    let max = arg_u(v, "max_lines").unwrap_or(FILE_LINES);
+    match read_file(&path, &cwd, start, max) {
+        Ok(s) => {
+            let n = s.lines().count().saturating_sub(1);
+            done(s, format!("read_file {} · {n} lines", short(&path, cols)))
+        }
+        // reason first: on a narrow screen the path gets cut, not it
+        Err(e) => done(
+            format!("error: {}", e.msg),
+            format!("read_file refused: {} · {}", e.why, short(&path, cols)),
+        ),
+    }
+}
+
+/// One `?` turn being driven: the target in use, what it is offered, the turn.
+struct Drive<'a> {
+    llm: &'a Llm,
+    tracker: &'a Arc<Mutex<BlockTracker>>,
+    task: &'a Task,
+    web: Option<Web>,
+    /// Labels of the models already tried (failover).
+    tried: Vec<String>,
+    t: Target,
+    offer: Offer,
+    turn: Turn,
+}
+
+/// What one request streamed.
+struct Streamed {
+    r: Renderer,
+    full: String,
+    searches: Vec<String>,
+    got_output: bool,
+}
+
+enum Flow {
+    Retry,
+    Stop,
+}
+
+/// What came of the tool calls of one round.
+enum Calls {
+    /// All answered: ask the model again.
+    Done,
+    /// Cancelled or out of steps: the turn ends.
+    Stop,
+    /// A command waits for the user: call id, line, background job, approved.
+    Paused(String, String, Option<Bg>, bool),
+}
+
 /// The agent loop for one turn. Returns the text for the input line.
 pub fn drive(
     llm: &Llm,
     tracker: &Arc<Mutex<BlockTracker>>,
     t: &Target,
-    mut turn: Turn,
+    turn: Turn,
     task: &Task,
 ) -> Option<String> {
-    let mut tried = vec![t.label.clone()];
-    let mut cur = t.clone();
-    let t = &mut cur;
     let web = llm
         .config()
         .filter(|_| llm.tool_on("web"))
         .and_then(|c| Web::from_config(&c));
     // native search needs `provider` in the search chain
-    let mut offer = Offer::for_target(t, web.as_ref(), true);
-    let env = Env {
+    let offer = Offer::for_target(t, web.as_ref(), true);
+    Drive {
         llm,
         tracker,
-        cancel: &task.shared.cancel,
-        overlay: turn.overlay,
-        web: web.as_ref(),
-    };
-    loop {
-        if task.cancelled() {
-            note_only(task, "⏹");
-            return None;
+        task,
+        web,
+        tried: vec![t.label.clone()],
+        t: t.clone(),
+        offer,
+        turn,
+    }
+    .run()
+}
+
+impl Drive<'_> {
+    fn run(mut self) -> Option<String> {
+        let task = self.task;
+        loop {
+            if task.cancelled() {
+                note_only(task, "⏹");
+                return None;
+            }
+            let (res, mut s) = self.stream_once();
+            let (usage, calls) = match res {
+                Ok(x) => x,
+                Err(e) => match self.on_error(e, &mut s) {
+                    Flow::Retry => continue,
+                    Flow::Stop => return None,
+                },
+            };
+            let mut out = Vec::new();
+            if calls.is_empty() {
+                // A cut-off answer never yields a command to run.
+                let cmd = s.r.finish(&mut out, !usage.truncated);
+                search_notes(&s.r, &s.searches, &mut out);
+                if usage.truncated {
+                    s.r.note("answer cut off (token limit)", &mut out);
+                }
+                task.write(&out);
+                self.turn.msgs.push(Message::assistant(s.full));
+                let window = self.llm.window_known(&self.t) as usize;
+                remember_turn(
+                    self.llm,
+                    &self.turn,
+                    window.saturating_mul(context::CHARS_PER_TOKEN),
+                );
+                return cmd;
+            }
+            s.r.finish(&mut out, false);
+            search_notes(&s.r, &s.searches, &mut out);
+            // (nothing to show: the waiting row stays for the next row to replace)
+            if !out.is_empty() {
+                task.write(&out);
+            }
+            self.turn
+                .msgs
+                .push(Message::assistant_calls(&s.full, &calls));
+            match self.run_calls(&calls) {
+                Calls::Done => {}
+                Calls::Stop => return None,
+                Calls::Paused(call_id, line, bg, inject) => {
+                    if let Ok(mut p) = self.llm.pending.lock() {
+                        *p = Some(Pending {
+                            turn: self.turn,
+                            call_id,
+                            proposed: line.clone(),
+                            bg,
+                            at: Instant::now(),
+                            stage: if inject {
+                                Stage::Approved
+                            } else {
+                                Stage::Prefilled
+                            },
+                        });
+                    }
+                    // an approved command is typed into bash by the controller at the
+                    // next idle prompt (`take_inject`); otherwise it is prefilled
+                    return (!inject).then_some(line);
+                }
+            }
         }
-        let (system, tools) = request_parts(llm, turn.overlay, &offer);
-        let mut all = turn.history.clone();
-        all.extend(turn.msgs.iter().cloned());
+    }
+
+    /// Send one request and render what streams back.
+    fn stream_once(&self) -> (Result<(Usage, Vec<ToolCall>), Error>, Streamed) {
+        let (task, t) = (self.task, &self.t);
+        let (system, tools) = request_parts(self.llm, self.turn.overlay, &self.offer);
+        let mut all = self.turn.history.clone();
+        all.extend(self.turn.msgs.iter().cloned());
         let req = Request {
             max_tokens: 2048,
             tools,
-            native_search: offer.native && offer.tools,
+            native_search: self.offer.native && self.offer.tools,
             ..Request::chat(
                 system,
                 masked_history(&super::compact::merge_user_runs(all), t.local),
             )
         };
-        let mut r = Renderer::new(&task.theme, task.cols);
-        let mut full = String::new();
-        let mut searches: Vec<String> = Vec::new();
-        let mut got_output = false;
+        let mut s = Streamed {
+            r: Renderer::new(&task.theme, task.cols),
+            full: String::new(),
+            searches: Vec::new(),
+            got_output: false,
+        };
         let mut waiter = super::wait::Waiter::start(task, t.local.then(|| t.ep.clone()));
         let res = aish_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |e| {
             waiter.event(&e);
             match e {
                 Event::Delta(d) => {
-                    got_output = true;
-                    full.push_str(&d);
+                    s.got_output = true;
+                    s.full.push_str(&d);
                     let mut out = Vec::new();
-                    r.push(&d, &mut out);
+                    s.r.push(&d, &mut out);
                     if !out.is_empty() {
                         task.write(&out);
                     }
                 }
-                Event::Search(q) => searches.push(q),
+                Event::Search(q) => s.searches.push(q),
                 _ => {}
             }
         });
         waiter.stop();
+        (res, s)
+    }
+
+    /// A request failed: retry with other settings or another model, or stop.
+    fn on_error(&mut self, e: Error, s: &mut Streamed) -> Flow {
+        let (task, llm) = (self.task, self.llm);
         let mut out = Vec::new();
-        let (usage, calls) = match res {
-            Ok(x) => x,
-            Err(Error::Cancelled) => {
-                r.note("⏹", &mut out);
-                task.write(&out);
-                return None;
-            }
-            Err(Error::Http {
-                status: 400,
-                message,
-            }) if offer.tools && {
-                let m = message.to_lowercase();
-                m.contains("tool") || m.contains("function")
-            } =>
-            {
-                if offer.native {
+        if matches!(e, Error::Cancelled) {
+            s.r.note("⏹", &mut out);
+            task.write(&out);
+            return Flow::Stop;
+        }
+        if let Error::Http {
+            status: 400,
+            message,
+        } = &e
+        {
+            let m = message.to_lowercase();
+            if self.offer.tools && (m.contains("tool") || m.contains("function")) {
+                if self.offer.native {
                     // maybe only the built-in search is refused: try without it first;
                     // our own web_search takes over
                     tracing::warn!("model rejects native search: {message}");
-                    offer = Offer::for_target(t, web.as_ref(), false);
-                    continue;
+                    self.offer = Offer::for_target(&self.t, self.web.as_ref(), false);
+                } else {
+                    tracing::warn!("model rejects tools: {message}");
+                    llm.mark_no_tools(&self.t.label);
+                    self.offer.tools = false;
                 }
-                tracing::warn!("model rejects tools: {message}");
-                llm.mark_no_tools(&t.label);
-                offer.tools = false;
-                continue;
+                return Flow::Retry;
             }
-            Err(e)
-                if !got_output && searches.is_empty() && super::failover(&e) && {
-                    llm.mark_failed("chat", &t.label);
-                    llm.targets("chat")
-                        .into_iter()
-                        .any(|n| !tried.contains(&n.label))
-                } =>
-            {
+        }
+        if !s.got_output && s.searches.is_empty() && super::failover(&e) {
+            llm.mark_failed("chat", &self.t.label);
+            let next = llm
+                .targets("chat")
+                .into_iter()
+                .find(|n| !self.tried.contains(&n.label));
+            if let Some(next) = next {
                 // nothing came back from this model: the next one answers instead
-                tracing::warn!("ask: {} down: {e}", t.label);
-                let next = llm
-                    .targets("chat")
-                    .into_iter()
-                    .find(|n| !tried.contains(&n.label))?;
+                tracing::warn!("ask: {} down: {e}", self.t.label);
                 let alias = |l: &str| l.split_once('/').map_or(l.to_owned(), |x| x.1.to_owned());
-                let note = format!("↪ {} · {} unavailable", alias(&next.label), alias(&t.label));
-                r.note(
+                let note = format!(
+                    "↪ {} · {} unavailable",
+                    alias(&next.label),
+                    alias(&self.t.label)
+                );
+                s.r.note(
                     &fit_line(&note, usize::from(task.cols).saturating_sub(2)),
                     &mut out,
                 );
                 task.write(&out);
-                tried.push(next.label.clone());
-                // a smaller window: the context is cut to fit it
-                if context::budget_tokens(next.window) < context::budget_tokens(t.window) {
-                    let max = context::budget_tokens(next.window) * context::CHARS_PER_TOKEN;
-                    for m in turn.msgs.iter_mut().take(1) {
-                        for part in &mut m.parts {
-                            if let aish_llm::Part::Text(x) = part {
-                                if x.chars().count() > max + 400 {
-                                    *x = trim_middle(x, max + 400);
-                                }
-                            }
-                        }
+                self.tried.push(next.label.clone());
+                self.fit_context(&next);
+                self.t = next;
+                self.offer = Offer::for_target(&self.t, self.web.as_ref(), true);
+                return Flow::Retry;
+            }
+        }
+        tracing::warn!("ask: {e}");
+        s.r.finish(&mut out, false);
+        s.r.note(&short_reason(&e, &self.t), &mut out);
+        task.write(&out);
+        Flow::Stop
+    }
+
+    /// A smaller window than the current one: the context is cut to fit it.
+    fn fit_context(&mut self, next: &Target) {
+        if context::budget_tokens(next.window) >= context::budget_tokens(self.t.window) {
+            return;
+        }
+        let max = context::budget_tokens(next.window) * context::CHARS_PER_TOKEN;
+        for m in self.turn.msgs.iter_mut().take(1) {
+            for part in &mut m.parts {
+                if let aish_llm::Part::Text(x) = part {
+                    if x.chars().count() > max + 400 {
+                        *x = trim_middle(x, max + 400);
                     }
                 }
-                *t = next;
-                offer = Offer::for_target(t, web.as_ref(), true);
-                continue;
             }
-            Err(e) => {
-                tracing::warn!("ask: {e}");
-                r.finish(&mut out, false);
-                r.note(&short_reason(&e, t), &mut out);
-                task.write(&out);
-                return None;
-            }
+        }
+    }
+
+    /// Execute the model's tool calls; the first command for the user pauses
+    /// the turn and the rest are not executed.
+    fn run_calls(&mut self, calls: &[ToolCall]) -> Calls {
+        let (llm, task) = (self.llm, self.task);
+        let env = Env {
+            llm,
+            tracker: self.tracker,
+            cancel: &task.shared.cancel,
+            overlay: self.turn.overlay,
+            web: self.web.as_ref(),
         };
-        if calls.is_empty() {
-            // A cut-off answer never yields a command to run.
-            let cmd = r.finish(&mut out, !usage.truncated);
-            search_notes(&r, &searches, &mut out);
-            if usage.truncated {
-                r.note("answer cut off (token limit)", &mut out);
-            }
-            task.write(&out);
-            turn.msgs.push(Message::assistant(full));
-            remember_turn(
-                llm,
-                &turn,
-                (llm.window_known(t) as usize).saturating_mul(context::CHARS_PER_TOKEN),
-            );
-            return cmd;
-        }
-        r.finish(&mut out, false);
-        search_notes(&r, &searches, &mut out);
-        // (nothing to show: the waiting row stays for the next row to replace)
-        if !out.is_empty() {
-            task.write(&out);
-        }
-        turn.msgs.push(Message::assistant_calls(&full, &calls));
         let mut paused: Option<(String, String, Option<Bg>, bool)> = None;
-        for c in &calls {
+        for c in calls {
             if paused.is_some() {
-                turn.msgs.push(Message::tool_result(
+                self.turn.msgs.push(Message::tool_result(
                     &c.id,
                     "not executed: one command at a time; the previous one waits for the user",
                 ));
@@ -954,21 +1076,21 @@ pub fn drive(
             }
             if task.cancelled() {
                 note_only(task, "⏹");
-                return None;
+                return Calls::Stop;
             }
-            turn.steps += 1;
-            if turn.steps > MAX_STEPS {
+            self.turn.steps += 1;
+            if self.turn.steps > MAX_STEPS {
                 note_only(task, &format!("step limit ({MAX_STEPS})"));
-                return None;
+                return Calls::Stop;
             }
             match exec_tool(&env, c, task.cols as usize) {
                 ToolOut::Done { result, shown } => {
                     if task.cancelled() {
                         note_only(task, "⏹");
-                        return None;
+                        return Calls::Stop;
                     }
                     note_only(task, &shown);
-                    turn.msgs.push(Message::tool_result(&c.id, result));
+                    self.turn.msgs.push(Message::tool_result(&c.id, result));
                 }
                 ToolOut::Handoff { line, bg } => {
                     paused = Some((c.id.clone(), line, bg, false));
@@ -978,24 +1100,17 @@ pub fn drive(
                     bg,
                     cmd,
                     listed,
-                } => match approve(
-                    llm,
-                    task,
-                    &cmd,
-                    listed,
-                    &turn.q,
-                    &cwd_of(tracker),
-                ) {
+                } => match approve(llm, task, &cmd, listed, &self.turn.q, &cwd_of(self.tracker)) {
                     Approval::Cancelled => {
                         note_only(task, "⏹");
-                        return None;
+                        return Calls::Stop;
                     }
-                    Approval::Declined => turn.msgs.push(Message::tool_result(
+                    Approval::Declined => self.turn.msgs.push(Message::tool_result(
                         &c.id,
                         "The user declined to run this command. Do not retry it: continue without it, \
                          or propose something different.",
                     )),
-                    Approval::Denied(why) => turn.msgs.push(Message::tool_result(
+                    Approval::Denied(why) => self.turn.msgs.push(Message::tool_result(
                         &c.id,
                         format!(
                             "The command was denied by the safety reviewer{}. It was not run. \
@@ -1007,24 +1122,9 @@ pub fn drive(
                 },
             }
         }
-        if let Some((id, line, bg, inject)) = paused {
-            if let Ok(mut p) = llm.pending.lock() {
-                *p = Some(Pending {
-                    turn,
-                    call_id: id,
-                    proposed: line.clone(),
-                    bg,
-                    at: Instant::now(),
-                    stage: if inject {
-                        Stage::Approved
-                    } else {
-                        Stage::Prefilled
-                    },
-                });
-            }
-            // an approved command is typed into bash by the controller at the
-            // next idle prompt (`take_inject`); otherwise it is prefilled
-            return (!inject).then_some(line);
+        match paused {
+            Some((id, line, bg, inject)) => Calls::Paused(id, line, bg, inject),
+            None => Calls::Done,
         }
     }
 }
@@ -1455,7 +1555,7 @@ mod tests {
             "~/.ssh/id_rsa",
             "~/.netrc",
         ] {
-            let e = read_file(p, cwd, 1, 10).unwrap_err();
+            let e = read_file(p, cwd, 1, 10).unwrap_err().msg;
             assert!(
                 e.contains("refused") || e.contains("cannot read"),
                 "{p}: {e}"
@@ -1463,6 +1563,7 @@ mod tests {
         }
         assert!(read_file("sneaky", cwd, 1, 10)
             .unwrap_err()
+            .msg
             .contains("refused"));
         assert_eq!(
             read_file("link", cwd, 1, 10).unwrap(),
@@ -1476,7 +1577,7 @@ mod tests {
             "{r}"
         );
         std::fs::write(d.path().join("bin"), [0u8, 1, 2]).unwrap();
-        assert!(read_file("bin", cwd, 1, 5).unwrap_err().contains("binary"));
+        assert!(read_file("bin", cwd, 1, 5).unwrap_err().why == "binary file");
     }
 
     #[test]
