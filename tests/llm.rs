@@ -971,7 +971,11 @@ fn init_is_idempotent_backs_up_once_and_removes_cleanly() {
     assert_eq!(code, 0, "{out}{err}");
     let once = std::fs::read_to_string(&bashrc).unwrap();
     assert_eq!(once.matches("# >>> aish >>>").count(), 1);
-    assert!(once.contains("exec aish") && once.contains("-z ${AISH-}"));
+    assert!(
+        once.starts_with("# >>> aish >>>")
+            && once.contains("exec '/")
+            && once.contains("-z ${AISH-}")
+    );
     let bak = home.path().join(".bashrc.aish-bak");
     assert_eq!(
         std::fs::read_to_string(&bak).unwrap(),

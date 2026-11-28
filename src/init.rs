@@ -11,8 +11,24 @@ pub const START: &str = "# >>> aish >>>";
 pub const END: &str = "# <<< aish <<<";
 
 /// The `.bashrc` block. AISH is set while aish's own rc sources ~/.bashrc, so
-/// there is no exec loop; `AISH_DISABLE=1` is the escape hatch.
-pub const BASHRC_BLOCK: &str = "[[ $- == *i* && -t 0 && -z ${AISH-} && -z ${AISH_DISABLE-} ]] && command -v aish >/dev/null && exec aish";
+/// there is no exec loop; `AISH_DISABLE=1` is the escape hatch. It goes at the
+/// top of the file and names the binary by absolute path: the outer bash then
+/// runs nothing (no banner printed twice, no PATH set-up needed) before aish
+/// takes over and reads ~/.bashrc itself.
+pub fn bashrc_block(exe: &str) -> String {
+    let q = format!("'{}'", exe.replace('\'', "'\\''"));
+    format!(
+        "[[ $- == *i* && -t 0 && -z ${{AISH-}} && -z ${{AISH_DISABLE-}} && -x {q} ]] && exec {q}"
+    )
+}
+
+/// The installed binary to exec from `.bashrc`.
+fn aish_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_owned))
+        .unwrap_or_else(|| "/usr/bin/aish".into())
+}
 
 fn block(body: &str) -> String {
     format!("{START}\n{body}\n{END}\n")
@@ -32,8 +48,8 @@ pub fn without_block(text: &str) -> String {
             if l.trim_end() == END {
                 skipping = false;
             }
-        } else {
-            out.push(l);
+        } else if !(out.is_empty() && l.trim().is_empty()) {
+            out.push(l); // (blank lines at the top: the ones after a top block)
         }
     }
     while out.last().is_some_and(|l| l.trim().is_empty()) {
@@ -43,6 +59,17 @@ pub fn without_block(text: &str) -> String {
         String::new()
     } else {
         format!("{}\n", out.join("\n"))
+    }
+}
+
+/// `text` with the block (moved, if it was elsewhere) at the very top.
+pub fn with_block_top(text: &str, body: &str) -> String {
+    let w = without_block(text);
+    let base = w.trim_start_matches('\n');
+    if base.is_empty() {
+        block(body)
+    } else {
+        format!("{}\n{base}", block(body))
     }
 }
 
@@ -216,10 +243,11 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     let mut changes: Vec<FileChange> = Vec::new();
     if mode != "3" {
         let old = std::fs::read_to_string(&bashrc).unwrap_or_default();
+        let body = bashrc_block(&aish_path());
         changes.push(FileChange {
-            new: with_block(&old, BASHRC_BLOCK),
+            new: with_block_top(&old, &body),
             path: bashrc.clone(),
-            added: block(BASHRC_BLOCK).lines().count(),
+            added: block(&body).lines().count(),
         });
     }
     if mode == "2" && tmux_installed() {
@@ -343,5 +371,17 @@ mod tests {
         // text after the block survives
         let c = format!("{a}tail\n");
         assert_eq!(without_block(&c), "export A=1\nalias x=y\ntail\n");
+    }
+
+    #[test]
+    fn bashrc_block_goes_to_the_top_and_moves_an_old_one_there() {
+        let old = "export A=1\n\n# >>> aish >>>\nold\n# <<< aish <<<\n";
+        let t = with_block_top(old, "new");
+        assert_eq!(t, "# >>> aish >>>\nnew\n# <<< aish <<<\n\nexport A=1\n");
+        assert_eq!(with_block_top(&t, "new"), t, "idempotent");
+        assert_eq!(without_block(&t), "export A=1\n");
+        let b = bashrc_block("/opt/it's/aish");
+        assert!(b.ends_with("exec '/opt/it'\\''s/aish'"), "{b}");
+        assert!(b.contains("-x '/opt/it'\\''s/aish'"), "{b}");
     }
 }

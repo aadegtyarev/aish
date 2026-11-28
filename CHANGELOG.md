@@ -9,6 +9,11 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Fixed
+- `aish init` puts its `.bashrc` block at the very top and execs the binary by
+  absolute path, so the outer bash runs nothing first: banners and other output
+  from `.bashrc` no longer appear twice. Rerun `aish init` to move an old block.
+
 ### Added
 - Bare model aliases: `ai chat ds` works when only one provider has `ds`
   (`provider/alias` still works and is required when names collide); roles in
