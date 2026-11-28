@@ -13,15 +13,14 @@ pub const SUBS: &[&str] = &[
     "help", "run", "coach", "tools", "find",
 ];
 
-fn is_cmd_line(s: &str, name: &str) -> bool {
-    let mut w = s.split_whitespace();
-    w.next() == Some(name) && w.next().is_none_or(|x| SUBS.contains(&x) || x == "-h")
-}
-
-/// `aish` or `aish <known subcommand> ...`; anything else (`aish -c ...`)
-/// is a real command.
+/// `aish` or `aish <subcommand, or a one-letter typo of one> ...`; anything
+/// else (`aish -c ...`, `aish script.sh`) is a real command.
 pub fn is_aish_line(s: &str) -> bool {
-    is_cmd_line(s, "aish")
+    let mut w = s.split_whitespace();
+    let near = |x: &str| x.chars().count() >= 3 && SUBS.iter().any(|c| edit_distance(x, c) == 1);
+    w.next() == Some("aish")
+        && w.next()
+            .is_none_or(|x| x == "-h" || SUBS.contains(&x) || near(x))
 }
 
 /// The configured short form (`ai` by default): every line that starts with
@@ -651,6 +650,8 @@ mod tests {
             "aish chat a/b",
             "aish off",
             "aish  config",
+            "aish couch on --save",
+            "aish modls",
         ] {
             assert!(is_aish_line(t), "{t}");
         }
@@ -661,6 +662,8 @@ mod tests {
             "aishx",
             "echo aish",
             "aish foo",
+            "aish run.sh",
+            "aish ab",
         ] {
             assert!(!is_aish_line(t), "{t}");
         }
