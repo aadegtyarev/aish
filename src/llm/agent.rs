@@ -249,16 +249,23 @@ pub struct Pending {
     /// The text put into the input line.
     proposed: String,
     bg: Option<Bg>,
-    /// Tool result, once the block of the command finished.
-    result: Option<String>,
     at: Instant,
+    stage: Stage,
+}
+
+/// Where the command of a paused turn is.
+#[derive(Debug, PartialEq)]
+enum Stage {
+    /// In the user's input line: they run it, maybe edited.
+    Prefilled,
     /// Approved, waiting to be typed into bash (see `take_inject`).
-    inject: bool,
-    /// aish typed the command itself: the result carries the duration.
-    ran_by_aish: bool,
-    /// A prompt came back without the typed line starting; a block that
-    /// follows (an Enter that raced the injection) cancels it.
-    not_run: bool,
+    Approved,
+    /// aish typed it itself: the result carries the duration. `not_run`: a
+    /// prompt came back without the line starting; a block that follows (an
+    /// Enter that raced the injection) is not its result.
+    Typed { not_run: bool },
+    /// Tool result, once the block of the command finished.
+    Done(String),
 }
 
 enum ToolOut {
@@ -1007,11 +1014,12 @@ pub fn drive(
                     call_id: id,
                     proposed: line.clone(),
                     bg,
-                    result: None,
                     at: Instant::now(),
-                    inject,
-                    ran_by_aish: inject,
-                    not_run: false,
+                    stage: if inject {
+                        Stage::Approved
+                    } else {
+                        Stage::Prefilled
+                    },
                 });
             }
             // an approved command is typed into bash by the controller at the
@@ -1132,12 +1140,12 @@ pub fn take_inject(llm: &Llm, refuse: Option<&str>) -> Option<String> {
         *g = None;
         return None;
     }
-    if !p.inject || p.result.is_some() {
+    if p.stage != Stage::Approved {
         return None;
     }
-    p.inject = false;
+    p.stage = Stage::Typed { not_run: false };
     if let Some(why) = refuse {
-        p.result = Some(why.to_owned());
+        p.stage = Stage::Done(why.to_owned());
         return None;
     }
     Some(p.proposed.clone())
@@ -1146,9 +1154,8 @@ pub fn take_inject(llm: &Llm, refuse: Option<&str>) -> Option<String> {
 /// The command could not be typed in: the model gets `why` as the result.
 pub fn refuse_inject(llm: &Llm, why: &str) {
     if let Ok(mut g) = llm.pending.lock() {
-        if let Some(p) = g.as_mut().filter(|p| p.inject && p.result.is_none()) {
-            p.inject = false;
-            p.result = Some(why.to_owned());
+        if let Some(p) = g.as_mut().filter(|p| p.stage == Stage::Approved) {
+            p.stage = Stage::Done(why.to_owned());
         }
     }
 }
@@ -1213,65 +1220,79 @@ pub fn on_block(llm: &Llm, block: &Block) {
         return;
     };
     let Some(p) = g.as_mut() else { return };
-    if p.result.is_some() || p.inject {
+    if !matches!(p.stage, Stage::Prefilled | Stage::Typed { .. }) {
         return;
     }
     if p.at.elapsed() > PENDING_TTL {
         *g = None;
         return;
     }
-    let ran = block.command.trim();
-    // a line aish typed must come back as typed (bash may join lines with `;`,
-    // and reports no history entry for a repeat); only the user edits a line
-    let same = if p.ran_by_aish {
-        (ran.is_empty() && !p.not_run) || squash(ran) == squash(&p.proposed)
-    } else {
-        ran == p.proposed.trim()
-    };
-    if !same && (p.ran_by_aish || !small_edit(&p.proposed, ran)) {
-        *g = None; // the user did something else: the agent stops silently
-        return;
+    match p.result_of(llm, block) {
+        Some(res) => p.stage = Stage::Done(res),
+        // the user did something else: the agent stops silently
+        None => *g = None,
     }
-    let code = block.exit_code.map_or("?".into(), |c| c.to_string());
-    let mut res = String::new();
-    if !same {
-        res.push_str(&format!(
-            "The user edited the command before running it. What they actually ran: {ran}\n"
-        ));
-    }
-    if let Some(bg) = &p.bg {
-        let id = block
-            .output
-            .trim_start()
-            .strip_prefix('[')
-            .and_then(|r| r.split(']').next())
-            .and_then(|n| n.parse::<u32>().ok());
-        res.push_str(&format!(
-            "Started in the background (exit {code}); output goes to {}.",
-            bg.log.display()
-        ));
-        if let Some(id) = id {
-            res.push_str(&format!(
-                " Job number: {id}: use job_output({id}) and jobs()."
-            ));
-            if let Ok(mut j) = llm.jobs.lock() {
-                j.link(id, bg.log.clone());
-            }
-        }
-    } else if p.ran_by_aish {
-        let status = match block.exit_code {
-            Some(130) => "130 (interrupted by the user with Ctrl-C)".to_owned(),
-            _ => code,
+}
+
+impl Pending {
+    /// The tool result for `block`, `None` when it is not this command.
+    fn result_of(&self, llm: &Llm, block: &Block) -> Option<String> {
+        let ran = block.command.trim();
+        let (typed, not_run) = match self.stage {
+            Stage::Typed { not_run } => (true, not_run),
+            _ => (false, false),
         };
-        res.push_str(&format!(
-            "exit: {status}\nduration: {:.1}s\noutput (tail):\n{}",
-            block.duration.as_secs_f32(),
-            tail_cap(&block.output)
-        ));
-    } else {
-        res.push_str(&format!("exit: {code}\noutput:\n{}", cap(&block.output)));
+        // a line aish typed must come back as typed (bash may join lines with `;`,
+        // and reports no history entry for a repeat); only the user edits a line
+        let same = if typed {
+            (ran.is_empty() && !not_run) || squash(ran) == squash(&self.proposed)
+        } else {
+            ran == self.proposed.trim()
+        };
+        if !same && (typed || !small_edit(&self.proposed, ran)) {
+            return None;
+        }
+        let code = block.exit_code.map_or("?".into(), |c| c.to_string());
+        let mut res = String::new();
+        if !same {
+            res.push_str(&format!(
+                "The user edited the command before running it. What they actually ran: {ran}\n"
+            ));
+        }
+        if let Some(bg) = &self.bg {
+            let id = block
+                .output
+                .trim_start()
+                .strip_prefix('[')
+                .and_then(|r| r.split(']').next())
+                .and_then(|n| n.parse::<u32>().ok());
+            res.push_str(&format!(
+                "Started in the background (exit {code}); output goes to {}.",
+                bg.log.display()
+            ));
+            if let Some(id) = id {
+                res.push_str(&format!(
+                    " Job number: {id}: use job_output({id}) and jobs()."
+                ));
+                if let Ok(mut j) = llm.jobs.lock() {
+                    j.link(id, bg.log.clone());
+                }
+            }
+        } else if typed {
+            let status = match block.exit_code {
+                Some(130) => "130 (interrupted by the user with Ctrl-C)".to_owned(),
+                _ => code,
+            };
+            res.push_str(&format!(
+                "exit: {status}\nduration: {:.1}s\noutput (tail):\n{}",
+                block.duration.as_secs_f32(),
+                tail_cap(&block.output)
+            ));
+        } else {
+            res.push_str(&format!("exit: {code}\noutput:\n{}", cap(&block.output)));
+        }
+        Some(res)
     }
-    p.result = Some(res);
 }
 
 /// Bash came back to a prompt without starting the line aish typed (a syntax
@@ -1279,11 +1300,10 @@ pub fn on_block(llm: &Llm, block: &Block) {
 /// whatever the user runs next is not taken for the result.
 pub fn not_run(llm: &Llm) {
     if let Ok(mut g) = llm.pending.lock() {
-        if let Some(p) = g
-            .as_mut()
-            .filter(|p| p.ran_by_aish && !p.inject && p.result.is_none())
-        {
-            p.not_run = true;
+        if let Some(p) = g.as_mut() {
+            if let Stage::Typed { not_run } = &mut p.stage {
+                *not_run = true;
+            }
         }
     }
 }
@@ -1311,9 +1331,10 @@ pub fn waiting(llm: &Llm) -> bool {
 
 /// Is a paused turn ready to continue?
 pub fn resumable(llm: &Llm) -> bool {
-    llm.pending
-        .lock()
-        .is_ok_and(|p| p.as_ref().is_some_and(|p| p.result.is_some() || p.not_run))
+    llm.pending.lock().is_ok_and(|p| {
+        p.as_ref()
+            .is_some_and(|p| matches!(p.stage, Stage::Done(_) | Stage::Typed { not_run: true }))
+    })
 }
 
 /// Continue a paused turn (runs on the worker thread).
@@ -1323,7 +1344,10 @@ pub fn resume(llm: &Llm, tracker: &Arc<Mutex<BlockTracker>>, task: &Task) -> Opt
     let mut turn = p.turn;
     turn.msgs.push(Message::tool_result(
         p.call_id,
-        p.result.unwrap_or_else(|| NOT_RUN.into()),
+        match p.stage {
+            Stage::Done(r) => r,
+            _ => NOT_RUN.into(),
+        },
     ));
     drive(llm, tracker, &t, turn, task)
 }
@@ -1361,11 +1385,8 @@ mod tests {
             call_id: "c1".into(),
             proposed: proposed.into(),
             bg: None,
-            result: None,
             at: Instant::now(),
-            inject: false,
-            ran_by_aish: true,
-            not_run: false,
+            stage: Stage::Typed { not_run: false },
         });
         llm
     }
@@ -1394,7 +1415,7 @@ mod tests {
         not_run(&llm);
         on_block(&llm, &block("echo hi"));
         let g = llm.pending.lock().unwrap();
-        assert!(g.as_ref().unwrap().result.as_ref().unwrap().contains("out"));
+        assert!(matches!(&g.as_ref().unwrap().stage, Stage::Done(r) if r.contains("out")));
     }
 
     #[test]
@@ -1412,14 +1433,8 @@ mod tests {
         assert!(llm.pending.lock().unwrap().is_none());
         let llm = pending_llm("echo a\necho b");
         on_block(&llm, &block("echo a; echo b"));
-        assert!(llm
-            .pending
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .result
-            .is_some());
+        let g = llm.pending.lock().unwrap();
+        assert!(matches!(g.as_ref().unwrap().stage, Stage::Done(_)));
     }
 
     #[test]
