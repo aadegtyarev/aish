@@ -553,45 +553,45 @@ fn read_block(env: &Env, n: usize, start: Option<usize>, max: Option<usize>) -> 
 fn show_block(b: &Block, start: Option<usize>, max: usize) -> String {
     let lines: Vec<&str> = b.output.lines().collect();
     let total = lines.len();
-    let mut s = format!(
+    let head = format!(
         "command: {}\nexit: {}\ncwd: {}\n",
         b.command,
         b.exit_code.map_or("?".into(), |c| c.to_string()),
         b.cwd
     );
     let Some(a) = start.map(|a| a.max(1)) else {
-        let (text, out) = (b.output.trim_end(), cap(&b.output));
-        let cut = if out.len() < text.len() {
-            let at = |c: usize| text.char_indices().nth(c).map_or(text.len(), |x| x.0);
-            let line = |c| text[..at(c)].matches('\n').count() + 1;
-            let n = text.chars().count();
+        let text = b.output.trim_end();
+        let n = text.chars().count();
+        let cut = if n > OUT_CAP {
+            let line = |c: usize| text.chars().take(c).filter(|&ch| ch == '\n').count() + 1;
+            let (h, t) = (OUT_CAP / 3, n - (OUT_CAP - OUT_CAP / 3));
             format!(
                 " (middle trimmed: use start_line to read lines {}..{})",
-                line(OUT_CAP / 3),
-                line(n - (OUT_CAP - OUT_CAP / 3))
+                line(h),
+                line(t)
             )
         } else {
             String::new()
         };
-        return format!("{s}lines: {total}{cut}\noutput:\n{out}");
+        return format!("{head}lines: {total}{cut}\noutput:\n{}", cap(&b.output));
     };
+    if a > total {
+        return format!("{head}error: the output has {total} lines");
+    }
     let mut out = String::new();
     let mut last = a - 1;
-    for (i, l) in lines
-        .iter()
-        .enumerate()
-        .skip(a - 1)
-        .take(max.clamp(1, FILE_LINES))
-    {
-        if out.len() + l.len() + 1 > FILE_BYTES {
+    for l in lines.iter().skip(a - 1).take(max.clamp(1, FILE_LINES)) {
+        if !out.is_empty() && out.len() + l.len() >= FILE_BYTES {
             break;
         }
-        out.push_str(l);
+        out.push_str(&trim_middle(l, FILE_BYTES));
         out.push('\n');
-        last = i + 1;
+        last += 1;
     }
-    s.push_str(&format!("lines {a}-{last} of {total}\noutput:\n{out}"));
-    s.trim_end().into()
+    format!(
+        "{head}lines {a}-{last} of {total}\noutput:\n{}",
+        out.trim_end()
+    )
 }
 
 fn expand(path: &str, cwd: &str) -> PathBuf {
@@ -1766,6 +1766,9 @@ mod tests {
             "{s}"
         );
         assert!(show_block(&b, Some(19999), 200).contains("lines 19999-20000 of 20000"));
+        assert!(show_block(&b, Some(20001), 200).ends_with("error: the output has 20000 lines"));
+        b.output = "x".repeat(40_000);
+        assert!(show_block(&b, Some(1), 200).contains("lines 1-1 of 1\noutput:\nxxx"));
     }
 
     #[test]

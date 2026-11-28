@@ -23,9 +23,13 @@ impl Hit {
     }
 }
 
-/// `line` cut to `LINE_CHARS` around char index `at`.
-fn snippet(line: &str, at: usize) -> String {
-    let line = line.trim().replace('\n', " ");
+/// `line` cut to `LINE_CHARS` around the match at byte `start`.
+fn snippet(line: &str, start: usize) -> String {
+    let t = line.trim_start();
+    let at = t[..start.saturating_sub(line.len() - t.len())]
+        .chars()
+        .count();
+    let line = t.trim_end().replace('\n', " ");
     let n = line.chars().count();
     if n <= LINE_CHARS {
         return line;
@@ -62,11 +66,10 @@ pub fn search<'a>(
             let Some(m) = re.find(text) else { continue };
             total += 1;
             if hits.len() < MAX_HITS {
-                let at = text[..m.start()].chars().count();
                 hits.push(Hit {
                     block: i + 1,
                     line,
-                    text: snippet(text, at),
+                    text: snippet(text, m.start()),
                 });
             }
         }
@@ -168,7 +171,12 @@ mod tests {
 
     #[test]
     fn long_line_keeps_the_match() {
-        let line = format!("{}needle{}", "a".repeat(500), "b".repeat(500));
+        let line = format!(
+            "{}{}needle{}",
+            " ".repeat(300),
+            "a".repeat(500),
+            "b".repeat(500)
+        );
         let b = [blk("c", &line)];
         let h = &search(b.iter(), "needle", false).unwrap().0[0];
         assert!(h.text.contains("needle") && h.text.chars().count() <= LINE_CHARS + 2);
