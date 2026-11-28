@@ -113,6 +113,12 @@ roles:
 # (default English, like aish itself).
 # language: Russian
 
+# Language coach: you practise the reply language (`language:`). `fix` — when your
+# question is written in it and has mistakes, the answer starts with a dim line
+# `✎ Better: <corrected question>`; `on` — also ghost-text completion of the question
+# while you type it (from the `complete` model). Default off; `ai coach on|fix|off`.
+# coach: fix
+
 # Conversation memory. When it grows past `at` of the chat model's context window
 # (`context_window` on the model; else a local llama.cpp's n_ctx from /props; else 8192
 # for a local server, 32768 for a remote API),

@@ -194,7 +194,7 @@ If a command helps, put it in a final ```bash block: it is typed into the runnin
 so write it for the program the user is typing into (the remote shell, or the REPL's own syntax).";
 
 /// `language:` from the config, else English (the language of aish itself).
-fn reply_language(cfg: Option<&crate::config::Config>) -> String {
+pub(super) fn reply_language(cfg: Option<&crate::config::Config>) -> String {
     cfg.and_then(|c| c.language.clone())
         .unwrap_or_else(|| "English".into())
 }
@@ -205,10 +205,16 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
     let run = llm.tool_on("run").then(|| llm.run_mode());
     let files = llm.tool_on("files");
     let mut system = String::from(SYSTEM);
+    let lang = reply_language(llm.config().as_deref());
     system.push_str(&format!(
-        " Always reply in {}, whatever the question's language.",
-        reply_language(llm.config().as_deref())
+        " Always reply in {lang}, whatever the question's language."
     ));
+    if llm.coach() != crate::config::Coach::Off {
+        system.push_str(&format!(
+            " The user practises {lang}: if their question is written in {lang} and has mistakes, \
+begin the reply with one line `✎ Better: <the corrected question>`; otherwise no such line."
+        ));
+    }
     if overlay {
         system.push_str(OVERLAY_GUIDE);
     } else if o.tools {
@@ -1776,6 +1782,24 @@ mod tests {
         llm.set_tool("run", false);
         let (sys, tools) = request_parts(&llm, false, &on);
         assert!(sys.contains("over with insert") && tools.iter().all(|t| t.name != "run"));
+    }
+
+    #[test]
+    fn coach_sentence_only_when_fix_or_on() {
+        use crate::config::Coach;
+        let llm = Llm::new();
+        let on = Offer {
+            tools: false,
+            native: false,
+            search: false,
+            read: false,
+        };
+        for (m, want) in [(Coach::Off, false), (Coach::Fix, true), (Coach::On, true)] {
+            llm.set_coach(m);
+            let sys = request_parts(&llm, false, &on).0;
+            assert_eq!(sys.contains("✎ Better:"), want, "{m:?}");
+            assert_eq!(sys.contains("practises English"), want);
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use aish_editor::{Ctx, Decoration, Plugin};
 
 use super::Llm;
-use crate::config::RunMode;
+use crate::config::{Coach, RunMode};
 
 /// What the suggestions depend on.
 pub struct State {
@@ -22,6 +22,7 @@ pub struct State {
     pub profiles: Vec<String>,
     pub profile: Option<String>,
     pub run: RunMode,
+    pub coach: Coach,
     /// Switchable tools and whether each is on.
     pub tools: Vec<(String, bool)>,
 }
@@ -66,6 +67,7 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 ("models", "list models"),
                 ("profile", "profiles"),
                 ("run", "may the model run commands"),
+                ("coach", "language coach"),
                 ("tools", "tools on/off"),
                 toggle,
                 other,
@@ -120,6 +122,17 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
             ))
         }
         ["run", m, part] if RunMode::parse(m).is_some() => save_flag(part),
+        ["coach", part] => {
+            let m = Coach::ALL
+                .into_iter()
+                .filter(|m| m.name().starts_with(part) && m.name() != *part)
+                .find(|m| *m != st.coach)?;
+            Some((
+                m.name()[part.len()..].to_owned(),
+                format!("· now {}", st.coach.name()),
+            ))
+        }
+        ["coach", m, part] if Coach::parse(m).is_some() => save_flag(part),
         ["tools", part] => {
             let (n, on) = st
                 .tools
@@ -244,6 +257,7 @@ impl CmdSuggest {
                 .unwrap_or_default(),
             profile: self.llm.config().and_then(|c| c.profile.clone()),
             run: self.llm.run_mode(),
+            coach: self.llm.coach(),
             tools: crate::config::SWITCHABLE_TOOLS
                 .iter()
                 .map(|n| ((*n).to_owned(), self.llm.tool_on(n)))
@@ -310,6 +324,7 @@ mod tests {
             profiles: vec!["local".into(), "inet".into()],
             profile: Some("local".into()),
             run: RunMode::Ask,
+            coach: Coach::Off,
             tools: vec![
                 ("run".into(), true),
                 ("files".into(), true),

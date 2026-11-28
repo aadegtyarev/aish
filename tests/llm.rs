@@ -2625,3 +2625,91 @@ fn with_tools_a_bash_block_is_not_prefilled() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+/// Chat answers start with a coach correction; the complete model continues sentences.
+fn coach_mock() -> Mock {
+    Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if r.body.contains("Sentence so far") {
+            mock::chat_stream(c, &[" I list files"], Duration::ZERO);
+        } else {
+            mock::chat_stream(
+                c,
+                &["✎ Better: how do I list files?\nSure thing.\n"],
+                Duration::ZERO,
+            );
+        }
+    })
+}
+
+fn sentence_requests(m: &Mock) -> usize {
+    m.requests()
+        .iter()
+        .filter(|r| r.body.contains("Sentence so far"))
+        .count()
+}
+
+#[test]
+fn coach_on_corrects_and_completes_questions() {
+    let home = TempDir::new().unwrap();
+    let m = coach_mock();
+    write_config(
+        home.path(),
+        &format!("{}coach: on\n", mock_config(&m.url())),
+    );
+    let mut p = spawn(base(&home));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? how do").unwrap();
+    p.expect(" I list files").unwrap(); // ghost from the complete model
+    p.send("\r").unwrap();
+    p.expect("✎ Better: how do I list files?").unwrap();
+    p.expect("Sure thing.").unwrap();
+    let q = m
+        .requests()
+        .into_iter()
+        .find(|r| r.body.contains("Sure") || r.body.contains("practises"))
+        .unwrap();
+    assert!(q.body.contains("The user practises English"), "{}", q.body);
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn coach_fix_and_off_give_no_ghost_and_save_works() {
+    let home = TempDir::new().unwrap();
+    let m = coach_mock();
+    let mut p = with_config(&home, &m);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? how do").unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    p.send("\x03").unwrap();
+    assert_eq!(sentence_requests(&m), 0); // coach off
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai coach fix --save").unwrap();
+    p.expect("coach: fix · saved").unwrap();
+    assert!(cfg_text(&home).contains("\ncoach: fix\n"));
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? how do").unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    p.send("\x03").unwrap();
+    assert_eq!(sentence_requests(&m), 0); // fix: corrections only
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai coach on").unwrap();
+    p.expect("coach: on · this session").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? how do").unwrap();
+    p.expect(" I list files").unwrap();
+    assert_eq!(sentence_requests(&m), 1);
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

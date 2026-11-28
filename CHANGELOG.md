@@ -9,6 +9,11 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- Language coach: `coach: fix|on` (off by default), `ai coach on|fix|off [--save]`. The answer starts
+  with a dim `✎ Better: ...` line when your question in the reply language has mistakes; `on` also
+  completes the question as ghost text while you type it.
+
 ## [0.4.3] - 2026-11-28
 
 ### Added

@@ -4,11 +4,12 @@
 use std::collections::HashMap;
 
 use super::Llm;
-use crate::config::RunMode;
+use crate::config::{Coach, RunMode};
 
 #[derive(Default)]
 pub struct Opts {
     run: Option<RunMode>,
+    coach: Option<Coach>,
     tools: HashMap<String, bool>,
 }
 
@@ -22,6 +23,18 @@ impl Llm {
     pub fn set_run_mode(&self, m: RunMode) {
         if let Ok(mut o) = self.opts.lock() {
             o.run = Some(m);
+        }
+    }
+
+    /// The language coach (`ai coach`, `coach:`).
+    pub fn coach(&self) -> Coach {
+        let over = self.opts.lock().ok().and_then(|o| o.coach);
+        over.unwrap_or_else(|| self.config().map_or(Coach::Off, |c| c.coach_mode()))
+    }
+
+    pub fn set_coach(&self, m: Coach) {
+        if let Ok(mut o) = self.opts.lock() {
+            o.coach = Some(m);
         }
     }
 

@@ -336,6 +336,23 @@ Source priority: history → bash-completion → model.
 The model is not called for an empty line, nor for lines where history already
 gave the exact continuation.
 
+### Language coach
+
+Off by default (`coach:` in the config, `ai coach on|fix|off [--save]`). You practise the
+reply language (`language:`, English by default). With `fix`, when a question is written in that
+language and has mistakes, the answer starts with one dim line before it:
+
+```
+│ ✎ Better: How do I find the biggest files here?
+│ Use `du -ah . | sort -rh | head`...
+```
+
+Nothing is shown for a correct question or one in another language; the task is still done as
+asked. The model is told this in one sentence of the system prompt; the renderer draws any answer
+line that starts with `✎ ` dim, wrapped like other prose. With `on`, a question line (`? how do`)
+also gets ghost text, a continuation of the sentence from the same `complete` model, with the same
+pause, cache and keys as command suggestions.
+
 ## Feedback about commands
 
 We show only what carries information:
@@ -393,6 +410,7 @@ $ ai models        ← models by provider: alias, id (dim, cut with …), roles 
 $ ai model chat ds ← switch a role's model AND save it to the config (`ai model ds` = chat; `ai chat ds` is the same)
 $ ai profile       ← profiles (the active one is marked `*`); `ai profile inet` switches and saves
 $ ai run [ask|judge|off]    ← may the model run commands (`--save` keeps it in the config)
+$ ai coach [on|fix|off]    ← language coach (`--save` keeps it in the config), see below
 $ ai tools [name on|off]   ← the agent's tools run/files/web (`--save` keeps it)
 $ ai off / ai on          ← turn model suggestions off/on
 $ ai config                ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)

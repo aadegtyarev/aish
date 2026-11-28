@@ -16,9 +16,10 @@ use aish_llm::{Message, Request};
 
 use super::cmd::is_aish_line;
 use super::mask::mask;
-use super::prefix::is_model_line;
+use super::prefix::{is_model_line, parse, Form};
 use super::{Llm, Target};
 use crate::blocks::BlockTracker;
+use crate::config::Coach;
 
 pub const DEBOUNCE: Duration = Duration::from_millis(150);
 const CACHE: usize = 256;
@@ -28,6 +29,21 @@ const MAX_LEN: usize = 200;
 const SYSTEM: &str = "You complete a bash command line. Reply with ONLY the text that continues \
 the line exactly from its end: no explanation, no markdown, no quotes, do not repeat the line. \
 One line. Reply with nothing if unsure.";
+
+/// The system prompt for a question line: complete the sentence, not a command.
+fn sentence_system(lang: &str) -> String {
+    format!(
+        "You complete the user's {lang} sentence (a question to a shell assistant). Reply with \
+ONLY the text that continues it from its end: no explanation, no quotes, do not repeat it. \
+One line. Reply with nothing if unsure."
+    )
+}
+
+/// Is `line` a question being typed (`? how do`) that the coach may complete?
+fn is_sentence(line: &str, llm: &Llm) -> bool {
+    llm.coach() == Coach::On
+        && matches!(parse(line, llm.prefix()), Some(Form::Question { text, .. }) if !text.is_empty())
+}
 
 /// Names from `ls` of the working directory, refreshed when a command finished.
 #[derive(Default)]
@@ -156,7 +172,7 @@ impl ModelSuggest {
         let t = ctx.text();
         !t.is_empty()
             && ctx.cursor() == t.len()
-            && !is_model_line(t, self.llm.prefix())
+            && (is_sentence(t, &self.llm) || !is_model_line(t, self.llm.prefix()))
             && !is_aish_line(t)
             && !self.llm.is_own_line(t)
             && self.llm.suggest_on.load(Ordering::Relaxed)
@@ -267,10 +283,12 @@ fn worker(
         if let Some(s) = llm.status.get() {
             s.begin();
         }
+        let sentence = is_sentence(&job.line, llm)
+            .then(|| sentence_system(&super::agent::reply_language(llm.config().as_deref())));
         // a model that is down: the next one, silently
         let mut res = Err(aish_llm::Error::Cancelled);
         for t in &ts {
-            res = ask(t, tracker, ls, &job);
+            res = ask(t, tracker, ls, &job, sentence.as_deref());
             match &res {
                 Err(e) if super::failover(e) && !job.cancel.load(Ordering::Relaxed) => {
                     if super::is_down_error(e) {
@@ -314,6 +332,7 @@ fn ask(
     tracker: &Arc<Mutex<BlockTracker>>,
     ls: &LsCache,
     job: &Job,
+    sentence: Option<&str>,
 ) -> Result<Option<String>, aish_llm::Error> {
     let (cwd, recent) = match tracker.lock() {
         Ok(tr) => (
@@ -332,18 +351,26 @@ fn ask(
         Err(_) => (String::new(), Vec::new()),
     };
     let names = ls.names(&cwd);
-    let mut ctx = format!(
-        "cwd: {cwd}\nrecent commands:\n{}\nfiles: {}\nLine so far (continue it from its very end):\n",
-        recent.join("\n"),
-        names.join(" ")
-    );
+    let mut ctx = match sentence {
+        Some(_) => "Sentence so far (continue it from its very end):\n".to_owned(),
+        None => format!(
+            "cwd: {cwd}\nrecent commands:\n{}\nfiles: {}\nLine so far (continue it from its very end):\n",
+            recent.join("\n"),
+            names.join(" ")
+        ),
+    };
     if !t.local {
         ctx = mask(&ctx);
     }
+    // a question line: the sentence after `? `
+    let typed = match sentence {
+        Some(_) => job.line.split_once(' ').map_or("", |x| x.1),
+        None => &job.line,
+    };
     let line = if t.local {
-        job.line.clone()
+        typed.to_owned()
     } else {
-        mask(&job.line)
+        mask(typed)
     };
     ctx.push_str(&line);
     let req = Request {
@@ -351,7 +378,7 @@ fn ask(
         temperature: Some(0.0),
         stop: vec!["\n".into()],
         first_token_timeout: aish_llm::FIRST_TOKEN_COMPLETE,
-        ..Request::chat(SYSTEM, vec![Message::user(ctx)])
+        ..Request::chat(sentence.unwrap_or(SYSTEM), vec![Message::user(ctx)])
     };
     // Only the first line matters: stop (and close the connection) at "\n".
     let mut reply = String::new();
@@ -392,6 +419,22 @@ mod tests {
         assert_eq!(clean("ls", "ls"), None);
         assert_eq!(clean("ls ", "-la").as_deref(), Some("-la"));
         assert_eq!(clean("sudo apt install <x>", "sudo apt install htop"), None);
+        // sentences: the guard looks at the whole editor line, which starts with `?`
+        assert_eq!(
+            clean("? how do", " I list files").as_deref(),
+            Some(" I list files")
+        );
+    }
+
+    #[test]
+    fn question_lines_are_sentences_only_with_coach_on() {
+        let llm = Llm::new();
+        for (m, want) in [(Coach::Off, false), (Coach::Fix, false), (Coach::On, true)] {
+            llm.set_coach(m);
+            assert_eq!(is_sentence("? how do", &llm), want, "{m:?}");
+            assert!(!is_sentence("how do", &llm) && !is_sentence("? ", &llm));
+        }
+        assert!(sentence_system("Russian").contains("Russian sentence"));
     }
 
     #[test]

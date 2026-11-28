@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{Llm, Target};
-use crate::config::{Config, RunMode, Setting};
+use crate::config::{Coach, Config, RunMode, Setting};
 
 pub const SUBS: &[&str] = &[
     "status", "chat", "complete", "model", "models", "profile", "on", "off", "config", "init",
-    "help", "run", "tools",
+    "help", "run", "coach", "tools",
 ];
 
 fn is_cmd_line(s: &str, name: &str) -> bool {
@@ -96,6 +96,8 @@ pub enum Cmd {
     Init,
     /// `run [ask|judge|off] [--save]`
     Run(Option<String>, bool),
+    /// `coach [on|fix|off] [--save]`
+    Coach(Option<String>, bool),
     /// `tools [name on|off] [--save]`
     Tools(Option<(String, Option<String>)>, bool),
     /// A first word that is no subcommand: a hint and the help, nothing else.
@@ -115,10 +117,15 @@ pub fn parse(line: &str) -> Cmd {
         (Some("model"), Some(m), None) => Cmd::Model("chat".into(), m.into()),
         (Some("model"), Some(r), Some(m)) => Cmd::Model(r.into(), m.into()),
         (Some("profile"), n, _) => Cmd::Profile(n.map(Into::into)),
-        (Some("run"), ..) => {
+        (Some(c @ ("run" | "coach")), ..) => {
             let save = w[2..].contains(&"--save");
             let a = w[2..].iter().find(|x| **x != "--save");
-            Cmd::Run(a.map(|x| (*x).to_owned()), save)
+            let a = a.map(|x| (*x).to_owned());
+            if c == "run" {
+                Cmd::Run(a, save)
+            } else {
+                Cmd::Coach(a, save)
+            }
         }
         (Some("tools"), ..) => {
             let save = w[2..].contains(&"--save");
@@ -184,6 +191,10 @@ const HELP: &[(&str, &str)] = &[
     (
         "run [ask|judge|off]",
         "may the model run commands; --save keeps it",
+    ),
+    (
+        "coach [on|fix|off]",
+        "language coach: fix = corrections, on = + word completion; --save keeps it",
     ),
     ("tools [name on|off]", "switch tools; --save keeps it"),
     ("on | off", "suggestions"),
@@ -385,6 +396,35 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
     vec![Ln::dim(format!("run: {} · {tail}", mode.name()))]
 }
 
+fn coach_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
+    let Some(a) = arg else {
+        return vec![
+            Ln::dim(format!("coach: {}", llm.coach().name())),
+            Ln::dim("on|fix|off · --save keeps"),
+        ];
+    };
+    let Some(mode) = Coach::parse(a) else {
+        let names: Vec<&str> = Coach::ALL.iter().map(|m| m.name()).collect();
+        return vec![Ln::dim(format!(
+            "no mode: {a} {}",
+            did_you_mean(a, &names, "on | fix | off")
+        ))];
+    };
+    llm.set_coach(mode);
+    let tail = if !save {
+        "this session"
+    } else if persist(
+        llm,
+        |s| crate::config_edit::set_top(s, "coach", mode.name()),
+        |c| c.coach_mode() == mode,
+    ) {
+        "saved"
+    } else {
+        "session only: config unchanged"
+    };
+    vec![Ln::dim(format!("coach: {} · {tail}", mode.name()))]
+}
+
 fn tools_lines(llm: &Llm, arg: Option<&(String, Option<String>)>, save: bool) -> Vec<Ln> {
     let Some((name, state)) = arg else {
         let cfg_web = llm.config().is_none_or(|c| !matches!(c.web, Setting::Off));
@@ -521,6 +561,7 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
         Cmd::Model(role, r) => set_model(llm, role, r),
         Cmd::Profile(n) => profile_lines(llm, n.as_deref()),
         Cmd::Run(a, save) => run_lines(llm, a.as_deref(), *save),
+        Cmd::Coach(a, save) => coach_lines(llm, a.as_deref(), *save),
         Cmd::Tools(a, save) => tools_lines(llm, a.as_ref(), *save),
         Cmd::Unknown(w) => {
             let mut v = Vec::new();

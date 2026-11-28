@@ -1041,6 +1041,55 @@ fn question_answer() {
     }
 }
 
+/// The coach's correction is a dim wrapped row after the bar; the ghost sentence
+/// shows after `? how do` and leaves nothing behind.
+fn coach_line_and_sentence_ghost() {
+    let m = Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if r.body.contains("Sentence so far") {
+            mock::chat_stream(c, &[" I list files"], Duration::ZERO);
+        } else {
+            let fix = "✎ Better: how do I list all the files in this folder?\nSure thing.\n";
+            mock::chat_stream(c, &[fix], Duration::ZERO);
+        }
+    });
+    for (cols, ps1) in question_cases() {
+        let home = TempDir::new().unwrap();
+        write_config(
+            home.path(),
+            &format!("{}coach: on\n", mock_config(&m.url())),
+        );
+        let mut t = start_rows(&home, &ps1, "", cols, 40);
+        t.send("? how do");
+        t.wait_for("list files");
+        t.send("\x03"); // Ctrl-C drops line and ghost
+        t.pump();
+        assert!(
+            !t.scr.everything().contains("list files\n"),
+            "{}",
+            t.scr.dump()
+        );
+        t.send("? how do\r");
+        t.wait_for("Sure thing.");
+        t.pump_for(Duration::from_millis(500));
+        t.assert_clean();
+        let y = t.scr.find_row("✎ Better").unwrap();
+        for k in y..=t.scr.find_row("Sure thing.").unwrap() - 1 {
+            let row = t.scr.row_text(k);
+            assert!(row.starts_with("│ "), "{row:?}\n{}", t.scr.dump());
+            assert!(!t.scr.row_wrapped(k), "{}", t.scr.dump());
+            assert!(t.scr.is_dim(2, k), "row {k} not dim\n{}", t.scr.dump());
+        }
+        assert!(
+            !t.scr.is_dim(2, y + 3),
+            "answer must not be dim\n{}",
+            t.scr.dump()
+        );
+        t.send("\x15");
+    }
+}
+
 fn question_without_a_model() {
     for (cols, ps1) in question_cases() {
         let home = TempDir::new().unwrap();
@@ -1505,6 +1554,7 @@ both!(
     waiting_in_the_overlay,
     question_answer,
     question_without_a_model,
+    coach_line_and_sentence_ghost,
     late_first_run,
     late_update_notice,
     long_prompt_typing_ghost_and_editing_stay_intact,

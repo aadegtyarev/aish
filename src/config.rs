@@ -219,6 +219,9 @@ pub struct Config {
     /// The language the model always replies in (default English).
     #[serde(default, deserialize_with = "scalar_string")]
     pub language: Option<String>,
+    /// `coach: off|fix|on` — language coach (default off).
+    #[serde(default, deserialize_with = "scalar_string")]
+    pub coach: Option<String>,
     /// Conversation compaction (`compact:`).
     #[serde(default)]
     pub compact: Option<CompactCfg>,
@@ -256,6 +259,32 @@ impl RunMode {
 
     pub fn parse(s: &str) -> Option<RunMode> {
         RunMode::ALL.into_iter().find(|m| m.name() == s)
+    }
+}
+
+/// `coach:` — the language coach: `fix` corrects the user's questions, `on`
+/// also completes words (ghost text while typing a question).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Coach {
+    #[default]
+    Off,
+    Fix,
+    On,
+}
+
+impl Coach {
+    pub const ALL: [Coach; 3] = [Coach::On, Coach::Fix, Coach::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Coach::Off => "off",
+            Coach::Fix => "fix",
+            Coach::On => "on",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Coach> {
+        Coach::ALL.into_iter().find(|m| m.name() == s)
     }
 }
 
@@ -570,6 +599,14 @@ impl Config {
             Setting::Value(v) => RunMode::parse(v).unwrap_or_default(),
             Setting::Unset => RunMode::Ask,
         }
+    }
+
+    /// The configured `coach:` mode (`off` when unset or unknown).
+    pub fn coach_mode(&self) -> Coach {
+        self.coach
+            .as_deref()
+            .and_then(Coach::parse)
+            .unwrap_or_default()
     }
 
     pub fn profile_roles(&self, name: &str) -> Option<&HashMap<String, Role>> {

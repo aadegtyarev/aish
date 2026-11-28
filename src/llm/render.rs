@@ -292,12 +292,19 @@ impl Renderer {
             return;
         }
         let rows = self.prose_rows(line);
+        let coach = t.starts_with("✎ "); // the language coach's correction: dim
         let mut buf = Vec::new();
         self.emit_blank(&mut buf);
         for r in rows {
             buf.extend_from_slice(b"\r\n");
             self.bar(&mut buf);
+            if coach {
+                self.sgr(&mut buf, &self.dim.clone());
+            }
             buf.extend_from_slice(&r);
+            if coach {
+                self.reset(&mut buf);
+            }
         }
         self.route(buf, out);
     }
@@ -654,6 +661,18 @@ mod tests {
         let (o, c) = run(&["hello\nworld"], false, 80);
         assert_eq!(o, "\r\n│ hello\r\n│ world");
         assert_eq!(c, None);
+    }
+
+    #[test]
+    fn coach_line_is_dim_and_wrapped() {
+        let (o, c) = run(
+            &["✎ Better: how do I list files\n```bash\nls\n```\n"],
+            true,
+            20,
+        );
+        assert!(o.contains("\x1b[2m✎ Better: how do I\x1b[0m"), "{o:?}");
+        assert!(o.contains("\x1b[2mlist files\x1b[0m"), "{o:?}");
+        assert_eq!(c.as_deref(), Some("ls"));
     }
 
     #[test]
