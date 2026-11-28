@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
-use super::context::trim_middle;
+use super::context::{self, trim_middle};
 use super::render::{fit_line, unsafe_cmd, Renderer};
 use super::web::{self, Web};
 use super::{Llm, Target};
@@ -746,7 +746,7 @@ pub fn drive(
             }
             Err(e)
                 if !got_output && searches.is_empty() && super::failover(&e) && {
-                    llm.mark_failed(&t.label);
+                    llm.mark_failed("chat", &t.label);
                     llm.targets("chat")
                         .into_iter()
                         .any(|n| !tried.contains(&n.label))
@@ -766,6 +766,19 @@ pub fn drive(
                 );
                 task.write(&out);
                 tried.push(next.label.clone());
+                // a smaller window: the context is cut to fit it
+                if context::budget_tokens(next.window) < context::budget_tokens(t.window) {
+                    let max = context::budget_tokens(next.window) * context::CHARS_PER_TOKEN;
+                    for m in turn.msgs.iter_mut().take(1) {
+                        for part in &mut m.parts {
+                            if let aish_llm::Part::Text(x) = part {
+                                if x.chars().count() > max + 400 {
+                                    *x = trim_middle(x, max + 400);
+                                }
+                            }
+                        }
+                    }
+                }
                 use_tools = next.tools;
                 *t = next;
                 native_on = native_of(t);

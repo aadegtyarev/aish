@@ -127,10 +127,37 @@ fn set_spec(spec: &str, new: &str) -> Option<String> {
     }
 }
 
+/// A YAML scalar: plain when that reads back as the same string, else quoted.
+fn scalar(s: &str) -> String {
+    let plain = s
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-' | ':'))
+        && !s.contains(':')
+        && !matches!(
+            s.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "y" | "n"
+        )
+        && s.parse::<f64>().is_err();
+    if plain {
+        s.to_owned()
+    } else {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
 fn value_text(refs: &[String]) -> String {
     match refs {
-        [one] => one.clone(),
-        many => format!("[{}]", many.join(", ")),
+        [one] => scalar(one),
+        many => format!(
+            "[{}]",
+            many.iter()
+                .map(|r| scalar(r))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -148,11 +175,19 @@ fn join(lines: &[String]) -> String {
     lines.concat()
 }
 
-fn push_line(lines: &mut Vec<String>, at: usize, text: String) {
-    if at > 0 && !lines[at - 1].ends_with('\n') {
-        lines[at - 1].push('\n');
+fn eol_of(src: &str) -> &'static str {
+    if src.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
     }
-    lines.insert(at, format!("{text}\n"));
+}
+
+fn push_line(lines: &mut Vec<String>, at: usize, text: String, eol: &str) {
+    if at > 0 && !lines[at - 1].ends_with('\n') {
+        lines[at - 1].push_str(eol);
+    }
+    lines.insert(at, format!("{}{eol}", text.replace('\n', eol)));
 }
 
 fn rewrite(lines: &mut [String], j: usize, f: impl FnOnce(&str) -> Option<String>) -> Option<()> {
@@ -169,6 +204,7 @@ fn edit_mapping(
     role: &str,
     new: &str,
     wrap: bool,
+    eol: &str,
 ) -> Option<()> {
     let (a, b) = region(lines, i);
     let c = (a..b)
@@ -182,7 +218,7 @@ fn edit_mapping(
         } else {
             new.to_owned()
         };
-        push_line(lines, last, format!("{}{role}: {v}", " ".repeat(c)));
+        push_line(lines, last, format!("{}{role}: {v}", " ".repeat(c)), eol);
         return Some(());
     };
     let rest = key_rest(&lines[j], role)?.to_owned();
@@ -221,12 +257,18 @@ fn spec_for(old: &str, new: &str) -> Option<String> {
 /// Make `refs` the model list of `role` (in the active `profile` if any).
 pub fn set_role(src: &str, profile: Option<&str>, role: &str, refs: &[String]) -> Option<String> {
     let new = value_text(refs);
+    let eol = eol_of(src);
     let mut lines = split(src);
     match profile {
         None => match find_top(&lines, "roles") {
             None => {
                 let at = lines.len();
-                push_line(&mut lines, at, format!("roles:\n  {role}: {{id: {new}}}"));
+                push_line(
+                    &mut lines,
+                    at,
+                    format!("roles:\n  {role}: {{id: {new}}}"),
+                    eol,
+                );
             }
             Some(i) => {
                 let rest = key_rest(&lines[i], "roles")?;
@@ -234,7 +276,7 @@ pub fn set_role(src: &str, profile: Option<&str>, role: &str, refs: &[String]) -
                 if a != b {
                     return None;
                 }
-                edit_mapping(&mut lines, i, role, &new, true)?;
+                edit_mapping(&mut lines, i, role, &new, true, eol)?;
             }
         },
         Some(p) => {
@@ -248,7 +290,7 @@ pub fn set_role(src: &str, profile: Option<&str>, role: &str, refs: &[String]) -
             let colon = body(&lines[i]).len() - rest.len();
             let (vs, ve) = value_span(&rest);
             if vs == ve {
-                edit_mapping(&mut lines, i, role, &new, false)?;
+                edit_mapping(&mut lines, i, role, &new, false, eol)?;
             } else {
                 let flow = rest[vs..ve].to_owned();
                 let (ia, ib) = flow_inner(&flow)?;
@@ -275,6 +317,7 @@ pub fn set_role(src: &str, profile: Option<&str>, role: &str, refs: &[String]) -
 
 /// Set the active profile (`profile:`), adding the key when missing.
 pub fn set_profile(src: &str, name: &str) -> Option<String> {
+    let eol = eol_of(src);
     let mut lines = split(src);
     match find_top(&lines, "profile") {
         Some(i) => {
@@ -290,37 +333,65 @@ pub fn set_profile(src: &str, name: &str) -> Option<String> {
         }
         None => {
             let at = lines.len();
-            push_line(&mut lines, at, format!("profile: {name}"));
+            push_line(&mut lines, at, format!("profile: {name}"), eol);
         }
     }
     Some(join(&lines))
 }
 
-/// Replace the file atomically (temp + rename), keeping its mode.
+/// Replace the file atomically: a symlink is followed (the target changes, the
+/// link stays), the temp file is new and random next to it, owner and mode are
+/// kept, and the file and the directory are synced.
 pub fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mode = std::fs::metadata(path)
-        .map(|m| m.permissions().mode() & 0o7777)
-        .unwrap_or(0o600);
-    let tmp = path.with_file_name(format!(
-        ".{}.tmp{}",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("config"),
-        std::process::id()
-    ));
-    let r = (|| {
-        let mut f = std::fs::OpenOptions::new()
+    use std::os::unix::fs::{fchown, MetadataExt, OpenOptionsExt, PermissionsExt};
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let meta = std::fs::metadata(&path).ok();
+    let mode = meta
+        .as_ref()
+        .map_or(0o600, |m| m.permissions().mode() & 0o7777);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let mut f = None;
+    let mut tmp = path.clone();
+    for i in 0..16u32 {
+        tmp = path.with_file_name(format!(
+            ".{name}.{:x}{:x}{i}.tmp",
+            std::process::id(),
+            nanos.wrapping_mul(2654435761).wrapping_add(i)
+        ));
+        match std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(&tmp)?;
+            .open(&tmp)
+        {
+            Ok(x) => {
+                f = Some(x);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let mut f = f.ok_or_else(|| std::io::Error::other("no temp file"))?;
+    let r = (|| {
         f.write_all(content.as_bytes())?;
+        if let Some(m) = &meta {
+            let _ = fchown(&f, Some(m.uid()), Some(m.gid()));
+        }
         f.set_permissions(std::fs::Permissions::from_mode(mode))?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, &path)?;
+        if let Some(d) = path.parent() {
+            std::fs::File::open(d)?.sync_all()?;
+        }
+        Ok(())
     })();
     if r.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -428,6 +499,35 @@ mod tests {
         // `profiles:` is not `profile:`
         assert!(find_top(&split(src), "profile").is_none());
         assert_eq!(set_profile("a: 1", "p").unwrap(), "a: 1\nprofile: p\n");
+    }
+
+    #[test]
+    fn crlf_quoting_and_symlink() {
+        let src = "roles:\r\n  chat: {id: a}\r\n";
+        assert_eq!(
+            set_role(src, None, "complete", &v(&["b"])).unwrap(),
+            "roles:\r\n  chat: {id: a}\r\n  complete: {id: b}\r\n"
+        );
+        assert_eq!(
+            set_profile("a: 1\r\n", "p").unwrap(),
+            "a: 1\r\nprofile: p\r\n"
+        );
+        assert_eq!(scalar("local/coder"), "local/coder");
+        assert_eq!(scalar("on"), "\"on\"");
+        assert_eq!(scalar("a b#"), "\"a b#\"");
+        assert_eq!(scalar("12"), "\"12\"");
+        let d = tempfile::TempDir::new().unwrap();
+        let real = d.path().join("real.yaml");
+        let link = d.path().join("config.yaml");
+        std::fs::write(&real, "a: 1\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_atomic(&link, "b: 2\n").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "b: 2\n");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 2);
     }
 
     #[test]

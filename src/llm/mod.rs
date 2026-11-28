@@ -186,8 +186,9 @@ impl Llm {
                 .map(|v| v.iter().map(|r| self.make_target(r)).collect())
                 .unwrap_or_default(),
         };
-        let (down, up): (Vec<_>, Vec<_>) =
-            all.into_iter().partition(|t| self.is_down(&t.label, now));
+        let (down, up): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|t| self.is_down(role, &t.label, now));
         up.into_iter().chain(down).collect()
     }
 
@@ -223,22 +224,32 @@ impl Llm {
         }
     }
 
-    fn is_down(&self, label: &str, now: Instant) -> bool {
+    fn is_down(&self, role: &str, label: &str, now: Instant) -> bool {
         self.failed.lock().is_ok_and(|f| {
-            f.get(label)
+            f.get(&format!("{role}\0{label}"))
                 .is_some_and(|t| now.saturating_duration_since(*t) < fail_memory())
         })
     }
 
     /// The model did not answer: following requests go to the next one.
-    pub fn mark_failed(&self, label: &str) {
-        self.mark_failed_at(label, Instant::now());
+    /// Remembered per role: a slow `complete` never hides a model from `chat`.
+    pub fn mark_failed(&self, role: &str, label: &str) {
+        self.mark_failed_at(role, label, Instant::now());
     }
 
-    pub fn mark_failed_at(&self, label: &str, now: Instant) {
+    pub fn mark_failed_at(&self, role: &str, label: &str, now: Instant) {
         if let Ok(mut f) = self.failed.lock() {
-            f.insert(label.to_owned(), now);
+            f.insert(format!("{role}\0{label}"), now);
         }
+    }
+
+    /// The role's models that are not marked down.
+    pub fn targets_up(&self, role: &str) -> Vec<Target> {
+        let now = Instant::now();
+        self.targets_at(role, now)
+            .into_iter()
+            .filter(|t| !self.is_down(role, &t.label, now))
+            .collect()
     }
 
     /// `provider/alias` of every model of the role, configured order (a
@@ -261,6 +272,12 @@ impl Llm {
                         .collect()
                 })
                 .unwrap_or_default(),
+        }
+    }
+
+    pub fn clear_override(&self, role: &str) {
+        if let Ok(mut o) = self.over.lock() {
+            o.remove(role);
         }
     }
 
@@ -342,6 +359,17 @@ pub fn fail_memory() -> Duration {
         .map_or(Duration::from_secs(60), Duration::from_millis)
 }
 
+/// Errors that also mark the model down (a mere timeout of a short
+/// suggestion request does not).
+pub fn is_down_error(e: &aish_llm::Error) -> bool {
+    use aish_llm::Error;
+    match e {
+        Error::Connect(_) => true,
+        Error::Http { status, .. } => *status == 404 || *status >= 500,
+        _ => false,
+    }
+}
+
 /// Errors that make the next model of a role worth trying (nothing was
 /// answered yet): no connection, timeout, server error, model not found.
 pub fn failover(e: &aish_llm::Error) -> bool {
@@ -412,7 +440,7 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(labels(&l, t0), ["p/a", "p/b", "p/c"]);
         assert_eq!(l.target("complete").unwrap().label, "p/b");
-        l.mark_failed_at("p/a", t0);
+        l.mark_failed_at("chat", "p/a", t0);
         // down for 60 s: tried last; afterwards first again
         assert_eq!(
             labels(&l, t0 + Duration::from_secs(59)),
@@ -422,13 +450,13 @@ mod tests {
             labels(&l, t0 + Duration::from_secs(60)),
             ["p/a", "p/b", "p/c"]
         );
-        l.mark_failed_at("p/b", t0);
+        l.mark_failed_at("chat", "p/b", t0);
         assert_eq!(
             labels(&l, t0 + Duration::from_secs(1)),
             ["p/c", "p/a", "p/b"]
         );
         // all down: configured order is kept
-        l.mark_failed_at("p/c", t0);
+        l.mark_failed_at("chat", "p/c", t0);
         assert_eq!(labels(&l, t0), ["p/a", "p/b", "p/c"]);
     }
 

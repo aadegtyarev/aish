@@ -253,7 +253,8 @@ fn worker(
         if quiet_until.is_some_and(|t| Instant::now() < t) && !job.immediate {
             continue;
         }
-        let ts = llm.targets("complete");
+        // models not marked down, at most two per keystroke
+        let ts: Vec<Target> = llm.targets_up("complete").into_iter().take(2).collect();
         if ts.is_empty() {
             continue;
         }
@@ -266,7 +267,9 @@ fn worker(
             res = ask(t, tracker, ls, &job);
             match &res {
                 Err(e) if super::failover(e) && !job.cancel.load(Ordering::Relaxed) => {
-                    llm.mark_failed(&t.label);
+                    if super::is_down_error(e) {
+                        llm.mark_failed("complete", &t.label);
+                    }
                 }
                 _ => break,
             }

@@ -371,13 +371,15 @@ fn set_model(llm: &Llm, role: &str, r: &str) -> Vec<Ln> {
         llm,
         |s| crate::config_edit::set_role(s, profile.as_deref(), role, &refs),
         |c| {
-            c.resolve(role)
-                .is_ok_and(|x| format!("{}/{}", x.provider.id, x.alias) == want)
+            // the whole list must read back as written
+            c.role(role).is_some_and(|x| x.ids == refs)
+                && c.resolve(role)
+                    .is_ok_and(|x| format!("{}/{}", x.provider.id, x.alias) == want)
         },
     );
     let mut v = Vec::new();
     if ok {
-        llm.clear_overrides();
+        llm.clear_override(role);
     } else {
         llm.set_override(role, r);
         v.push(Ln::dim("только в сессии: конфиг не изменён"));

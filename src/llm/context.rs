@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::blocks::{Block, BlockTracker};
 
 const GIT_TIMEOUT: Duration = Duration::from_millis(200);
-const CHARS_PER_TOKEN: usize = 4;
+pub const CHARS_PER_TOKEN: usize = 4;
 
 /// Token budget for the context: min(window/4, 6k).
 pub fn budget_tokens(window: Option<u64>) -> usize {
