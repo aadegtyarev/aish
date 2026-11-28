@@ -3,6 +3,7 @@
 
 use aish_editor::plugins::{HintText, RightHint};
 use aish_editor::{Class, Ctx, Decoration, Handled, Key, Plugin, Span, SubmitAction};
+use std::sync::atomic::Ordering::Relaxed;
 
 use std::sync::{Arc, Mutex};
 
@@ -130,6 +131,12 @@ impl Module for ModelModule {
         let Some((llm, tracker)) = self.env.clone() else {
             return false;
         };
+        if line == llm.prefix().to_string() {
+            let on = !llm.chat.fetch_xor(true, Relaxed);
+            let msg = if on { "chat on" } else { "chat off" };
+            out.extend_from_slice(format!("◇ {msg}").as_bytes());
+            return true;
+        }
         if agent::asking(&llm) && !claims(line, &llm) {
             agent::answer(&llm, line);
             let note = if line.trim().is_empty() {
@@ -264,6 +271,12 @@ struct Answering {
     skip: bool,
 }
 
+impl Answering {
+    fn chat_line(&self) -> String {
+        format!("{} ", self.llm.prefix())
+    }
+}
+
 impl Plugin for Answering {
     fn name(&self) -> &'static str {
         "answering"
@@ -272,6 +285,12 @@ impl Plugin for Answering {
         if *key == Key::Esc && ctx.text().is_empty() && agent::asking(&self.llm) {
             self.skip = true;
             return Handled::Submit;
+        }
+        // Esc on the pre-filled `? ` leaves chat mode
+        if *key == Key::Esc && self.llm.chat.load(Relaxed) && ctx.text() == self.chat_line() {
+            self.llm.chat.store(false, Relaxed);
+            ctx.set_text("");
+            return Handled::Yes;
         }
         Handled::Pass
     }
@@ -286,6 +305,8 @@ impl Plugin for Answering {
     fn decorate(&mut self, _ctx: &mut Ctx, _width: u16, out: &mut Decoration) {
         if agent::asking(&self.llm) {
             out.right_hint("answer · Esc skip");
+        } else if self.llm.chat.load(Relaxed) {
+            out.right_hint("chat · Esc exit");
         }
     }
 }

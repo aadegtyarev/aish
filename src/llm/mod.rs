@@ -62,6 +62,8 @@ pub struct Llm {
     /// Session-only role overrides (`aish chat cloud/main`).
     over: Mutex<HashMap<String, String>>,
     pub suggest_on: AtomicBool,
+    /// Chat mode (sticky prefix): every new line starts with `? `.
+    pub chat: AtomicBool,
     pub convo: Mutex<Vec<Message>>,
     /// Held for a whole turn: a quick re-ask waits for the cancelled one.
     pub turn: Mutex<()>,
@@ -99,6 +101,7 @@ impl Llm {
             cached: Mutex::new(Cached::default()),
             over: Mutex::new(HashMap::new()),
             suggest_on: AtomicBool::new(true),
+            chat: AtomicBool::new(false),
             convo: Mutex::new(Vec::new()),
             turn: Mutex::new(()),
             notice: Mutex::new(None),

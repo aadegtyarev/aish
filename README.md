@@ -128,7 +128,8 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
 
 ## Model features
 
-- `?`, `? text`, `?N text` ask the chat model (the character is `prefix:` in the config) (context: last N blocks trimmed to a token
+- `?` alone turns chat mode on or off: every new line starts with `? ` (delete it to run one bash
+  command; Esc on a bare `? ` leaves). `? text`, `?N text` ask the chat model (the character is `prefix:` in the config) (context: last N blocks trimmed to a token
   budget, cwd, OS, git). The answer streams under the line with a dim `│ `; Ctrl-C stops it
   (`│ ⏹`). A final ```bash block is not printed but put into the input line (Enter runs it,
   Ctrl-C clears). `?n` starts a fresh conversation, `?c` compacts it into a summary (also automatic near the context window, see `compact:`), `?h` is the short help. Secrets are masked before text goes to a

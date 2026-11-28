@@ -12,6 +12,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -510,6 +511,8 @@ impl Controller {
             self.typeahead.clear();
             // while the agent waits for this line: clearing it ends the turn
             self.prefill_watch = crate::llm::agent::waiting(&self.llm);
+        } else if self.llm.chat.load(Relaxed) && !crate::llm::agent::asking(&self.llm) {
+            self.ed.set_text(&format!("{} ", self.llm.prefix()));
         }
         let _ = self.stdout.write_all(b"\x1b[?2004h");
         if self.use_dsr {

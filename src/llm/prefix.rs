@@ -53,7 +53,8 @@ pub fn is_model_line(line: &str, p: char) -> bool {
 pub fn forms(p: char) -> Vec<(String, &'static str)> {
     vec![
         (format!("{p} text"), "ask"),
-        (format!("{p}"), "about the last output"),
+        (format!("{p}"), "chat mode on/off"),
+        (format!("{p} "), "about the last output"),
         (format!("{p}N"), "about the last N blocks"),
         (format!("{p}n"), "new conversation"),
         (format!("{p}c"), "compact conversation"),

@@ -1571,3 +1571,99 @@ fn ask_and_insert_prompts_fit_the_width() {
         }
     }
 }
+
+// ---- chat mode (sticky `?`) ---------------------------------------------------
+
+/// The input row up to the cursor (no ghost, no hint), trailing blanks cut.
+fn input_row(t: &Term) -> String {
+    let row: String = t.scr.row_text(t.scr.cy).chars().take(t.scr.cx).collect();
+    row.trim_end().to_owned()
+}
+
+fn chat_mock(reply: &'static str, call: Option<&'static str>) -> Mock {
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    Mock::start(move |r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if let (Some(args), 0) = (call, n.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+        {
+            mock::chat_calls_stream(c, "", &[("c1", "insert", args)]);
+        } else {
+            mock::chat_stream(c, &[reply], Duration::ZERO);
+        }
+    })
+}
+
+#[test]
+fn chat_mode_prefills_the_prefix_and_runs_one_command() {
+    for cols in [80u16, 36] {
+        let home = TempDir::new().unwrap();
+        let m = chat_mock("Hello there\n", None);
+        let ps1 = prompt(12);
+        let p = ps1.trim_end();
+        let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+        t.send("?\r");
+        t.wait_for("chat on");
+        assert_eq!(input_row(&t), format!("{p} ?"), "{}", t.scr.dump());
+        if cols == 80 {
+            assert!(t.scr.everything().contains("chat · Esc exit"));
+        }
+        t.send("hi\r");
+        t.wait_for("Hello there");
+        t.pump_for(Duration::from_millis(500));
+        assert_eq!(input_row(&t), format!("{p} ?"), "{}", t.scr.dump());
+        // one bash command: the prefix goes, the next line has it again
+        t.send("\x7f\x7fecho $((6*7))\r");
+        t.wait_for("\n42");
+        t.pump_for(Duration::from_millis(500));
+        assert_eq!(input_row(&t), format!("{p} ?"), "{}", t.scr.dump());
+        // Esc on the bare `? ` leaves; the bare `?` again enters, and leaves
+        t.send("\x1b");
+        t.pump_for(Duration::from_millis(500));
+        assert_eq!(input_row(&t), p, "{}", t.scr.dump());
+        t.send("?\r");
+        t.wait_for("chat on");
+        t.send("\x7f\x7f?\r");
+        t.wait_for("chat off");
+        t.pump_for(Duration::from_millis(500));
+        assert_eq!(input_row(&t), p, "{}", t.scr.dump());
+        t.assert_clean();
+    }
+}
+
+#[test]
+fn model_commands_replace_the_chat_prefix_and_chat_goes_on() {
+    for cols in [80u16, 36] {
+        for tools in [true, false] {
+            let home = TempDir::new().unwrap();
+            let ps1 = prompt(12);
+            let p = ps1.trim_end();
+            let cmd = "echo $((6*7))";
+            let m = if tools {
+                chat_mock("all-done\n", Some(r#"{"command":"echo $((6*7))"}"#))
+            } else {
+                chat_mock("Try:\n```bash\necho $((6*7))\n```\n", None)
+            };
+            let mut t = if tools {
+                start_llm_rows(&home, &m, &ps1, cols, 40)
+            } else {
+                start_no_tools(&home, &m, &ps1, cols, 40)
+            };
+            t.send("?\r");
+            t.wait_for("chat on");
+            t.type_only("do it\r");
+            if tools {
+                t.wait_for("Enter insert");
+                t.pump_for(Duration::from_millis(500));
+                t.send("\r");
+            }
+            t.wait_for(&format!("{p} {cmd}"));
+            t.pump_for(Duration::from_millis(800));
+            assert_eq!(input_row(&t), format!("{p} {cmd}"), "{}", t.scr.dump());
+            t.send("\r");
+            t.wait_for("\n42");
+            t.pump_for(Duration::from_millis(800));
+            assert_eq!(input_row(&t), format!("{p} ?"), "{}", t.scr.dump());
+        }
+    }
+}
