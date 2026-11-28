@@ -9,6 +9,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-28
+
 ### Added
 - Language coach: `coach: fix|on` (off by default), `ai coach on|fix|off [--save]`. A dim
   `✎ Better: ...` line (before or after the answer) when your question in the reply language has
@@ -260,7 +262,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/aadegtyarev/aish/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/aadegtyarev/aish/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/aadegtyarev/aish/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/aadegtyarev/aish/compare/v0.4.0...v0.4.1
