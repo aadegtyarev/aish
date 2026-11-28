@@ -123,24 +123,6 @@ __aish_jobs() {
 }
 __aish_jpoll() { __aish_jobs poll; }
 
-# The programs aish runs unasked (the generated list) that this shell redefines,
-# one row each: `f<TAB>name` for a function (or a long alias), `a<TAB>name<TAB>value`
-# for an alias. Reported encoded, tagged with the nonce, when the set changes.
-__aish_sh=
-__aish_shadow() {
-  local n v s=
-  for n in @PLAIN_NAMES@; do
-    v=${BASH_ALIASES[$n]-}
-    if declare -F "$n" >/dev/null || (( ${#v} > 200 )); then s+="f"$'\t'"$n"$'\n'
-    elif [[ -n ${BASH_ALIASES[$n]+x} ]]; then s+="a"$'\t'"$n"$'\t'"$v"$'\n'; fi
-  done
-  if [[ $s != "$__aish_sh" ]]; then
-    __aish_sh=$s
-    __aish_encode "$s"
-    printf '\e]1337;aish;sh=%s;aish=%s\a' "$__aish_enc" "$__aish_n"
-  fi
-}
-
 # Runs last: cwd + (re)wrap PS1 with A/B marks, even if PROMPT_COMMAND set PS1.
 __aish_post() {
   local rc=$?
@@ -150,7 +132,6 @@ __aish_post() {
     __aish_encode "$PATH"
     printf '\e]1337;aish;path=%s\a' "$__aish_enc"
   fi
-  __aish_shadow
   __aish_jobs prompt
   [[ ${PS1-} == *'133;B;aish='* ]] || PS1='\[\e]133;A;aish='"$__aish_n"'\a\]'"${PS1-}"'\[\e]133;B;aish='"$__aish_n"'\a\]'
   return $rc

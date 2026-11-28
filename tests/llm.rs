@@ -1573,7 +1573,7 @@ fn native_search_needs_provider_in_the_search_chain() {
     p.expect(Eof).unwrap();
 }
 
-// ---- the model runs commands (run: ask | auto | off) and tools on/off ------
+// ---- the model runs commands (run: ask | judge | off) and tools on/off ------
 
 /// Default config (run mode unset = ask) plus `extra` lines.
 fn with_run(home: &TempDir, m: &Mock, extra: &str) -> Session {
@@ -1663,9 +1663,9 @@ fn esc_declines_and_the_model_continues() {
 }
 
 #[test]
-fn s_allows_the_session_and_the_next_command_runs_without_asking() {
+fn s_switches_the_session_to_judge() {
     let home = TempDir::new().unwrap();
-    let m = stepped("chat", run_steps(&["basename one-1", "basename two-2"]));
+    let m = stepped("chat", run_steps(&["basename one-1"]));
     let mut p = with_run(&home, &m, "");
     p.expect("E> ").unwrap();
     settle();
@@ -1674,24 +1674,20 @@ fn s_allows_the_session_and_the_next_command_runs_without_asking() {
     settle();
     p.send("s").unwrap();
     p.expect("one-1\r\n").unwrap();
-    // no prompt for the second one: its output just arrives
-    let c = p.expect("two-2\r\n").unwrap();
-    let before = String::from_utf8_lossy(c.before()).into_owned();
-    assert!(!before.contains("Enter run"), "asked again: {before}");
     p.expect("all-done").unwrap();
     p.expect("E> ").unwrap();
-    assert_eq!(m.requests().len(), 3);
+    assert_eq!(m.requests().len(), 2);
     // session only
     assert!(!cfg_text(&home).contains("run:"));
     settle();
     p.send_line("ai run").unwrap();
-    p.expect("run: auto").unwrap();
+    p.expect("run: judge").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
 
 #[test]
-fn a_persists_run_auto_in_the_config() {
+fn a_persists_run_judge_in_the_config() {
     let home = TempDir::new().unwrap();
     let m = stepped("chat", run_steps(&[PRINT]));
     let mut p = with_run(&home, &m, "# my note\n");
@@ -1706,109 +1702,9 @@ fn a_persists_run_auto_in_the_config() {
     p.expect("E> ").unwrap();
     let c = cfg_text(&home);
     assert!(
-        c.contains("\nrun: auto\n") && c.contains("# my note"),
+        c.contains("\nrun: judge\n") && c.contains("# my note"),
         "{c}"
     );
-    p.send_line("exit").unwrap();
-    p.expect(Eof).unwrap();
-}
-
-#[test]
-fn hard_list_commands_ask_even_in_auto() {
-    let home = TempDir::new().unwrap();
-    let marker = home.path().join("victim");
-    std::fs::create_dir(&marker).unwrap();
-    let cmd = format!("rm -rf {}", marker.display());
-    let m = stepped("chat", run_steps(&[&cmd]));
-    let mut p = with_run(&home, &m, "run: auto\n");
-    p.expect("E> ").unwrap();
-    settle();
-    p.send("? clean up\r").unwrap();
-    p.expect("▶ ").unwrap();
-    p.expect("rm -rf").unwrap();
-    // only the choices that make sense: auto is already on
-    p.expect("Enter run · Esc no").unwrap();
-    settle();
-    assert!(marker.exists());
-    settle();
-    p.send("\x1b").unwrap();
-    p.expect("all-done").unwrap();
-    p.expect("E> ").unwrap();
-    assert!(marker.exists(), "declined: still there");
-    assert!(m.requests()[1].body.contains("declined"));
-    p.send_line("exit").unwrap();
-    p.expect(Eof).unwrap();
-}
-
-#[test]
-fn auto_runs_a_harmless_command_without_asking() {
-    let home = TempDir::new().unwrap();
-    let m = stepped("chat", run_steps(&[PRINT]));
-    let mut p = with_run(&home, &m, "run: auto\n");
-    p.expect("E> ").unwrap();
-    settle();
-    p.send("? do it\r").unwrap();
-    let c = p.expect("out-42\r\n").unwrap();
-    assert!(!String::from_utf8_lossy(c.before()).contains("Enter run"));
-    p.expect("all-done").unwrap();
-    p.send_line("exit").unwrap();
-    p.expect(Eof).unwrap();
-}
-
-#[test]
-fn an_alias_or_function_named_like_a_plain_program_makes_it_ask() {
-    let home = TempDir::new().unwrap();
-    let m = stepped("chat", run_steps(&[PRINT]));
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("{}run: auto\n", config_kind_run(&m.url(), "chat")),
-    )
-    .unwrap();
-    let cmd = base(&home);
-    std::fs::write(
-        home.path().join(".bashrc"),
-        "PS1='E> '\nbasename() { command basename \"$@\"; }\n",
-    )
-    .unwrap();
-    let mut p = spawn(cmd);
-    p.expect("E> ").unwrap();
-    settle();
-    p.send("? do it\r").unwrap();
-    p.expect("Enter run · Esc no").unwrap();
-    settle();
-    p.send("\x1b").unwrap();
-    p.expect("all-done").unwrap();
-    p.send_line("exit").unwrap();
-    p.expect(Eof).unwrap();
-}
-
-#[test]
-fn default_ubuntu_style_aliases_keep_plain_commands_unasked() {
-    let home = TempDir::new().unwrap();
-    let m = stepped("chat", run_steps(&[PRINT]));
-    let dir = home.path().join(".config/aish");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!("{}run: auto\n", config_kind_run(&m.url(), "chat")),
-    )
-    .unwrap();
-    let cmd = base(&home);
-    std::fs::write(
-        home.path().join(".bashrc"),
-        "PS1='E> '\nalias ls='ls --color=auto'\nalias grep='grep --color=auto'\n\
-         alias basename='basename --suffix=.zz'\nalias ll='ls -alF'\n",
-    )
-    .unwrap();
-    let mut p = spawn(cmd);
-    p.expect("E> ").unwrap();
-    settle();
-    p.send("? do it\r").unwrap();
-    let c = p.expect("out-42\r\n").unwrap();
-    assert!(!String::from_utf8_lossy(c.before()).contains("Enter run"));
-    p.expect("all-done").unwrap();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
@@ -1882,10 +1778,13 @@ fn injection_is_refused_when_the_line_is_not_empty() {
 fn ctrl_c_on_the_running_command_is_reported_as_interrupted() {
     let home = TempDir::new().unwrap();
     let m = stepped("chat", run_steps(&["tail -f /dev/null"]));
-    let mut p = with_run(&home, &m, "run: auto\n");
+    let mut p = with_run(&home, &m, "");
     p.expect("E> ").unwrap();
     settle();
     p.send("? wait\r").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    p.send("\r").unwrap();
     p.expect("E> ").unwrap();
     p.expect("tail -f /dev/null").unwrap();
     std::thread::sleep(Duration::from_millis(600));
@@ -1932,9 +1831,9 @@ fn ai_run_save_persists_and_ai_tools_lists() {
     let mut p = with_run(&home, &m, "");
     p.expect("E> ").unwrap();
     settle();
-    p.send_line("ai run auto --save").unwrap();
-    p.expect("run: auto · saved").unwrap();
-    assert!(cfg_text(&home).contains("\nrun: auto\n"));
+    p.send_line("ai run judge --save").unwrap();
+    p.expect("run: judge · saved").unwrap();
+    assert!(cfg_text(&home).contains("\nrun: judge\n"));
     p.expect("E> ").unwrap();
     settle();
     p.send_line("ai tools files off --save").unwrap();
@@ -2346,7 +2245,7 @@ fn typing_words_at_the_prompt_never_decides() {
 }
 
 #[test]
-fn multiline_asks_even_in_auto_and_a_huge_command_is_refused() {
+fn multiline_asks_and_a_huge_command_is_refused() {
     let home = TempDir::new().unwrap();
     let long = format!("echo {}", "x".repeat(1200));
     let m = stepped(
@@ -2357,7 +2256,7 @@ fn multiline_asks_even_in_auto_and_a_huge_command_is_refused() {
             ("fin-all\n", vec![]),
         ],
     );
-    let mut p = with_run(&home, &m, "run: auto\n");
+    let mut p = with_run(&home, &m, "");
     p.expect("E> ").unwrap();
     settle();
     p.send("? do it\r").unwrap();
@@ -2628,13 +2527,9 @@ fn ai_run_judge_is_set_shown_and_saved_into_a_mapping() {
     p.expect("run: judge").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    p.send_line("ai run auto --save").unwrap();
-    p.expect("run: auto · saved").unwrap();
-    assert!(
-        cfg_text(&home).contains("mode: auto"),
-        "{}",
-        cfg_text(&home)
-    );
+    p.send_line("ai run ask --save").unwrap();
+    p.expect("run: ask · saved").unwrap();
+    assert!(cfg_text(&home).contains("mode: ask"), "{}", cfg_text(&home));
     p.expect("E> ").unwrap();
     settle();
     p.send_line("ai run judge").unwrap();

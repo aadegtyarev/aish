@@ -183,34 +183,8 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     runs and the model is told so. If bash never starts the line (a syntax error, an
     unfinished quote you cancel), the model is told it did not run; what you run
     next is never taken for its result. **s** — the model runs commands without asking
-    until aish exits (`ask` only). **a** — the same, and `run: auto` is saved to the config
+    until aish exits and switches to `judge` (see below). **a** — the same, and `run: judge` is saved to the config
     (a targeted edit). **Esc** — declined: the model is told, it continues.
-  - `auto`: no prompt, but only for a **plain structure**: a pipeline or `;`/`&&` list
-    of simple commands made of literal words (quotes allowed; no `$`, backticks, braces,
-    globs, `!`, `\`, subshells, here-docs, assignments, newlines or `&`; a `~` only
-    at the start of a word; the only redirects are `2>&1` and `/dev/null`), **and**
-    every program is on an allowlist with arguments that cannot run code or write:
-    - any arguments: `ls pwd whoami id groups uname uptime free df du wc head tail cat
-      tac nl stat realpath readlink basename dirname nproc lscpu lsblk lsusb lspci
-      pgrep which whereis type cut tr column rev cmp diff comm md5sum sha1sum
-      sha256sum`;
-    - exact flags only (an abbreviation like `--rec` is not a match): `grep egrep
-      fgrep` (not recursive), `ps` (no `e`), `sort` (no `-o`), `uniq` (one file),
-      `find` (no `-exec -ok -delete -fprint*`), `git` (`-C dir`, `--no-pager`; status,
-      log, diff, show, blame, ls-files, rev-parse, describe, shortlog with read flags;
-      `branch`/`tag` only as lists; `remote [-v]`), `systemctl` (status, is-*,
-      list-units, list-unit-files, list-timers).
-
-    Everything else asks: `echo`/`printf`, `env`, `curl`/`wget`, pagers, `rm`, `cd`,
-    interpreters, wrappers, builtins, `make`, ... An argument that is a secret path
-    (`~/.ssh`, `.env`, `~/.config/aish`, ...; relative ones are resolved against the
-    cwd) or names `environ` asks too, and so does a function named like an allowed
-    program. An alias is judged by its value (reported at each prompt): `alias
-    ls='ls --color=auto'` stays plain; one that is another program, several commands
-    or ends in a blank asks. The **hard list** (sudo/su,
-    `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown/reboot, `curl | sh`, `chmod/chown
-    -R`, `git push --force`, ...) is looked for at every word of a command, so
-    `setarch x86_64 rm -rf x` is on it too. Multi-line commands always ask.
   - The prompt shows the whole command as it will be typed (newlines as `⏎`, edge or
     repeated blanks as `·`/`·×N`). In every mode, before anything is shown or
     judged, a command of more than 12 rows or 1000 characters is refused ("command
@@ -218,14 +192,16 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     (Enter, `s`, `a`, Esc), not in the first 300 ms and not within 700 ms of other
     typing (also typing before the prompt appeared); anything else shows `press
     Enter, s, a or Esc`.
-  - `judge`: a plain command runs as in `auto`. Anything else goes to a one-shot
-    **judge** model (`run.judge`, default the chat model; no tools, no history, 8 s; it
-    sees only the command, the cwd and your last question, masked for a non-local
-    provider). It answers `ALLOW`/`ASK`/`DENY` + a reason: `│ ⚖ allowed · reason` runs
-    the command, `│ ⚖ denied · reason` refuses it (the model is told why), `ASK` or no
-    clean answer shows the prompt with `⚖ reason` above the keys. A command on the
-    hard list never runs on ALLOW: it asks. The prompt has only Enter and Esc: `s` and
-    `a` (which switch to `auto`) are not offered, judge is never replaced by auto. The
+  - `judge`: a one-shot **judge** model (`run.judge`, default the chat model; no tools,
+    no history, 8 s; it sees only the command, the cwd and your last question, masked
+    for a non-local provider) decides instead of you. It answers `ALLOW`/`ASK`/`DENY` +
+    a reason: `│ ⚖ allowed · reason` runs the command, `│ ⚖ denied · reason` refuses it
+    (the model is told why), `ASK` or no clean answer shows the prompt with `⚖ reason`
+    above the keys. A command on the **hard list** never runs on ALLOW: it asks (sudo/su,
+    `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown/reboot, `curl | sh`, `chmod/chown -R`,
+    `git push --force`, `git -c`, `reset --hard`, `clean -f`, interpreters, shell-state
+    builtins, and any of these behind a wrapper such as `setarch`, `env -S`, `script
+    -c`: every word of a command is looked at). The prompt has only Enter and Esc. The
     prompt can be extended or replaced with `run.judge_prompt`. While it thinks: `⠹
     judging`.
   - `off`: the old way — the command is put into the input line (the same checks
@@ -233,7 +209,7 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     the model learns what was actually run), and when the block ends the model
     continues in a new `│` section. Ctrl-C on the line, or a different command
     instead of the proposed one, stops the agent silently.
-  - `ai run` shows the mode, `ai run ask|judge|auto|off` sets it for the session, add
+  - `ai run` shows the mode, `ai run ask|judge|off` sets it for the session, add
     `--save` to write `run:` to the config. Read-only commands run by themselves
     in every mode. The Ctrl-Q overlay never has `run` (the foreground may be another host).
 - Tools (`ai tools` switches `run`, `files`, `web`; an off tool is not sent to the
@@ -395,7 +371,7 @@ $ ai help          ← commands: `command — what it does`, long ones wrap (fit
 $ ai models        ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
 $ ai model chat ds ← switch a role's model AND save it to the config (`ai model ds` = chat; `ai chat ds` is the same)
 $ ai profile       ← profiles (the active one is marked `*`); `ai profile inet` switches and saves
-$ ai run [ask|judge|auto|off]    ← may the model run commands (`--save` keeps it in the config)
+$ ai run [ask|judge|off]    ← may the model run commands (`--save` keeps it in the config)
 $ ai tools [name on|off]   ← the agent's tools run/files/web (`--save` keeps it)
 $ ai off / ai on          ← turn model suggestions off/on
 $ ai config                ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)

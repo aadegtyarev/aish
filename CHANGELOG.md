@@ -10,20 +10,16 @@ version and date, and the release notes on GitHub are taken from it.
 ## [Unreleased]
 
 ### Fixed
-- `run: auto` and `judge` run unasked only an allowlist of read-only programs with
-  exact flags (`ls`, `cat`, `grep` without `-r`, `sort` without `-o`, `git log`, ...);
-  everything else asks. `echo`/`printf`, `curl`, `env`, pagers, secret paths,
-  `~`/`$HOME` tricks and functions named like an allowed program ask too; an alias
-  is judged by its value, so the default `alias ls='ls --color=auto'` stays plain.
-- The hard list now also sees a command behind any wrapper (`setarch x86_64 rm -rf`),
-  so a judge ALLOW is turned into a question.
+- The hard list (which turns a judge ALLOW into a question) now also sees a command
+  behind any wrapper (`setarch x86_64 rm -rf`, `env -S`, `script -c`), `git -c`,
+  interpreters and shell-state builtins.
+- Read-only commands that run unasked can no longer reach outside the work tree with
+  `git diff ~ /dir` (implicit `--no-index`) or recurse into `/proc`.
 - Commands too long to be shown whole (12 rows, 1000 characters) are refused in every
-  mode, also `judge`, before anything is judged or asked.
+  mode, before anything is judged or asked.
 - If bash never starts the command aish typed (syntax error, cancelled quote), the
   model is told it did not run; the next command you run is no longer taken for its
-  result.
-- In `judge` mode the prompt offers only Enter and Esc: `s`/`a` no longer replace the
-  judge by `auto`.
+  result, and a command that comes back changed is no longer taken for it either.
 - Keys typed before an approval prompt appeared count towards the 700 ms quiet window,
   so finishing a line with Enter cannot approve a command.
 - `AISH_JUDGE_TIMEOUT_MS` works in debug builds only.
@@ -33,13 +29,15 @@ version and date, and the release notes on GitHub are taken from it.
   never wrap.
 
 ### Added
-- `run: judge`: a model decides instead of you. Plain commands run unasked; the rest
-  goes to a one-shot judge (no tools, no history; sees the command, cwd and your last
+- `run: judge`: a model decides instead of you. Whatever is not read-only goes to a
+  one-shot judge (no tools, no history; sees the command, cwd and your last
   question) that answers ALLOW / ASK / DENY with a short reason: `⚖ allowed · …` runs
   it, `⚖ denied · …` refuses it (the agent is told why), ASK, garbage, an error or an
   8 s timeout shows the prompt with the reason. The hard list never runs on ALLOW.
   `run:` also takes `{mode, judge, judge_prompt: {append|replace}}`; `ai run judge
-  [--save]`; the wait shows `judging`; local llama.cpp gets a GBNF grammar.
+  [--save]`; the wait shows `judging`; local llama.cpp gets a GBNF grammar. In `ask`,
+  `s` switches the session to `judge` and `a` saves `run: judge`; an unknown `run:`
+  value means `ask`.
 - `prefix:` in the config picks the character that starts a question: `?` (default),
   `,`, `@`, `#` or `;`. Detection, highlighting, the right-edge marker and all hints
   follow it; anything else is a config error that names the allowed set.

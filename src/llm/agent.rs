@@ -214,6 +214,9 @@ pub struct Pending {
     inject: bool,
     /// aish typed the command itself: the result carries the duration.
     ran_by_aish: bool,
+    /// A prompt came back without the typed line starting; a block that
+    /// follows (an Enter that raced the injection) cancels it.
+    not_run: bool,
 }
 
 enum ToolOut {
@@ -221,14 +224,12 @@ enum ToolOut {
     Done { result: String, shown: String },
     /// Put into the input line; the turn pauses.
     Handoff { line: String, bg: Option<Bg> },
-    /// The model wants to run it in the user's bash (`run: ask|auto`).
+    /// The model wants to run it in the user's bash (`run: ask|judge`).
     Run {
         line: String,
         bg: Option<Bg>,
         /// What the user is shown and the hard list judged.
         cmd: String,
-        /// Passes the strict structural check.
-        plain: bool,
         /// On the hard list.
         listed: bool,
     },
@@ -635,14 +636,7 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                     "command too long to review".into(),
                 );
             }
-            let shadowed = env
-                .tracker
-                .lock()
-                .map(|t| t.shadowed().to_vec())
-                .unwrap_or_default();
-            let plain = super::hard::plain(&cmd, &shadowed, &cwd);
-            // (a plain command cannot be on the list)
-            let listed = !plain && super::hard::on_hard_list(&cmd);
+            let listed = super::hard::on_hard_list(&cmd);
             let (line, bgj) = if bg {
                 let Some(dir) = jobs_dir() else {
                     return done("error: no state directory".into(), "run: no HOME".into());
@@ -677,7 +671,6 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 } else {
                     cmd
                 },
-                plain,
                 listed,
             }
         }
@@ -982,13 +975,11 @@ pub fn drive(
                     line,
                     bg,
                     cmd,
-                    plain,
                     listed,
                 } => match approve(
                     llm,
                     task,
                     &cmd,
-                    plain,
                     listed,
                     &turn.q,
                     &cwd_of(tracker),
@@ -1025,6 +1016,7 @@ pub fn drive(
                     at: Instant::now(),
                     inject,
                     ran_by_aish: inject,
+                    not_run: false,
                 });
             }
             // an approved command is typed into bash by the controller at the
@@ -1050,31 +1042,15 @@ fn judge_note(task: &Task, verdict: &str, reason: &str) {
     note_only(task, &t);
 }
 
-/// Decide about a command the model wants to run. `auto`: only what is not
-/// plain or is on the hard list asks. `judge`: the same, but a model reviews
-/// it first (ALLOW runs it, DENY refuses it, the rest asks the user with the
-/// reason in view). `ask`: the user decides everything.
-fn approve(
-    llm: &Llm,
-    task: &Task,
-    cmd: &str,
-    plain: bool,
-    listed: bool,
-    question: &str,
-    cwd: &str,
-) -> Approval {
+/// Decide about a command the model wants to run. `ask`: the user decides.
+/// `judge`: a model reviews it first (ALLOW runs it unless it is on the hard
+/// list, DENY refuses it, the rest asks the user with the reason in view).
+fn approve(llm: &Llm, task: &Task, cmd: &str, listed: bool, question: &str, cwd: &str) -> Approval {
     let mode = llm.run_mode();
-    let hard = listed || !plain;
-    // `s`/`a` grant auto mode; they never replace the judge
+    // `s`/`a` switch to judge; in judge mode there is nothing to grant
     let grant = mode == RunMode::Ask;
     let mut reason: Option<String> = None;
-    if mode == RunMode::Auto && !hard {
-        return Approval::Go;
-    }
     if mode == RunMode::Judge {
-        if !hard {
-            return Approval::Go;
-        }
         let w = crate::editor::wait::Waiter::start_judging(task);
         let v = super::judge::judge(llm, task, cmd, cwd, question);
         drop(w);
@@ -1137,8 +1113,8 @@ fn approve(
                 return Approval::Declined;
             }
             Key::Press(k @ (b's' | b'a')) if grant => {
-                llm.set_run_mode(RunMode::Auto);
-                let kept = k == b'a' && super::cmd::save_run(llm, RunMode::Auto);
+                llm.set_run_mode(RunMode::Judge);
+                let kept = k == b'a' && super::cmd::save_run(llm, RunMode::Judge);
                 end(if k == b'a' && !kept {
                     Some("session only: config unchanged")
                 } else {
@@ -1266,15 +1242,20 @@ pub fn on_block(llm: &Llm, block: &Block) {
         return;
     }
     let ran = block.command.trim();
-    // (no history entry reported: bash saw the same line as before)
-    let same = ran == p.proposed.trim() || (p.ran_by_aish && ran.is_empty());
-    if !same && !small_edit(&p.proposed, ran) {
+    // a line aish typed must come back as typed (bash may join lines with `;`,
+    // and reports no history entry for a repeat); only the user edits a line
+    let same = if p.ran_by_aish {
+        ran.is_empty() || squash(ran) == squash(&p.proposed)
+    } else {
+        ran == p.proposed.trim()
+    };
+    if !same && (p.ran_by_aish || !small_edit(&p.proposed, ran)) {
         *g = None; // the user did something else: the agent stops silently
         return;
     }
     let code = block.exit_code.map_or("?".into(), |c| c.to_string());
     let mut res = String::new();
-    if !same && !p.ran_by_aish {
+    if !same {
         res.push_str(&format!(
             "The user edited the command before running it. What they actually ran: {ran}\n"
         ));
@@ -1318,18 +1299,23 @@ pub fn on_block(llm: &Llm, block: &Block) {
 /// error, an unfinished quote that was cancelled): the model is told, and
 /// whatever the user runs next is not taken for the result.
 pub fn not_run(llm: &Llm) {
-    let Ok(mut g) = llm.pending.lock() else {
-        return;
-    };
-    if let Some(p) = g
-        .as_mut()
-        .filter(|p| p.ran_by_aish && !p.inject && p.result.is_none())
-    {
-        p.result = Some(
-            "error: the command did not run: bash did not start it (a syntax error or incomplete input). Nothing was executed."
-                .into(),
-        );
+    if let Ok(mut g) = llm.pending.lock() {
+        if let Some(p) = g
+            .as_mut()
+            .filter(|p| p.ran_by_aish && !p.inject && p.result.is_none())
+        {
+            p.not_run = true;
+        }
     }
+}
+
+const NOT_RUN: &str = "error: the command did not run: bash did not start it (a syntax error or incomplete input). Nothing was executed.";
+
+/// `s` without blanks and `;`: the same command however bash joined its lines.
+fn squash(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != ';')
+        .collect()
 }
 
 /// The proposed line was cleared or replaced: the turn ends.
@@ -1348,7 +1334,7 @@ pub fn waiting(llm: &Llm) -> bool {
 pub fn resumable(llm: &Llm) -> bool {
     llm.pending
         .lock()
-        .is_ok_and(|p| p.as_ref().is_some_and(|p| p.result.is_some()))
+        .is_ok_and(|p| p.as_ref().is_some_and(|p| p.result.is_some() || p.not_run))
 }
 
 /// Continue a paused turn (runs on the worker thread).
@@ -1358,7 +1344,7 @@ pub fn resume(llm: &Llm, tracker: &Arc<Mutex<BlockTracker>>, task: &Task) -> Opt
     let mut turn = p.turn;
     turn.msgs.push(Message::tool_result(
         p.call_id,
-        p.result.unwrap_or_default(),
+        p.result.unwrap_or_else(|| NOT_RUN.into()),
     ));
     drive(llm, tracker, &t, turn, task)
 }
@@ -1387,6 +1373,67 @@ mod tests {
         assert!(!small_edit("rm -rf build", "rm -rf /"));
         assert!(!small_edit("ls", "ls /root/secret-things-and-more"));
         assert!(!small_edit("git status", "echo hi"));
+    }
+
+    fn pending_llm(proposed: &str) -> std::sync::Arc<Llm> {
+        let llm = Llm::new();
+        *llm.pending.lock().unwrap() = Some(Pending {
+            turn: start_turn(Vec::new(), "q".into(), "q".into()),
+            call_id: "c1".into(),
+            proposed: proposed.into(),
+            bg: None,
+            result: None,
+            at: Instant::now(),
+            inject: false,
+            ran_by_aish: true,
+            not_run: false,
+        });
+        llm
+    }
+
+    fn block(cmd: &str) -> Block {
+        Block {
+            command: cmd.into(),
+            output: "out".into(),
+            exit_code: Some(0),
+            cwd: String::new(),
+            started_at: std::time::SystemTime::now(),
+            duration: std::time::Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_line_that_never_started_resumes_the_turn_with_an_error() {
+        let llm = pending_llm("echo 'a");
+        assert!(!resumable(&llm));
+        not_run(&llm);
+        assert!(resumable(&llm));
+    }
+
+    #[test]
+    fn an_empty_enter_racing_the_injection_does_not_hide_the_result() {
+        let llm = pending_llm("echo hi");
+        not_run(&llm);
+        on_block(&llm, &block("echo hi"));
+        let g = llm.pending.lock().unwrap();
+        assert!(g.as_ref().unwrap().result.as_ref().unwrap().contains("out"));
+    }
+
+    #[test]
+    fn a_near_match_is_not_the_typed_command() {
+        let llm = pending_llm("cargo build --release");
+        on_block(&llm, &block("cargo build --releas"));
+        assert!(llm.pending.lock().unwrap().is_none());
+        let llm = pending_llm("echo a\necho b");
+        on_block(&llm, &block("echo a; echo b"));
+        assert!(llm
+            .pending
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .result
+            .is_some());
     }
 
     #[test]

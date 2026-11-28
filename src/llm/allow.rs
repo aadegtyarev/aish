@@ -256,8 +256,9 @@ fn root_too_wide(root: &Path) -> bool {
             dangerous.push(Path::new(&h).join(d));
         }
     }
-    // the root itself, or any ancestor of a dangerous directory
-    dangerous.iter().any(|d| d.starts_with(root))
+    // the root itself, or any ancestor of a dangerous directory; anything in /proc
+    root.starts_with("/proc")
+        || dangerous.iter().any(|d| d.starts_with(root))
         || std::fs::canonicalize(root)
             .map(|r| dangerous.iter().any(|d| d.starts_with(&r)))
             .unwrap_or(false)
@@ -421,7 +422,7 @@ const GIT_LOG_VAL: &[&str] = &[
     "remotes",
 ];
 
-fn git_plan(args: &[String]) -> Option<Vec<String>> {
+fn git_plan(args: &[String], cwd: &str) -> Option<Vec<String>> {
     let mut a = args.iter().peekable();
     while a.peek().is_some_and(|x| *x == "--no-pager") {
         a.next();
@@ -582,12 +583,26 @@ fn git_plan(args: &[String]) -> Option<Vec<String>> {
         "remote" => rest.is_empty() || rest == ["-v"] || rest == ["--verbose"],
         _ => false,
     };
-    if !ok {
+    if !ok || !in_work_tree(&rest, cwd) {
         return None;
     }
     // positional args (paths, revs) go after the injected flags
     out.extend(rest);
     Some(out)
+}
+
+/// Paths outside the work tree make `git diff` compare plain files
+/// (`--no-index`): every existing path word must resolve inside it.
+fn in_work_tree(words: &[String], cwd: &str) -> bool {
+    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+    let tree = cwd.ancestors().find(|d| d.join(".git").exists());
+    words
+        .iter()
+        .filter(|w| !w.starts_with('-'))
+        .all(|w| match std::fs::canonicalize(cwd.join(w)) {
+            Ok(real) => tree.is_some_and(|t| real.starts_with(t)),
+            Err(_) => true,
+        })
 }
 
 pub(super) fn ps_ok(args: &[String]) -> bool {
@@ -733,7 +748,7 @@ fn safe_dirs_in(path: &std::ffi::OsStr, cwd_real: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn stage_plan(w: &[String]) -> Option<Stage> {
+fn stage_plan(w: &[String], cwd: &str) -> Option<Stage> {
     let name = w.first()?.as_str();
     let args = &w[1..];
     let simple = |spec: &Spec| -> Option<Parsed> { parse(spec, args) };
@@ -1024,7 +1039,7 @@ fn stage_plan(w: &[String]) -> Option<Stage> {
         }
         "find" => find_stage(w),
         "git" => Some(Stage {
-            argv: git_plan(args)?,
+            argv: git_plan(args, cwd)?,
             roots: None,
         }),
         "cargo" => {
@@ -1285,7 +1300,7 @@ pub fn plan(cmd: &str, extra: &[String], cwd: &str) -> Option<Plan> {
             out.push(words);
             continue;
         }
-        let st = stage_plan(&words)?;
+        let st = stage_plan(&words, cwd)?;
         if let Some(roots) = st.roots {
             let roots = if roots.is_empty() {
                 vec![".".to_owned()]
@@ -1780,5 +1795,57 @@ mod tests {
         }
         assert!(ok("git show HEAD:src/main.rs"));
         assert!(ok("grep --file=pats.txt x"));
+    }
+
+    /// Bypasses found in review (two probe sets): nothing here may run unasked.
+    #[test]
+    fn reviewed_probes_are_not_read_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let w = dir.path();
+        std::fs::create_dir_all(w.join("repo/.git")).unwrap();
+        std::fs::create_dir_all(w.join("empty")).unwrap();
+        std::fs::write(w.join("repo/a"), "x").unwrap();
+        let cwd = w.join("repo").to_string_lossy().into_owned();
+        let empty = w.join("empty").to_string_lossy().into_owned();
+        let link = |to: &str, name: &str| {
+            std::os::unix::fs::symlink(to, w.join("repo").join(name)).unwrap();
+        };
+        link("/proc/self/environ", "notes.txt");
+        link(&empty, "outside");
+        let ssh = w.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::write(ssh.join("key"), "k").unwrap();
+        link(&ssh.join("key").to_string_lossy(), "readme.txt");
+        let bad = [
+            "git diff ~ EMPTY".to_owned(),
+            "git diff --stat ~ EMPTY".to_owned(),
+            "git diff outside a".to_owned(),
+            "git diff EMPTY".to_owned(),
+            "cat notes.txt".to_owned(),
+            "cat readme.txt".to_owned(),
+            "head -c 9 /proc/self/environ".to_owned(),
+            "grep -e -- -r -e '' ~".to_owned(),
+            "grep -ve -- -r ~".to_owned(),
+            "grep -e -- -r '' /proc/1".to_owned(),
+            "diff -rN ~ EMPTY".to_owned(),
+            "setarch x86_64 rm -rf x".to_owned(),
+            "prlimit rm -rf x".to_owned(),
+            "env rm x".to_owned(),
+            "git -c core.pager=x log".to_owned(),
+            "git log --output=x".to_owned(),
+            "find . -fprint x".to_owned(),
+        ];
+        for c in bad {
+            let c = c.replace("EMPTY", &empty);
+            assert!(plan(&c, &[], &cwd).is_none(), "accepted: {c}");
+        }
+        for c in [
+            "git diff a",
+            "git log --oneline -5",
+            "git status --short",
+            "cat a",
+        ] {
+            assert!(plan(c, &[], &cwd).is_some(), "refused: {c}");
+        }
     }
 }

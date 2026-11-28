@@ -329,15 +329,15 @@ mod tests {
             ("judge".into(), "· now ask".into())
         );
         assert_eq!(c(&s, "ai run j").unwrap().0, "udge");
-        assert_eq!(c(&s, "ai run a").unwrap().0, "uto");
+        assert_eq!(c(&s, "ai run o").unwrap().0, "ff");
         assert_eq!(c(&s, "ai run as"), None);
         let off = State {
             run: RunMode::Off,
             ..st(true)
         };
         assert_eq!(c(&off, "ai run ").unwrap().0, "ask");
-        assert_eq!(c(&s, "ai run auto ").unwrap().0, "--save");
-        assert_eq!(c(&s, "ai run auto --sa").unwrap().0, "ve");
+        assert_eq!(c(&s, "ai run judge ").unwrap().0, "--save");
+        assert_eq!(c(&s, "ai run judge --sa").unwrap().0, "ve");
         assert_eq!(c(&s, "ai run x --sa"), None);
         assert_eq!(
             c(&s, "ai tools ").unwrap(),

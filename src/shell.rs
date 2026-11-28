@@ -16,10 +16,7 @@ pub fn state_dir() -> Option<PathBuf> {
 
 /// Write the rc file (atomically, only if changed) and return its path.
 pub fn install_rc() -> Result<PathBuf> {
-    install_file(
-        "rc.bash",
-        &RC.replace("@PLAIN_NAMES@", &crate::llm::hard::plain_names()),
-    )
+    install_file("rc.bash", RC)
 }
 
 /// Write `content` to `<state dir>/<name>` (atomically, only if changed).

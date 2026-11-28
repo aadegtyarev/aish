@@ -62,27 +62,22 @@ roles:
 #   - docker ps
 
 # May the model run commands that are not read-only (via the `run` tool)?
-#   ask  — (default) a dim prompt under the answer: Enter runs it once, s allows the
-#          session, a also writes `run: auto` here, Esc declines. The command is typed
-#          into your bash as if you did (visible, sudo can prompt, cd persists); the
-#          model gets the exit code, the output tail and the duration.
-#   auto — no asking; sudo/su, rm -r/-f, dd, mkfs, fdisk/parted, shutdown/reboot,
-#          redirection or tee into files, `curl | sh`, chmod/chown -R, git push --force,
-#          git reset --hard and git clean -f still ask.
-#   off  — never: the command is put into your input line for Enter.
+#   ask   — (default) a dim prompt under the answer: Enter runs it once, s switches to
+#           judge for the session, a also writes `run: judge` here, Esc declines. The
+#           command is typed into your bash as if you did (visible, sudo can prompt, cd
+#           persists); the model gets the exit code, the output tail and the duration.
+#   judge — a model decides instead of you: ALLOW runs it (`⚖ allowed · reason`), DENY
+#           refuses it (the model is told why), ASK or no clear answer within 8 s shows
+#           the prompt with the reason. Hard-list commands (sudo, rm -r/-f, dd, mkfs,
+#           shutdown, `curl | sh`, git push --force, interpreters ...) never run on ALLOW.
+#           Over 12 rows or 1000 characters is refused in every mode.
+#   off   — never: the command is put into your input line for Enter.
 # Read-only commands keep running by themselves in every mode.
-# In a session: `ai run ask|auto|off` (add --save to write it here).
+# In a session: `ai run ask|judge|off` (add --save to write it here).
 # run: ask
-#
-#   judge — a model decides instead of you. A plain command (see UX.md) runs unasked;
-#           everything else (multi-line too; over 12 rows or 1000 characters is refused)
-#           goes to the judge: ALLOW runs it (`⚖ allowed · reason`), DENY refuses it (the model is
-#           told why), ASK or no clear answer within 8 s shows the usual prompt with the
-#           reason. Hard-list commands never run on ALLOW. The judge sees only the
-#           command, the cwd and your last question, never outputs or history.
 # The long form (the scalar `run: judge` keeps working):
 # run:
-#   mode: judge                 # ask | judge | auto | off
+#   mode: judge                 # ask | judge | off
 #   judge: local/qwen           # model (or list, tried in order); default: the chat role
 #   judge_prompt: {append: "Treat anything under ~/work as low risk."}
 #   # judge_prompt: {replace: "~/judge-prompt.txt"}   # a text or a file

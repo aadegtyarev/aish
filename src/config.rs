@@ -219,7 +219,7 @@ pub struct Config {
     /// Conversation compaction (`compact:`).
     #[serde(default)]
     pub compact: Option<CompactCfg>,
-    /// `run: ask|auto|off` — what the model's `run` tool does with commands
+    /// `run: ask|judge|off` — what the model's `run` tool does with commands
     /// that are not read-only (default `ask`).
     #[serde(default)]
     pub run: RunCfg,
@@ -234,8 +234,6 @@ pub enum RunMode {
     /// Ask before each command (default).
     #[default]
     Ask,
-    /// Run without asking (the hard list still asks).
-    Auto,
     /// A model decides (`run.judge`); what it does not allow asks the user.
     Judge,
     /// Never run: prefill the command into the input line.
@@ -243,12 +241,11 @@ pub enum RunMode {
 }
 
 impl RunMode {
-    pub const ALL: [RunMode; 4] = [RunMode::Ask, RunMode::Judge, RunMode::Auto, RunMode::Off];
+    pub const ALL: [RunMode; 3] = [RunMode::Ask, RunMode::Judge, RunMode::Off];
 
     pub fn name(self) -> &'static str {
         match self {
             RunMode::Ask => "ask",
-            RunMode::Auto => "auto",
             RunMode::Judge => "judge",
             RunMode::Off => "off",
         }
@@ -267,7 +264,7 @@ pub enum JudgePrompt {
     Replace(String),
 }
 
-/// `run:` in the config: a scalar mode (`run: auto`), or a mapping
+/// `run:` in the config: a scalar mode (`run: judge`), or a mapping
 /// `{mode, judge, judge_prompt}`.
 #[derive(Debug, Clone, Default)]
 pub struct RunCfg {
@@ -437,11 +434,6 @@ impl Config {
         for (i, p) in self.providers.iter().enumerate() {
             if self.providers[..i].iter().any(|q| q.id == p.id) {
                 bail!("duplicate provider id '{}'", p.id);
-            }
-        }
-        if let Setting::Value(v) = &self.run.mode {
-            if RunMode::parse(v).is_none() {
-                bail!("run: must be ask, judge, auto or off");
             }
         }
         for r in &self.run.judge {
@@ -805,11 +797,16 @@ roles:
             Config::parse("run: {mode: off}").unwrap().run_mode(),
             RunMode::Off
         );
-        let c = Config::parse("run: auto\ntools: {web: off, run: on}").unwrap();
-        assert_eq!(c.run_mode(), RunMode::Auto);
+        let c = Config::parse("run: judge\ntools: {web: off, run: on}").unwrap();
+        assert_eq!(c.run_mode(), RunMode::Judge);
         assert!(c.tools.on("run") && !c.tools.on("web"));
         assert_eq!(Config::parse("run: off").unwrap().run_mode(), RunMode::Off);
-        assert!(Config::parse("run: sometimes").is_err());
+        // unknown (also the unreleased `auto`): ask
+        assert_eq!(
+            Config::parse("run: sometimes").unwrap().run_mode(),
+            RunMode::Ask
+        );
+        assert_eq!(Config::parse("run: auto").unwrap().run_mode(), RunMode::Ask);
         assert!(Config::parse("tools: {web: maybe}").is_err());
         assert!(!Config::parse("tools: {skills: off}")
             .unwrap()

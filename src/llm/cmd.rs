@@ -96,7 +96,7 @@ pub enum Cmd {
     Suggest(bool),
     Config,
     Init,
-    /// `run [ask|auto|off] [--save]`
+    /// `run [ask|judge|off] [--save]`
     Run(Option<String>, bool),
     /// `tools [name on|off] [--save]`
     Tools(Option<(String, Option<String>)>, bool),
@@ -184,7 +184,7 @@ const HELP: &[(&str, &str)] = &[
     ("chat|complete <model>", "same for a role"),
     ("profile [name]", "profiles, switch"),
     (
-        "run [ask|judge|auto|off]",
+        "run [ask|judge|off]",
         "may the model run commands; --save keeps it",
     ),
     ("tools [name on|off]", "switch tools; --save keeps it"),
@@ -365,7 +365,7 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
                     .unwrap_or_else(|| "no model".into());
                 v.push(Ln::dim(format!("judge: {by}")));
             }
-            v.push(Ln::dim("ask|judge|auto|off · --save keeps"));
+            v.push(Ln::dim("ask|judge|off · --save keeps"));
         }
         return v;
     };
@@ -373,7 +373,7 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
         let names: Vec<&str> = RunMode::ALL.iter().map(|m| m.name()).collect();
         return vec![Ln::dim(format!(
             "no mode: {a} {}",
-            did_you_mean(a, &names, "ask | judge | auto | off")
+            did_you_mean(a, &names, "ask | judge | off")
         ))];
     };
     llm.set_run_mode(mode);

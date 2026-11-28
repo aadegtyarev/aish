@@ -25,9 +25,6 @@ pub struct Block {
     pub duration: Duration,
 }
 
-/// A program the shell redefines: its alias value, `None` for a function.
-pub type Shadow = (String, Option<String>);
-
 /// A live background job as reported by the shell (`jobs -l`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobRow {
@@ -158,8 +155,6 @@ struct Collector {
     /// When set, OSC 133 marks must carry `aish=<nonce>` (foreign shells' marks are ignored).
     nonce: Option<String>,
     path: Option<String>,
-    /// Programs the shell redefines as aliases or functions (`sh=` report).
-    shadowed: Vec<Shadow>,
     path_version: u64,
     jobs: Vec<JobRow>,
     jobs_changed: bool,
@@ -300,30 +295,6 @@ impl Perform for Collector {
                     self.jobs_changed = true;
                     return;
                 }
-                if let Some(p) = payload.strip_prefix(b"sh=") {
-                    // `names;aish=<nonce>`
-                    let p = String::from_utf8_lossy(p);
-                    let (names, tag) = p.rsplit_once(';').unwrap_or((&p, ""));
-                    if self
-                        .nonce
-                        .as_ref()
-                        .is_none_or(|n| tag == format!("aish={n}"))
-                    {
-                        self.shadowed = percent_decode(names)
-                            .lines()
-                            .filter_map(|l| {
-                                let mut f = l.splitn(3, '\t');
-                                let kind = f.next()?;
-                                let name = f.next()?.to_owned();
-                                Some((
-                                    name,
-                                    (kind == "a").then(|| f.next().unwrap_or("").to_owned()),
-                                ))
-                            })
-                            .collect();
-                    }
-                    return;
-                }
                 if let Some(p) = payload.strip_prefix(b"path=") {
                     self.path = Some(percent_decode(&String::from_utf8_lossy(p)));
                     self.path_version += 1;
@@ -402,11 +373,6 @@ impl BlockTracker {
             self.state.jobs.clone(),
             std::mem::take(&mut self.state.job_ends),
         ))
-    }
-
-    /// Programs the user's shell redefines as aliases or functions.
-    pub fn shadowed(&self) -> &[Shadow] {
-        &self.state.shadowed
     }
 
     /// PATH of the shell (reported by the integration whenever it changes)
@@ -525,21 +491,6 @@ mod tests {
             t.feed(b"\x1b]133;C\x07a\x1b]133;D;0\x07");
         }
         assert_eq!(t.blocks().len(), MAX_BLOCKS);
-    }
-
-    #[test]
-    fn shadowed_programs_are_reported_with_the_nonce() {
-        let mut t = BlockTracker::with_nonce("n1".into());
-        t.feed(b"\x1b]1337;aish;sh=a%09ls%09ls%20--color=auto%0Af%09grep%0A;aish=n1\x07");
-        let want = [
-            ("ls".to_owned(), Some("ls --color=auto".to_owned())),
-            ("grep".to_owned(), None),
-        ];
-        assert_eq!(t.shadowed(), want);
-        t.feed(b"\x1b]1337;aish;sh=;aish=other\x07");
-        assert_eq!(t.shadowed(), want);
-        t.feed(b"\x1b]1337;aish;sh=;aish=n1\x07");
-        assert!(t.shadowed().is_empty());
     }
 
     #[test]
