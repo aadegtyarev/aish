@@ -10,7 +10,10 @@ fn unwrap_link(href: &str) -> Option<String> {
         None => href.to_owned(),
     };
     if href.contains("uddg=") {
-        let u = url::Url::parse(&abs).ok()?;
+        let u = url::Url::parse("https://duckduckgo.com/")
+            .ok()?
+            .join(href)
+            .ok()?;
         let (_, v) = u.query_pairs().find(|(k, _)| k == "uddg")?;
         return v.starts_with("http").then(|| v.into_owned());
     }

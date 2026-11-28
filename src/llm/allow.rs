@@ -31,7 +31,8 @@ fn expand_tilde(p: &str) -> String {
 }
 
 /// Directories (under `~`) whose content must never go to a model by our own
-/// hand: matched as path components, walked by no search, excluded by name.
+/// hand: matched as path components, walked by no search; the dot ones are
+/// also excluded by name.
 const SECRET_DIRS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -362,7 +363,8 @@ fn with_excludes(argv: &[String], rg: bool) -> Vec<String> {
             format!("--exclude={n}")
         });
     }
-    for d in SECRET_DIRS.iter().filter_map(|d| d.rsplit('/').next()) {
+    // dot dirs only: a bare name like `aish` would also hide ~/dev/aish
+    for d in SECRET_DIRS.iter().filter(|d| !d.contains('/')) {
         extra.push(if rg {
             format!("--glob=!{d}")
         } else {
@@ -905,7 +907,6 @@ pub fn plan(cmd: &str, extra: &[String], cwd: &str) -> Option<Plan> {
             Tok::Out {
                 dup: true,
                 fd: Some(fd),
-                clean: true,
             } if fd == "2" && matches!(toks.next(), Some(Tok::Word(w)) if w.text == "1") => {}
             _ => return None,
         }

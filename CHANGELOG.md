@@ -19,6 +19,13 @@ version and date, and the release notes on GitHub are taken from it.
 - Smaller binary: 5.59 MB -> 4.78 MB (glibc release build) after dropping the
   regex, `time`, crossterm and `serde_yaml` dependencies (YAML now via the
   maintained `serde_norway` fork).
+- Commands the model runs without asking are stricter: a `#` comment, `\r` or a
+  line continuation now needs your approval, and anything under `~/.docker` is
+  treated as secret.
+- Files aish creates (its rc files, a new `~/.bashrc`, the first config) are
+  private (0600).
+- `RUST_LOG` takes `target=level` lists (`aish=debug`); other syntax falls back
+  to `info`.
 
 ### Fixed
 - `aish init` wrote `config.yaml` readable by everyone; it is now private

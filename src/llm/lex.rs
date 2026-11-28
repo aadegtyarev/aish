@@ -24,12 +24,10 @@ pub enum Tok {
     /// `;` `&&` `||` `&` newline, grouping
     Sep,
     /// `>` `>>` `>|` `&>` `<>`; `dup` for `>&`; `fd` is the number right
-    /// before it (`2>&1`); `clean`: `>&` is followed at once by a number
-    /// and then a blank or the end.
+    /// before it (`2>&1`).
     Out {
         dup: bool,
         fd: Option<String>,
-        clean: bool,
     },
     /// `<` `<<` `<<<` `<&`: the next word is read, never written
     In,
@@ -183,7 +181,6 @@ pub fn lex(s: &str) -> Option<(Vec<Tok>, bool)> {
                         toks.push(Tok::Out {
                             dup: false,
                             fd: None,
-                            clean: false,
                         });
                     }
                     _ => toks.push(Tok::Sep),
@@ -202,30 +199,21 @@ pub fn lex(s: &str) -> Option<(Vec<Tok>, bool)> {
                     _ => flush(&mut cur, &mut toks),
                 }
                 if c == '>' {
-                    let (mut dup, mut clean) = (false, false);
+                    let mut dup = false;
                     match next {
                         Some('>' | '|') => i += 1,
                         Some('&') => {
                             i += 1;
                             dup = true;
-                            let n = cs[i + 1..]
-                                .iter()
-                                .take_while(|d| d.is_ascii_digit())
-                                .count();
-                            clean = n > 0 && cs.get(i + 1 + n).is_none_or(|x| x.is_whitespace());
                         }
                         _ => {}
                     }
-                    toks.push(Tok::Out { dup, fd, clean });
+                    toks.push(Tok::Out { dup, fd });
                 } else {
                     match next {
                         Some('>') => {
                             i += 1;
-                            toks.push(Tok::Out {
-                                dup: false,
-                                fd,
-                                clean: false,
-                            });
+                            toks.push(Tok::Out { dup: false, fd });
                         }
                         Some('<') => {
                             i += 1;
