@@ -161,7 +161,7 @@ fn run_turn(
     };
     // right next to the question small models follow it far more often
     let nudge = if t.tools && !overlay {
-        "\n(Get the facts with your tools, then answer.)"
+        "\n(For a question, get the facts with your tools, then answer; otherwise just reply.)"
     } else {
         ""
     };

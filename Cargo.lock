@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aish"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "aish-editor",
  "aish-llm",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "aish-editor"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "aish-llm"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "serde_json",
  "ureq",

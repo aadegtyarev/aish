@@ -9,6 +9,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-28
+
 ### Added
 - Session search: the model gets a `find` tool (text or regex over the last 100 commands and their
   output), `read_block` reads slices (`start_line`, `max_lines`) and says which lines a cut
@@ -21,6 +23,8 @@ version and date, and the release notes on GitHub are taken from it.
 ### Fixed
 - `aish` with a one-letter typo in a subcommand (`aish couch on`) gets `did you mean coach?`
   instead of going to bash as a script name.
+- A reply like "thanks" no longer sends the model off with tools to investigate an older error
+  in the context: the per-question hint now says "otherwise just reply".
 
 ## [0.4.4] - 2026-11-28
 
@@ -275,7 +279,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/aadegtyarev/aish/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/aadegtyarev/aish/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/aadegtyarev/aish/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/aadegtyarev/aish/compare/v0.4.1...v0.4.2
