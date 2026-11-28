@@ -467,7 +467,17 @@ fn stage(words: &[W], depth: usize) -> Stage {
                 // (PROMPT_COMMAND, PS1, BASH_ENV ... run code later)
                 let var = f.text.split('=').next().unwrap_or("");
                 if var.starts_with("PS")
-                    || matches!(var, "PROMPT_COMMAND" | "BASH_ENV" | "ENV" | "PATH" | "IFS")
+                    || matches!(
+                        var,
+                        "PROMPT_COMMAND"
+                            | "BASH_ENV"
+                            | "ENV"
+                            | "PATH"
+                            | "IFS"
+                            | "histchars"
+                            | "HISTCONTROL"
+                            | "HISTIGNORE"
+                    )
                 {
                     return hard(var);
                 }
@@ -668,7 +678,7 @@ pub fn on_hard_list(cmd: &str) -> bool {
 fn history_expands(cmd: &str) -> bool {
     let (mut sq, mut dq, mut esc) = (false, false, false);
     let mut cs = cmd.chars().peekable();
-    if cmd.starts_with('^') {
+    if cmd.lines().any(|l| l.starts_with('^')) {
         return true;
     }
     while let Some(c) = cs.next() {
@@ -948,6 +958,9 @@ mod tests {
             "echo hi && !-1",
             "!?x",
             "^a^b",
+            "true\n^a^b",
+            "histchars=@",
+            "HISTIGNORE=x true",
             "echo \"!x\"",
             "ls \"it's\" !sudo",
         ] {

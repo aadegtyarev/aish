@@ -12,6 +12,8 @@ version and date, and the release notes on GitHub are taken from it.
 ## [0.3.0] - 2026-11-28
 
 ### Fixed
+- A word like `-é` in a command no longer crashes the read-only check; paths
+  through `/proc/<pid>/root` or `/cwd` are refused.
 - The hard list (which turns a judge ALLOW into a question) now also sees a command
   behind any wrapper (`setarch x86_64 rm -rf`, `env -S`, `script -c`), `git -c`,
   interpreters and shell-state builtins.

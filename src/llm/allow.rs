@@ -239,6 +239,15 @@ fn in_proc_pid(p: &Path) -> bool {
         .is_some_and(|c| c == "self" || c == "thread-self" || c.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// `w` passes through another process's files on the way: `/proc/<pid>/root/x`
+/// and `/dev/fd/../../<pid>/cwd/x` resolve to paths outside /proc.
+fn via_proc_pid(w: &str, cwd: &str) -> bool {
+    Path::new(cwd)
+        .join(expand_tilde(w))
+        .ancestors()
+        .any(|p| in_proc_pid(p) || std::fs::canonicalize(p).is_ok_and(|r| in_proc_pid(&r)))
+}
+
 /// A recursive search from `root` (resolved) would walk into secret directories.
 fn root_too_wide(root: &Path) -> bool {
     let h = home();
@@ -976,8 +985,8 @@ fn paths_ok(words: &[String], cwd: &str) -> bool {
             if let Some((_, v)) = w.split_once('=') {
                 parts.push(v.to_owned());
             }
-            if !w.starts_with("--") && w.len() > 2 {
-                parts.push(w[2..].to_owned());
+            if !w.starts_with("--") && w.chars().count() > 2 {
+                parts.push(w.chars().skip(2).collect());
             }
         }
         if let Some((_, v)) = w.split_once(':') {
@@ -992,7 +1001,7 @@ fn paths_ok(words: &[String], cwd: &str) -> bool {
             return false;
         }
         let real = resolve(w, cwd);
-        !(is_secret_path(&real.to_string_lossy()) || in_proc_pid(&real))
+        !(is_secret_path(&real.to_string_lossy()) || via_proc_pid(w, cwd))
     })
 }
 
@@ -1554,6 +1563,12 @@ mod tests {
             "git -c core.pager=x log".to_owned(),
             "git log --output=x".to_owned(),
             "find . -fprint x".to_owned(),
+            format!("cat /proc/{}/root/etc/hostname", std::process::id()),
+            format!("cat /proc/{}/cwd/a", std::process::id()),
+            format!("grep -r x /proc/{}/root/etc", std::process::id()),
+            "cat /dev/fd/../../1/root/etc/hostname".to_owned(),
+            "cat -\u{e9}".to_owned(),
+            "git log -\u{663}".to_owned(),
         ];
         for c in bad {
             let c = c.replace("EMPTY", &empty);
