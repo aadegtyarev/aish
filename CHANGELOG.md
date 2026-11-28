@@ -9,12 +9,15 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-28
+
 ### Added
 - Memory: the model keeps short notes in `~/.config/aish/memory.md` (tool `memory`, shown as a `memory (N chars)`
   row) and gets them with every request. `memory: 2000` is the limit in characters, `memory: off` disables it;
   secrets are refused. `aish memory` opens the file in `$EDITOR`.
-- `system: {append|replace: <text|file>}` changes the system prompt. Requests keep a cache-friendly order:
-  static prompt, memory, conversation, dynamic context last.
+- `system: {append|replace: <text|file>}` changes the system prompt (`judge_prompt: {append}` now
+  takes a file too). Requests keep a cache-friendly order: static prompt, memory, conversation,
+  dynamic context last.
 
 ## [0.4.5] - 2026-11-28
 
@@ -286,7 +289,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/aadegtyarev/aish/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/aadegtyarev/aish/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/aadegtyarev/aish/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/aadegtyarev/aish/compare/v0.4.2...v0.4.3

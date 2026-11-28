@@ -324,7 +324,7 @@ impl PromptEdit {
         }
     }
 
-    /// The `replace` text, or the file it names (`~/x` or an absolute path).
+    /// The text, or the file it names (`~/x` or an absolute path).
     pub fn resolve(text: String) -> String {
         let path = if let Some(rest) = text.strip_prefix("~/") {
             std::env::var("HOME")

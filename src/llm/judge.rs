@@ -59,7 +59,7 @@ pub fn parse(text: &str) -> Option<Verdict> {
 pub fn system_prompt(cfg: Option<&Config>) -> String {
     match cfg.and_then(|c| c.run.judge_prompt.clone()) {
         None => DEFAULT_PROMPT.to_owned(),
-        Some(PromptEdit::Append(a)) => format!("{DEFAULT_PROMPT}\n{a}"),
+        Some(PromptEdit::Append(a)) => format!("{DEFAULT_PROMPT}\n{}", PromptEdit::resolve(a)),
         Some(PromptEdit::Replace(r)) => PromptEdit::resolve(r),
     }
 }

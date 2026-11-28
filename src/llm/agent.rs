@@ -251,7 +251,7 @@ pub fn request_parts(llm: &Llm, overlay: bool, o: &Offer) -> (String, Vec<Tool>)
         system.push_str(WEB_GUIDE);
     }
     if let Some(PromptEdit::Append(a)) = edit {
-        system.push_str(&format!("\n\n{a}"));
+        system.push_str(&format!("\n\n{}", PromptEdit::resolve(a)));
     }
     if let Some(m) = limit.and_then(|_| memory_text(llm)) {
         system.push_str(&format!(
