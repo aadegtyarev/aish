@@ -417,8 +417,6 @@ pub fn run(args: &[std::ffi::OsString]) -> i32 {
     }
 }
 
-// ---- the quiet notice -------------------------------------------------
-
 /// `<checked ts>\n<latest version>\n<notified ts>\n`
 #[derive(Default, Debug, PartialEq)]
 struct Cache {

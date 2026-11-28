@@ -85,8 +85,6 @@ pub fn finish(reply: &mut Candidates, cwd: &str) {
     }
 }
 
-// ---- sidecar process ----
-
 type Msg = (String, Candidates);
 
 struct Inner {

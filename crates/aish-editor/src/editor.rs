@@ -331,8 +331,6 @@ impl Editor {
         Action::None
     }
 
-    // ---- driving API ----
-
     /// Feed bytes read from the keyboard. Events for the host are appended to
     /// `events`. After a terminal event (`Submit`, `Intercepted`, `PassKey`
     /// from Ctrl-C/D/L) the rest of the chunk is returned unchanged as a

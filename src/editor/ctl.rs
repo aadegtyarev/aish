@@ -169,11 +169,10 @@ impl Controller {
         spawn_job_poller(llm.clone(), wake.clone());
         let gate = Arc::new(Gate::default());
         gate.set_waker(wake.clone());
-        let resolver = Resolver::default();
         let env = Env {
             llm: llm.clone(),
             tracker: tracker.clone(),
-            resolver: resolver.clone(),
+            resolver: Resolver::default(),
             history: SharedHistory::new(Box::new(MemHistory::default())),
         };
         let mut modules = module::builtin(enabled);

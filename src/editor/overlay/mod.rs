@@ -28,8 +28,6 @@ pub use gate::*;
 use gate::{enter_bytes, nudge, restore_bytes};
 pub use key::*;
 
-// ---------------------------------------------------------------------------
-
 /// Everything the overlay needs; made under the controller lock.
 pub struct Setup {
     pub key: AskKey,

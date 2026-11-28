@@ -8,8 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-
 /// Parks the output thread while the overlay is open. The output thread
 /// holds a [`Busy`] while it handles a chunk; opening waits until it is idle,
 /// so the screen and mode state are exact and nothing is drawn halfway.
