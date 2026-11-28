@@ -177,10 +177,16 @@ pub fn help_lines(w: usize, prefix: char) -> Vec<Ln> {
         v.extend(help_rows(h, d, w));
     }
     v.push(Ln::dim("at the prompt:"));
-    for (h, d) in super::prefix::forms(prefix) {
-        v.extend(help_rows(&h, d, w));
-    }
+    v.extend(form_lines(w, prefix));
     v
+}
+
+/// The prefix forms (`?h`), fitted to the width like the rest of the help.
+pub fn form_lines(w: usize, prefix: char) -> Vec<Ln> {
+    super::prefix::forms(prefix)
+        .iter()
+        .flat_map(|(h, d)| help_rows(h, d, w))
+        .collect()
 }
 
 /// Models by provider: alias, id (dim, cut with `…`), roles using it.

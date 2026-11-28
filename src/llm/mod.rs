@@ -79,6 +79,10 @@ pub struct Llm {
     job_notices: Mutex<Vec<jobs::Finished>>,
     /// The question prefix, read once per session.
     prefix: std::sync::OnceLock<char>,
+    /// Bumped by every reset: a summary in the making must not overwrite it.
+    pub convo_gen: std::sync::atomic::AtomicU64,
+    /// The summary at the head of the memory was made from unmasked text.
+    pub summary_raw: AtomicBool,
     /// Context windows asked from the server (`url model` -> `n_ctx`, if it said).
     windows: Mutex<HashMap<String, Option<u64>>>,
 }
@@ -103,6 +107,8 @@ impl Llm {
             job_poll: AtomicBool::new(false),
             job_notices: Mutex::default(),
             prefix: std::sync::OnceLock::new(),
+            convo_gen: std::sync::atomic::AtomicU64::new(0),
+            summary_raw: AtomicBool::new(false),
             windows: Mutex::default(),
         })
     }
@@ -113,6 +119,22 @@ impl Llm {
         *self
             .prefix
             .get_or_init(|| self.config().map_or('?', |c| c.prefix()))
+    }
+
+    /// `?n`: forget the conversation. False (nothing changed) while a turn
+    /// or a compaction is running.
+    pub fn reset_memory(&self) -> bool {
+        let Ok(_turn) = self.turn.try_lock() else {
+            return false;
+        };
+        if let Ok(mut c) = self.convo.lock() {
+            c.clear();
+            self.convo_gen
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.summary_raw
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        true
     }
 
     /// The context window of the model in tokens: `context_window` from the

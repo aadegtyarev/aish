@@ -42,9 +42,51 @@ pub fn needs_compaction(tokens: usize, window: u64, at: f64) -> bool {
     tokens as f64 > window as f64 * at
 }
 
-/// Token limit of the summary: `size` (0..1) of the window, at least 256.
-pub fn summary_tokens(window: u64, size: f64) -> u32 {
-    ((window as f64 * size) as u32).max(256)
+/// Token limit of the summary: `size` (0..1) of the window, at most 2048 and
+/// a quarter of the summarising model's own window.
+pub fn summary_tokens(window: u64, size: f64, summariser_window: u64) -> u32 {
+    ((window as f64 * size) as u64)
+        .min(2048)
+        .min(summariser_window / 4)
+        .max(64) as u32
+}
+
+/// Tokens a turn costs besides the memory: the context budget, the system
+/// prompt and the tool schemas.
+pub fn overhead_tokens(t: &Target, window: u64) -> usize {
+    let mut chars = super::ask::SYSTEM.len();
+    if t.tools {
+        chars += super::agent::AGENT_GUIDE.len() + super::agent::WEB_GUIDE.len();
+        for d in super::agent::tool_defs()
+            .iter()
+            .chain(super::agent::web_defs(true, true).iter())
+        {
+            chars += d.name.len() + d.description.len() + d.parameters.to_string().len();
+        }
+    }
+    super::context::budget_tokens(Some(window)) + tokens_of(chars)
+}
+
+/// The memory is a lone summary: there is nothing new to fold in.
+pub fn nothing_new(c: &[Message]) -> bool {
+    c.is_empty() || (c.len() == 1 && is_summary(&c[0]))
+}
+
+/// A summary made from unmasked text must not reach a non-local model:
+/// mask it first (what the masker does not recognise is not a secret to it).
+pub fn secure_memory(llm: &Llm, target_local: bool) {
+    if target_local
+        || !llm
+            .summary_raw
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    if let Ok(mut c) = llm.convo.lock() {
+        for m in c.iter_mut().filter(|m| is_summary(m)) {
+            *m = Message::user(super::mask::mask(&m.text()));
+        }
+    }
 }
 
 /// `n_ctx` from a llama.cpp `/props` answer.
@@ -54,6 +96,7 @@ pub fn parse_props(body: &str) -> Option<u64> {
         .as_u64()
         .or_else(|| v["n_ctx"].as_u64())
         .filter(|n| *n > 0)
+        .map(|n| n.clamp(2048, 4_000_000))
 }
 
 /// `GET <base>/props` for the provider URL `http://host:port/v1`.
@@ -165,14 +208,23 @@ fn prompt_of(llm: &Llm) -> String {
 /// Summarise the memory and replace it with the summary; the caller holds
 /// the turn lock. Returns the estimated size before and after, in tokens.
 pub fn compact(llm: &Llm, chat: &Target, task: &Task) -> Result<(usize, usize), Error> {
-    let convo = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
+    use std::sync::atomic::Ordering::SeqCst;
+    let (convo, generation) = {
+        let c = llm.convo.lock().map_err(|_| Error::Api("memory".into()))?;
+        (c.clone(), llm.convo_gen.load(SeqCst))
+    };
     let before = est_tokens(&convo);
     let ct = llm.compact_target(chat);
     let size = llm.config().map_or(0.1, |c| c.compact_size());
-    let budget = summary_tokens(llm.window(chat), size);
-    // (masked like any request, for the model that will read it)
-    let text = transcript(&masked_history(&convo, ct.local));
-    let room = (llm.window(&ct) as usize).saturating_sub(budget as usize + 600) * CHARS_PER_TOKEN;
+    let ct_window = llm.window(&ct);
+    let budget = summary_tokens(llm.window(chat), size, ct_window);
+    // The summary may later go to any model of the chat role: unless all of
+    // them (and the summariser) are local, the text is masked.
+    let all_local = ct.local && chat.local && llm.targets("chat").iter().all(|t| t.local);
+    let text = transcript(&masked_history(&convo, all_local));
+    let room = (ct_window as usize)
+        .saturating_sub(budget as usize + 600)
+        .saturating_mul(CHARS_PER_TOKEN);
     let user = format!(
         "Conversation:\n{}\n\nWrite the notes now, at most {budget} tokens.",
         trim_middle(&text, room.max(2000))
@@ -197,9 +249,13 @@ pub fn compact(llm: &Llm, chat: &Target, task: &Task) -> Result<(usize, usize), 
     }
     let new = vec![Message::user(format!("{SUMMARY_MARK}\n{summary}"))];
     let after = est_tokens(&new);
-    if let Ok(mut c) = llm.convo.lock() {
-        *c = new;
+    let mut c = llm.convo.lock().map_err(|_| Error::Api("memory".into()))?;
+    if llm.convo_gen.load(SeqCst) != generation {
+        // `?n` came in meanwhile: the new conversation stays empty
+        return Err(Error::Api("conversation was reset".into()));
     }
+    *c = new;
+    llm.summary_raw.store(all_local, SeqCst);
     Ok((before, after))
 }
 
@@ -223,7 +279,7 @@ fn done_line(before: usize, after: usize) -> String {
 
 /// `?c`: compact now. The caller holds the turn lock.
 pub fn run_command(llm: &Llm, chat: &Target, task: &Task) {
-    let empty = llm.convo.lock().is_ok_and(|c| c.is_empty());
+    let empty = llm.convo.lock().is_ok_and(|c| nothing_new(&c));
     if empty {
         return mark(task, "nothing to compact");
     }
@@ -241,17 +297,22 @@ pub fn run_command(llm: &Llm, chat: &Target, task: &Task) {
 /// window; if that fails, drop the oldest turns. False = cancelled (stop).
 /// The caller holds the turn lock.
 pub fn before_turn(llm: &Llm, chat: &Target, task: &Task) -> bool {
-    let tokens = llm.convo.lock().map_or(0, |c| est_tokens(&c));
-    if tokens == 0 {
+    secure_memory(llm, chat.local);
+    let (tokens, nothing) = llm
+        .convo
+        .lock()
+        .map_or((0, true), |c| (est_tokens(&c), nothing_new(&c)));
+    if nothing {
         return true;
     }
     let at = llm.config().map_or(0.7, |c| c.compact_at());
     // (a small memory fits any real window: the server is not asked for it yet)
-    if chat.window.is_none() && !needs_compaction(tokens, MIN_WINDOW, at) {
+    let over = |w: u64| needs_compaction(tokens + overhead_tokens(chat, w), w, at);
+    if chat.window.is_none() && !over(MIN_WINDOW) {
         return true;
     }
     let window = llm.window(chat);
-    if !needs_compaction(tokens, window, at) {
+    if !over(window) {
         return true;
     }
     match compact(llm, chat, task) {
@@ -262,7 +323,8 @@ pub fn before_turn(llm: &Llm, chat: &Target, task: &Task) -> bool {
         }
         Err(e) => {
             tracing::warn!("compaction: {e:?}");
-            let keep = (window as f64 * at / 2.0) as usize;
+            let keep =
+                ((window as f64 * at / 2.0) as usize).saturating_sub(overhead_tokens(chat, window));
             if let Ok(mut c) = llm.convo.lock() {
                 drop_oldest(&mut c, keep);
             }
@@ -285,8 +347,11 @@ mod tests {
         assert_eq!(tokens_of(0), 0);
         assert_eq!(tokens_of(1), 1);
         assert_eq!(tokens_of(400), 100);
-        assert_eq!(summary_tokens(32768, 0.1), 3276);
-        assert_eq!(summary_tokens(1000, 0.1), 256);
+        // min(size of the window, 2048, a quarter of the summariser's window)
+        assert_eq!(summary_tokens(32768, 0.1, 32768), 2048);
+        assert_eq!(summary_tokens(8192, 0.1, 8192), 819);
+        assert_eq!(summary_tokens(32768, 0.1, 4096), 1024);
+        assert_eq!(summary_tokens(1000, 0.1, 8192), 100);
     }
 
     #[test]
@@ -295,6 +360,8 @@ mod tests {
         assert_eq!(parse_props(p), Some(32768));
         assert_eq!(parse_props(r#"{"n_ctx":4096}"#), Some(4096));
         assert_eq!(parse_props(r#"{"n_ctx":0}"#), None);
+        assert_eq!(parse_props(r#"{"n_ctx":512}"#), Some(2048));
+        assert_eq!(parse_props(r#"{"n_ctx":99999999}"#), Some(4_000_000));
         assert_eq!(parse_props("not json"), None);
         assert_eq!(parse_props("{}"), None);
         assert_eq!(props_url("http://h:8080/v1"), "http://h:8080/props");
@@ -337,6 +404,73 @@ mod tests {
         assert!(drop_oldest(&mut c, 250));
         assert!(c.len() == 2 && c[0].text().starts_with("q3"), "{}", c.len());
         assert!(!drop_oldest(&mut c, 1)); // never the last turn
+    }
+
+    #[test]
+    fn reset_waits_for_a_running_turn_and_bumps_the_generation() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let llm = Llm::new();
+        *llm.convo.lock().unwrap() = vec![Message::user("q")];
+        {
+            let _busy = llm.turn.lock().unwrap(); // a turn or a compaction
+            assert!(!llm.reset_memory());
+            assert_eq!(llm.convo.lock().unwrap().len(), 1);
+        }
+        let g = llm.convo_gen.load(SeqCst);
+        assert!(llm.reset_memory());
+        assert!(llm.convo.lock().unwrap().is_empty());
+        assert_eq!(llm.convo_gen.load(SeqCst), g + 1);
+    }
+
+    #[test]
+    fn a_lone_summary_has_nothing_new() {
+        let s = Message::user(format!("{SUMMARY_MARK}\nx"));
+        assert!(nothing_new(&[]) && nothing_new(std::slice::from_ref(&s)));
+        assert!(!nothing_new(&[s, Message::user("q")]));
+        assert!(!nothing_new(&[Message::user("q")]));
+    }
+
+    #[test]
+    fn an_unmasked_summary_is_masked_before_a_remote_model() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let llm = Llm::new();
+        let text = format!("{SUMMARY_MARK}\n- ran with API_KEY=abc123secret");
+        *llm.convo.lock().unwrap() = vec![Message::user(text)];
+        llm.summary_raw.store(true, SeqCst);
+        secure_memory(&llm, true); // a local model may read it as it is
+        assert!(llm.convo.lock().unwrap()[0].text().contains("abc123secret"));
+        secure_memory(&llm, false);
+        let c = llm.convo.lock().unwrap();
+        assert!(
+            !c[0].text().contains("abc123secret") && is_summary(&c[0]),
+            "{}",
+            c[0].text()
+        );
+        assert!(!llm.summary_raw.load(SeqCst));
+    }
+
+    #[test]
+    fn overhead_counts_the_budget_system_prompt_and_tools() {
+        let ep = aish_llm::Endpoint {
+            kind: aish_llm::Kind::Chat,
+            url: "http://x/v1".into(),
+            key: None,
+            model: "m".into(),
+            effort: None,
+        };
+        let mut t = Target {
+            ep,
+            provider: "p".into(),
+            label: "p/m".into(),
+            window: None,
+            local: true,
+            tools: false,
+            native_search: false,
+        };
+        let plain = overhead_tokens(&t, 8192);
+        t.tools = true;
+        assert!(overhead_tokens(&t, 8192) > plain + 300);
+        assert!(plain > super::super::context::budget_tokens(Some(8192)));
     }
 
     #[test]

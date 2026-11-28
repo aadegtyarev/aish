@@ -45,7 +45,12 @@ pub enum Form {
 /// What `line` is for prefix `p`; `None` = an ordinary shell line (`?.txt`,
 /// `??`, `,foo`, `#comment`, ...).
 pub fn parse(line: &str, p: char) -> Option<Form> {
-    let r = line.strip_prefix(p)?;
+    // a paste of several lines is always for the shell
+    if line.contains(['\n', '\r']) {
+        return None;
+    }
+    // (trailing blanks never turn `?n` into something else)
+    let r = line.strip_prefix(p)?.trim_end();
     let q = |blocks: usize, text: &str, reset: bool| Form::Question {
         blocks,
         text: text.trim().to_owned(),
@@ -166,6 +171,30 @@ mod tests {
             })
         );
         assert_eq!(parse(",!", ','), None);
+    }
+
+    #[test]
+    fn trailing_blanks_are_ignored_for_the_letters() {
+        for &p in ALLOWED {
+            assert_eq!(parse(&format!("{p}n  "), p), Some(Form::New));
+            assert_eq!(parse(&format!("{p}c\t"), p), Some(Form::Compact));
+            assert_eq!(parse(&format!("{p}h "), p), Some(Form::Help));
+            assert_eq!(parse(&format!("{p}3 "), p), q(3, ""));
+        }
+    }
+
+    #[test]
+    fn several_lines_are_never_a_question() {
+        for &p in ALLOWED {
+            for t in [
+                format!("{p} why\nls"),
+                format!("{p}\n"),
+                format!("{p}n\r\n"),
+                format!("{p}3 x\ny"),
+            ] {
+                assert_eq!(parse(&t, p), None, "{t:?}");
+            }
+        }
     }
 
     #[test]

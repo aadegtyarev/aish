@@ -806,7 +806,7 @@ pub fn drive(
             remember_turn(
                 llm,
                 &turn,
-                llm.window_known(t) as usize * context::CHARS_PER_TOKEN,
+                (llm.window_known(t) as usize).saturating_mul(context::CHARS_PER_TOKEN),
             );
             return cmd;
         }

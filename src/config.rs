@@ -314,6 +314,14 @@ impl Config {
         }
         for p in &self.providers {
             for (alias, m) in &p.models {
+                if let Setting::Value(w) = &m.context_window {
+                    if *w < 2048 {
+                        bail!(
+                            "model '{}/{alias}': context_window must be at least 2048",
+                            p.id
+                        );
+                    }
+                }
                 if let Setting::Value(v) = &m.web {
                     if v != "native" {
                         bail!("model '{}/{alias}': web must be 'native' or off", p.id);
@@ -327,8 +335,8 @@ impl Config {
         if let Some(c) = &self.compact {
             let at = c.at.map_or(COMPACT_AT, |p| p.0);
             let size = c.size.map_or(COMPACT_SIZE, |p| p.0);
-            if !(10.0..=95.0).contains(&at) {
-                bail!("compact.at must be between 10% and 95%");
+            if !(10.0..=90.0).contains(&at) {
+                bail!("compact.at must be between 10% and 90%");
             }
             if !(1.0..=50.0).contains(&size) || size >= at {
                 bail!("compact.size must be between 1% and 50%, and below compact.at");
@@ -374,6 +382,7 @@ impl Config {
             .as_ref()
             .and_then(|c| c.at)
             .map_or(COMPACT_AT, |p| p.0)
+            .min(90.0)
             / 100.0
     }
 
@@ -635,6 +644,14 @@ roles:
         let c = p("").unwrap();
         assert!((c.compact_at() - 0.7).abs() < 1e-9 && (c.compact_size() - 0.1).abs() < 1e-9);
         assert!(p("compact: {at: 99%}").is_err());
+        assert!(p("compact: {at: 91%}").is_err() && p("compact: {at: 90%}").is_ok());
+        let w = |n: u32| {
+            p(&format!(
+                "providers:\n  - id: a\n    url: http://x/v1\n    type: chat\n    models: {{m: {{id: m1, context_window: {n}}}}}\n"
+            ))
+        };
+        assert!(w(1000).unwrap_err().to_string().contains("2048"));
+        assert!(w(2048).is_ok());
         assert!(p("compact: {at: 20%, size: 30%}").is_err());
         assert!(p("compact: {at: lots}").is_err());
         assert!(p("compact: {model: nope}").is_err());

@@ -138,11 +138,16 @@ impl Module for ModelModule {
             return aish_command(&llm, line, out, task);
         };
         if form == Form::Help {
-            let rows: Vec<String> = prefix::forms(llm.prefix())
-                .iter()
-                .map(|(h, d)| format!("│ {h:<8}{d}"))
-                .collect();
-            out.extend_from_slice(rows.join("\r\n").as_bytes());
+            let Some(t) = task.take() else {
+                out.extend_from_slice("│ busy".as_bytes());
+                return true;
+            };
+            let p = llm.prefix();
+            std::thread::spawn(move || {
+                let w = usize::from(t.cols).saturating_sub(3).max(10);
+                write_rows(&t, &cmd::form_lines(w, p));
+                t.finish(None);
+            });
             return true;
         }
         if let Ok(mut pend) = llm.pending.lock() {
@@ -150,8 +155,9 @@ impl Module for ModelModule {
         }
         let reset = matches!(form, Form::New | Form::Question { reset: true, .. });
         if reset {
-            if let Ok(mut c) = llm.convo.lock() {
-                c.clear();
+            if !llm.reset_memory() {
+                out.extend_from_slice("◇ busy · Ctrl-C first".as_bytes());
+                return true;
             }
             if form == Form::New {
                 out.extend_from_slice("◇ new conversation".as_bytes());
@@ -221,21 +227,27 @@ fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option
             // (on a worker, like status: the editor finishes its own line first)
             let (llm, cmd) = (llm.clone(), cmd);
             std::thread::spawn(move || {
-                let r = Renderer::new(&t.theme, t.cols);
                 let w = usize::from(t.cols).saturating_sub(3).max(10);
-                let mut b = Vec::new();
-                for l in cmd::run(&llm, &cmd, w).iter() {
-                    let (h, d) = (fit_line(&l.0, w + 1), &l.1);
-                    let room = (w + 1).saturating_sub(h.chars().count());
-                    let d = fit_line(d, room.max(1));
-                    r.split_row(&h, &d, &mut b);
-                }
-                t.write(&b);
+                write_rows(&t, &cmd::run(&llm, &cmd, w));
                 t.finish(None);
             });
         }
     }
     true
+}
+
+/// Rows of a command's output, each cut to the width.
+fn write_rows(t: &Task, lines: &[cmd::Ln]) {
+    let r = Renderer::new(&t.theme, t.cols);
+    let w = usize::from(t.cols).saturating_sub(3).max(10);
+    let mut b = Vec::new();
+    for l in lines {
+        let (h, d) = (fit_line(&l.0, w + 1), &l.1);
+        let room = (w + 1).saturating_sub(h.chars().count());
+        let d = fit_line(d, room.max(1));
+        r.split_row(&h, &d, &mut b);
+    }
+    t.write(&b);
 }
 
 #[cfg(test)]

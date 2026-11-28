@@ -90,7 +90,7 @@ The memory is the earlier `?` turns. When it grows past `compact.at` (default
 70%) of the chat model's context window, the next `?` first summarises it:
 `◇ ⠹ compacting…` (the waiting indicator, in place), then `◇ compacted a → b
 tokens`, then the answer. The summary is one message at the head of the memory
-and is folded into the next summary. The sizes are estimates (characters / 4).
+and is folded into the next summary. The sizes are estimates (characters / 4); the check counts the memory plus the context, system prompt and tool schemas. `at` is at most 90%, the summary at most 2048 tokens. If any model of the chat role is non-local, the text sent to the summariser is masked.
 
 ```yaml
 compact:
@@ -101,7 +101,7 @@ compact:
     ...
 ```
 
-The window is the model's `context_window` from the config; unset and the
+The window is the model's `context_window` from the config (at least 2048); unset and the
 provider is a local llama.cpp, `n_ctx` from `GET <base>/props` (asked once per
 model, ignored if absent); else 8192. `ai status` shows it (`ctx 32k`). The
 summary request is masked like every other request: a non-local provider gets

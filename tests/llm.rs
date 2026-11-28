@@ -1608,7 +1608,7 @@ fn ask_and_wait(p: &mut Session, line: &str) {
 
 fn window_config(url: &str, window: u32) -> String {
     format!(
-        "providers:\n  - id: mock\n    url: {url}\n    type: chat\n    models: {{m: {{id: test, context_window: {window}}}}}\nroles:\n  chat: {{id: mock/m}}\n  complete: {{id: mock/m}}\n"
+        "providers:\n  - id: mock\n    url: {url}\n    type: chat\n    models: {{m: {{id: test, context_window: {window}, tools: off}}}}\nroles:\n  chat: {{id: mock/m}}\n  complete: {{id: mock/m}}\n"
     )
 }
 
@@ -1715,11 +1715,11 @@ fn compact_with_nothing_to_compact_says_so() {
 fn small_window_triggers_auto_compaction_before_the_next_answer() {
     let home = TempDir::new().unwrap();
     let m = convo_mock();
-    let mut p = with_yaml(&home, &window_config(&m.url(), 400));
+    let mut p = with_yaml(&home, &window_config(&m.url(), 4096));
     p.expect("E> ").unwrap();
     settle();
-    // ~330 tokens: over 70% of 400 once remembered
-    let long = format!("? first-question {}", "word ".repeat(260));
+    // ~2000 tokens: with the context and prompt over 70% of 4096 once remembered
+    let long = format!("? first-question {}", "word ".repeat(1600));
     ask_and_wait(&mut p, &long);
     assert!(!m
         .requests()
@@ -1752,13 +1752,13 @@ fn failed_compaction_drops_old_turns_and_says_so() {
             mock::chat_stream(c, &["Hello there\n"], Duration::ZERO);
         }
     });
-    let mut p = with_yaml(&home, &window_config(&m.url(), 400));
+    let mut p = with_yaml(&home, &window_config(&m.url(), 4096));
     p.expect("E> ").unwrap();
     settle();
-    ask_and_wait(&mut p, &format!("? first-question {}", "word ".repeat(140)));
+    ask_and_wait(&mut p, &format!("? first-question {}", "word ".repeat(800)));
     ask_and_wait(
         &mut p,
-        &format!("? second-question {}", "word ".repeat(140)),
+        &format!("? second-question {}", "word ".repeat(800)),
     );
     p.send("? third-question\r").unwrap();
     p.expect("dropped old turns").unwrap();
@@ -1799,6 +1799,63 @@ fn llama_props_gives_the_window() {
     settle();
     p.send_line("aish status").unwrap();
     p.expect("ctx 16k").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+fn max_tokens_of(body: &str) -> u64 {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    v["max_tokens"]
+        .as_u64()
+        .or_else(|| v["max_completion_tokens"].as_u64())
+        .unwrap()
+}
+
+#[test]
+fn summary_is_capped_and_a_local_summariser_gets_unmasked_text_only_when_all_are_local() {
+    // all local: the summariser reads the text as it is; the cap is 2048
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let cfg = window_config(&m.url(), 65536);
+    let mut p = with_yaml(&home, &cfg);
+    p.expect("E> ").unwrap();
+    settle();
+    ask_and_wait(&mut p, "? export API_KEY=abc123secret why");
+    p.send("?c\r").unwrap();
+    p.expect("◇ compacted").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    let sum = m
+        .requests()
+        .into_iter()
+        .find(|r| r.body.contains("Write the notes now"))
+        .unwrap();
+    assert!(sum.body.contains("abc123secret"));
+    assert_eq!(max_tokens_of(&sum.body), 2048);
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+
+    // a non-local fallback in the chat role: the summary may go there, so mask
+    let home = TempDir::new().unwrap();
+    let m = convo_mock();
+    let cfg = format!(
+        "providers:\n  - id: mock\n    url: {}\n    type: chat\n    models: {{m: {{id: test}}}}\n  - id: cloud\n    url: http://cloud.invalid/v1\n    type: chat\n    models: {{c: {{id: big}}}}\nroles:\n  chat: {{id: [mock/m, cloud/c]}}\n  complete: {{id: mock/m}}\n",
+        m.url()
+    );
+    let mut p = with_yaml(&home, &cfg);
+    p.expect("E> ").unwrap();
+    settle();
+    ask_and_wait(&mut p, "? export API_KEY=abc123secret why");
+    p.send("?c\r").unwrap();
+    p.expect("◇ compacted").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    let sum = m
+        .requests()
+        .into_iter()
+        .find(|r| r.body.contains("Write the notes now"))
+        .unwrap();
+    assert!(!sum.body.contains("abc123secret"), "{}", sum.body);
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
