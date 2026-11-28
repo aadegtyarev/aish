@@ -3,8 +3,10 @@
 /// A line that starts with the prefix, understood.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Form {
-    /// `?`, `? text`, `?N`, `?N text`.
+    /// `? text`, `?N`, `?N text`.
     Question { blocks: usize, text: String },
+    /// `?` alone: chat mode on/off.
+    Chat,
     /// `?n`
     New,
     /// `?c`
@@ -26,7 +28,10 @@ pub fn parse(line: &str, p: char) -> Option<Form> {
         blocks,
         text: text.trim().to_owned(),
     };
-    if r.is_empty() || r.starts_with(' ') {
+    if r.is_empty() {
+        return Some(Form::Chat);
+    }
+    if r.starts_with(' ') {
         return Some(q(1, r));
     }
     match r {
@@ -54,7 +59,6 @@ pub fn forms(p: char) -> Vec<(String, &'static str)> {
     vec![
         (format!("{p} text"), "ask"),
         (format!("{p}"), "chat mode on/off"),
-        (format!("{p} "), "about the last output"),
         (format!("{p}N"), "about the last N blocks"),
         (format!("{p}n"), "new conversation"),
         (format!("{p}c"), "compact conversation"),
@@ -77,7 +81,8 @@ mod tests {
     #[test]
     fn every_allowed_prefix_asks() {
         for &p in ALLOWED {
-            assert_eq!(parse(&format!("{p}"), p), q(1, ""), "{p}");
+            assert_eq!(parse(&format!("{p}"), p), Some(Form::Chat), "{p}");
+            assert_eq!(parse(&format!("{p}  "), p), Some(Form::Chat), "{p}");
             assert_eq!(parse(&format!("{p} why"), p), q(1, "why"), "{p}");
             assert_eq!(parse(&format!("{p}3"), p), q(3, ""), "{p}");
             assert_eq!(parse(&format!("{p}3 why  so"), p), q(3, "why  so"), "{p}");

@@ -131,12 +131,6 @@ impl Module for ModelModule {
         let Some((llm, tracker)) = self.env.clone() else {
             return false;
         };
-        if line == llm.prefix().to_string() {
-            let on = !llm.chat.fetch_xor(true, Relaxed);
-            let msg = if on { "chat on" } else { "chat off" };
-            out.extend_from_slice(format!("◇ {msg}").as_bytes());
-            return true;
-        }
         if agent::asking(&llm) && !claims(line, &llm) {
             agent::answer(&llm, line);
             let note = if line.trim().is_empty() {
@@ -153,6 +147,12 @@ impl Module for ModelModule {
         let Some(form) = prefix::parse(line, llm.prefix()) else {
             return aish_command(&llm, line, out, task);
         };
+        if form == Form::Chat {
+            let on = !llm.chat.fetch_xor(true, Relaxed);
+            let msg = if on { "chat on" } else { "chat off" };
+            out.extend_from_slice(format!("◇ {msg}").as_bytes());
+            return true;
+        }
         if form == Form::Help {
             let Some(t) = task.take() else {
                 out.extend_from_slice("│ busy".as_bytes());
@@ -199,7 +199,7 @@ impl Module for ModelModule {
                 };
                 ask::spawn(llm, tracker, target, p, t);
             }
-            Form::New | Form::Help => {}
+            Form::New | Form::Help | Form::Chat => {}
         }
         true
     }

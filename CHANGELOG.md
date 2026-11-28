@@ -11,8 +11,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ### Added
 - Chat mode: a bare `?` makes every new line start with `? ` (hint `chat · Esc exit`);
-  delete the `? ` to run one bash command; Esc on a bare `? ` or `?` again leaves.
-  The bare `?` no longer asks about the last output (`? ` still does).
+  delete the `? ` to run one bash command; Enter or Esc on a bare `? ` leaves.
+  A bare `?` no longer asks about the last output: just ask (`? why`).
 
 ### Changed
 - A remote model without a known context window is assumed to have 32k tokens

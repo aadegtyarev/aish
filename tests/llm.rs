@@ -116,7 +116,7 @@ fn http_error_is_one_dim_line() {
     let mut p = with_config(&home, &m);
     p.expect("E> ").unwrap();
     settle();
-    p.send("? \r").unwrap();
+    p.send("? hi\r").unwrap();
     p.expect("│ ").unwrap();
     p.expect("401 from mock").unwrap();
     p.expect("E> ").unwrap();

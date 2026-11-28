@@ -44,9 +44,8 @@ with context (the last blocks, cwd, `git status`).
 line starts with `? ` already typed and the right edge says `chat · Esc exit`.
 Delete the `? ` (Backspace or Ctrl-Q) to run one bash command; the next line has
 it again. A command the model hands over replaces the whole line, `? ` included.
-Esc on a line that holds only `? `, or a bare `?` + Enter, leaves the mode. It
-lasts for the session and is not saved. (`? ` with the space still asks about
-the last output.)
+Enter or Esc on a line that holds only `? ` leaves the mode. It lasts for the
+session and is not saved. To ask about the last output, just ask (`? why`).
 
 In bash `?` is a glob, "any one character", so the rule is strict: only the
 prefix alone (chat mode), prefix + space + text, prefix + digits (`?3`, `?3 text`) and
