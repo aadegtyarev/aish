@@ -247,39 +247,41 @@ fn extract(tgz: &[u8], member: &str) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
-/// A fresh 0755 file next to `exe` (random name, create_new: never follows
-/// or reuses an existing path), synced.
-fn stage(exe: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let tmp = exe.with_file_name(format!(".aish.new.{}.{nanos:x}", std::process::id()));
-    let res = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o755)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()
-    })();
-    match res {
-        Ok(()) => Ok(tmp),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(format!("{}: {e}", tmp.display()))
-        }
-    }
+/// The new binary as a closed 0755 temp file next to `exe` (removed on drop).
+fn stage(exe: &Path, bytes: &[u8]) -> Result<tempfile::TempPath, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = exe.parent().unwrap_or(Path::new("."));
+    let err = |e: std::io::Error| format!("{}: {e}", dir.display());
+    let mut f = tempfile::Builder::new()
+        .prefix(".aish.new.")
+        .permissions(std::fs::Permissions::from_mode(0o755))
+        .tempfile_in(dir)
+        .map_err(err)?;
+    f.write_all(bytes)
+        .and_then(|()| f.as_file().sync_all())
+        .map_err(err)?;
+    Ok(f.into_temp_path())
 }
 
-/// The staged binary must say it is the version we meant to install.
 fn check_version(bin: &Path, want: &str) -> Result<(), String> {
-    let out = std::process::Command::new(bin)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("new binary does not run: {e}"))?;
+    let run = || {
+        std::process::Command::new(bin)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+    };
+    // ETXTBSY: a fork in another thread may briefly hold the just-written file open
+    let mut out = run();
+    for _ in 0..50 {
+        match &out {
+            Err(e) if e.raw_os_error() == Some(nix::errno::Errno::ETXTBSY as i32) => {
+                std::thread::sleep(Duration::from_millis(10));
+                out = run();
+            }
+            _ => break,
+        }
+    }
+    let out = out.map_err(|e| format!("new binary does not run: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let first = text.lines().next().unwrap_or("").trim();
     if first == format!("aish {want}") {
@@ -295,12 +297,9 @@ fn check_version(bin: &Path, want: &str) -> Result<(), String> {
 /// running process keeps its old inode.
 fn replace_exe(exe: &Path, bytes: &[u8], want: &str) -> Result<(), String> {
     let tmp = stage(exe, bytes)?;
-    let res = check_version(&tmp, want)
-        .and_then(|()| std::fs::rename(&tmp, exe).map_err(|e| format!("{}: {e}", exe.display())));
-    if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    res
+    check_version(&tmp, want)?;
+    tmp.persist(exe)
+        .map_err(|e| format!("{}: {}", exe.display(), e.error))
 }
 
 /// Only replace a file we own (and, as root, only root's own).
