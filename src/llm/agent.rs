@@ -1047,10 +1047,7 @@ fn judge_note(task: &Task, verdict: &str, reason: &str) {
     } else {
         format!("⚖ {verdict} · {reason}")
     };
-    note_only(
-        task,
-        &fit_line(&t, usize::from(task.cols).saturating_sub(2)),
-    );
+    note_only(task, &t);
 }
 
 /// Decide about a command the model wants to run. `auto`: only what is not
@@ -1215,7 +1212,10 @@ fn search_notes(r: &Renderer, searches: &[String], out: &mut Vec<u8>) {
 fn note_only(task: &Task, text: &str) {
     let r = Renderer::new(&task.theme, task.cols);
     let mut out = Vec::new();
-    r.note(text, &mut out);
+    r.note(
+        &fit_line(text, usize::from(task.cols).saturating_sub(2)),
+        &mut out,
+    );
     task.write(&out);
 }
 

@@ -12,6 +12,8 @@ version and date, and the release notes on GitHub are taken from it.
 ### Fixed
 - A refused `read_file` says why (`read_file refused: secret file · ~/.ssh/…`),
   reason first so it survives narrow screens.
+- Tool lines (`read_file`, `run`, `⚖`, …) are cut to the screen width and
+  never wrap.
 
 ### Added
 - `run: judge`: a model decides instead of you. Plain commands run unasked; the rest
