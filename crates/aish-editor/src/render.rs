@@ -39,6 +39,9 @@ pub(crate) struct Renderer {
     /// End column of the drawn input when it (and nothing else) fits on the
     /// first row; None when it wraps or popups are shown.
     pub first_row_end: Option<u16>,
+    /// No right-edge hint: the prompt filled its row, the input starts at the
+    /// left edge of the next one and the hint would hang alone below the prompt.
+    pub no_hint: bool,
 }
 
 struct Lay {
@@ -123,6 +126,7 @@ impl Renderer {
 
     pub(crate) fn reset(&mut self, start_col: u16) {
         self.start_col = start_col;
+        self.no_hint = false;
         self.start_off = u32::from(start_col);
         self.cur_row = 0;
         self.row_lens.clear();
@@ -211,7 +215,10 @@ impl Renderer {
             lay.col = gl.col;
         }
         out.extend_from_slice(b"\x1b[J");
-        if let Some(h) = v.right.filter(|h| v.theme.enabled && !h.is_empty()) {
+        if let Some(h) = v
+            .right
+            .filter(|h| v.theme.enabled && !h.is_empty() && !self.no_hint)
+        {
             let w = usize::from(width);
             let hw = UnicodeWidthStr::width(h);
             // last column stays free; keep 3 columns between input and hint

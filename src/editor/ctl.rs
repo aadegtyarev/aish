@@ -480,6 +480,7 @@ impl Controller {
         let w = width();
         let (col, soft) = self.scan.input_start(w);
         self.ed.reset_screen_wrapped(col, soft, w);
+        self.ed.hide_hint(col == 0 && self.scan.rows > 0);
         // A command from the model must wait for a fresh Enter: keys typed
         // while the answer streamed are dropped when there is one.
         if let Some(p) = self.pending_prefill.take() {
@@ -671,6 +672,7 @@ impl Controller {
                             self.erase();
                             let soft = self.scan.soft_rows;
                             self.ed.reset_screen_wrapped(col, soft, width());
+                            self.ed.hide_hint(col == 0 && self.scan.rows > 0);
                         }
                     }
                 }

@@ -470,6 +470,11 @@ impl Editor {
         self.rend.reset_wrapped(col, wrapped, width);
     }
 
+    /// Hide the right-edge hint (see `Renderer::no_hint`); cleared by a reset.
+    pub fn hide_hint(&mut self, hide: bool) {
+        self.rend.no_hint = hide;
+    }
+
     /// Column where the input area starts.
     pub fn start_col(&self) -> u16 {
         self.rend.start_col

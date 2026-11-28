@@ -154,11 +154,13 @@ fn view_p(t: &Term, ps1: &str, typed: &str, ghost: &str, cur: usize, popup: Opti
     // the hint sits on the input's first row, only when 3 free columns remain
     let start = ps1.chars().count();
     let end = full.len();
-    let want: Vec<usize> = if end / w == start / w && end % w + 4 < w {
-        vec![start / w]
-    } else {
-        vec![]
-    };
+    // (not on a row of its own below a prompt that filled its row)
+    let want: Vec<usize> =
+        if end / w == start / w && end % w + 4 < w && !(start > 0 && start.is_multiple_of(w)) {
+            vec![start / w]
+        } else {
+            vec![]
+        };
     // (a hint is drawn only when the editor is idle at a prompt; callers with
     // popups pass through `view_nomarker`)
     if popup.is_none() {
@@ -1010,6 +1012,10 @@ fn assert_transcript(t: &Term, ps1: &str, question: &str, middle: &dyn Fn(&[Stri
         t.scr.dump()
     );
     let rest = &l[n..];
+    if last_line.chars().count().is_multiple_of(c) {
+        // a prompt that fills its row: no hint hanging alone below it
+        assert!(t.scr.marker_rows().is_empty(), "marker\n{}", t.scr.dump());
+    }
     assert!(middle(rest), "answer\n{}", t.scr.dump());
     // exactly one prompt after it: the prompt's first row occurs once in `rest`
     let first: String = last_line
