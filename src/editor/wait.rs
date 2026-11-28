@@ -25,6 +25,8 @@ pub enum Phase {
     Thinking = 3,
     /// Summarising the conversation (`◇ ⠹ compacting…`).
     Compacting = 4,
+    /// A model reviews a command (`judging`).
+    Judging = 5,
 }
 
 impl Phase {
@@ -34,6 +36,7 @@ impl Phase {
             2 => Phase::Loading,
             3 => Phase::Thinking,
             4 => Phase::Compacting,
+            5 => Phase::Judging,
             _ => Phase::Connecting,
         }
     }
@@ -45,6 +48,7 @@ impl Phase {
             Phase::Loading => "loading model",
             Phase::Thinking => "thinking",
             Phase::Compacting => "compacting…",
+            Phase::Judging => "judging",
         }
     }
 }
@@ -96,6 +100,11 @@ impl Waiter {
         Self::start_with(task, None, Phase::Compacting, bar)
     }
 
+    /// The wait for a command review: `│ ⠹ judging · 2s`.
+    pub fn start_judging(task: &Task) -> Waiter {
+        Self::start_with(task, None, Phase::Judging, bar_of(task))
+    }
+
     fn start_with(task: &Task, probe: Option<Endpoint>, first: Phase, bar: String) -> Waiter {
         let w = task.status_writer();
         w.reset();
@@ -119,7 +128,7 @@ impl Waiter {
             _ => return,
         };
         let cur = Phase::from(self.phase.load(Relaxed));
-        if cur == Phase::Compacting {
+        if matches!(cur, Phase::Compacting | Phase::Judging) {
             return;
         }
         // loading is a more specific "waiting"; thinking stays once seen

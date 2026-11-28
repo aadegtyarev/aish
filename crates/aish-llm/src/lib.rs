@@ -142,6 +142,8 @@ pub struct Request {
     pub first_token_timeout: Duration,
     /// Responses API: also offer the provider's built-in web search.
     pub native_search: bool,
+    /// GBNF grammar that constrains the answer (llama.cpp style chat servers).
+    pub grammar: Option<String>,
 }
 
 impl Request {
@@ -155,6 +157,7 @@ impl Request {
             tools: Vec::new(),
             first_token_timeout: FIRST_TOKEN_CHAT,
             native_search: false,
+            grammar: None,
         }
     }
 }

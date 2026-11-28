@@ -88,6 +88,9 @@ pub(crate) fn body(ep: &Endpoint, req: &Request) -> String {
                 "name": t.name, "description": t.description, "parameters": t.parameters}}))
             .collect::<Vec<_>>());
     }
+    if let Some(g) = &req.grammar {
+        b["grammar"] = json!(g);
+    }
     if let Some(e) = &ep.effort {
         b["reasoning_effort"] = json!(e);
     }

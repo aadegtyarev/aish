@@ -222,7 +222,7 @@ pub struct Config {
     /// `run: ask|auto|off` — what the model's `run` tool does with commands
     /// that are not read-only (default `ask`).
     #[serde(default)]
-    pub run: Setting<String>,
+    pub run: RunCfg,
     /// `tools: {run, files, web, skills}` — per-tool on/off.
     #[serde(default)]
     pub tools: ToolsCfg,
@@ -236,23 +236,97 @@ pub enum RunMode {
     Ask,
     /// Run without asking (the hard list still asks).
     Auto,
+    /// A model decides (`run.judge`); what it does not allow asks the user.
+    Judge,
     /// Never run: prefill the command into the input line.
     Off,
 }
 
 impl RunMode {
-    pub const ALL: [RunMode; 3] = [RunMode::Ask, RunMode::Auto, RunMode::Off];
+    pub const ALL: [RunMode; 4] = [RunMode::Ask, RunMode::Judge, RunMode::Auto, RunMode::Off];
 
     pub fn name(self) -> &'static str {
         match self {
             RunMode::Ask => "ask",
             RunMode::Auto => "auto",
+            RunMode::Judge => "judge",
             RunMode::Off => "off",
         }
     }
 
     pub fn parse(s: &str) -> Option<RunMode> {
         RunMode::ALL.into_iter().find(|m| m.name() == s)
+    }
+}
+
+/// `run.judge_prompt`: text added to the default judge prompt, or replacing it
+/// (a text, or a path like `~/judge.txt`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum JudgePrompt {
+    Append(String),
+    Replace(String),
+}
+
+/// `run:` in the config: a scalar mode (`run: auto`), or a mapping
+/// `{mode, judge, judge_prompt}`.
+#[derive(Debug, Clone, Default)]
+pub struct RunCfg {
+    pub mode: Setting<String>,
+    /// Model references of the judge (tried in order); empty: the chat role.
+    pub judge: Vec<String>,
+    pub judge_prompt: Option<JudgePrompt>,
+}
+
+impl<'de> Deserialize<'de> for RunCfg {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = serde_yaml::Value::deserialize(d)?;
+        let mode = |v: &serde_yaml::Value| -> Result<Setting<String>, D::Error> {
+            serde_yaml::from_value(v.clone()).map_err(D::Error::custom)
+        };
+        let m = match &v {
+            serde_yaml::Value::Mapping(m) => m,
+            other => {
+                return Ok(RunCfg {
+                    mode: mode(other)?,
+                    ..Default::default()
+                })
+            }
+        };
+        let judge = match m.get("judge") {
+            None | Some(serde_yaml::Value::Null) => Vec::new(),
+            Some(serde_yaml::Value::String(s)) => vec![s.clone()],
+            Some(serde_yaml::Value::Sequence(q)) => q
+                .iter()
+                .map(|x| {
+                    x.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| D::Error::custom("run.judge must be strings"))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(D::Error::custom("run.judge must be a model reference")),
+        };
+        let judge_prompt = match m.get("judge_prompt") {
+            None | Some(serde_yaml::Value::Null) => None,
+            Some(serde_yaml::Value::Mapping(p)) => {
+                let get = |k: &str| p.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+                match (get("append"), get("replace")) {
+                    (Some(a), None) => Some(JudgePrompt::Append(a)),
+                    (None, Some(r)) => Some(JudgePrompt::Replace(r)),
+                    _ => {
+                        return Err(D::Error::custom(
+                            "run.judge_prompt: give `append` or `replace`",
+                        ))
+                    }
+                }
+            }
+            Some(_) => return Err(D::Error::custom("run.judge_prompt must be a mapping")),
+        };
+        Ok(RunCfg {
+            mode: m.get("mode").map_or(Ok(Setting::Unset), mode)?,
+            judge,
+            judge_prompt,
+        })
     }
 }
 
@@ -365,10 +439,14 @@ impl Config {
                 bail!("duplicate provider id '{}'", p.id);
             }
         }
-        if let Setting::Value(v) = &self.run {
+        if let Setting::Value(v) = &self.run.mode {
             if RunMode::parse(v).is_none() {
-                bail!("run: must be ask, auto or off");
+                bail!("run: must be ask, judge, auto or off");
             }
+        }
+        for r in &self.run.judge {
+            self.resolve_ref(r, &Setting::Unset)
+                .map_err(|e| anyhow!("run.judge: {e}"))?;
         }
         for name in SWITCHABLE_TOOLS {
             if let Some(Setting::Value(v)) = self.tools.get(name) {
@@ -477,7 +555,7 @@ impl Config {
 
     /// The configured `run:` mode (`ask` when unset).
     pub fn run_mode(&self) -> RunMode {
-        match &self.run {
+        match &self.run.mode {
             Setting::Off => RunMode::Off,
             Setting::Value(v) => RunMode::parse(v).unwrap_or_default(),
             Setting::Unset => RunMode::Ask,
@@ -714,6 +792,19 @@ roles:
         let c = Config::parse("{}").unwrap();
         assert_eq!(c.run_mode(), RunMode::Ask);
         assert!(c.tools.on("run") && c.tools.on("files") && c.tools.on("web"));
+        let j = Config::parse("providers: [{id: p, url: u, type: chat, models: {m: {id: a}}}]\nrun: {mode: judge, judge: [p/m], judge_prompt: {append: be strict}}").unwrap();
+        assert_eq!(j.run_mode(), RunMode::Judge);
+        assert_eq!(j.run.judge, ["p/m"]);
+        assert_eq!(
+            j.run.judge_prompt,
+            Some(JudgePrompt::Append("be strict".into()))
+        );
+        assert!(Config::parse("run: {mode: judge, judge: nope/x}").is_err());
+        assert!(Config::parse("run: {judge_prompt: {append: a, replace: b}}").is_err());
+        assert_eq!(
+            Config::parse("run: {mode: off}").unwrap().run_mode(),
+            RunMode::Off
+        );
         let c = Config::parse("run: auto\ntools: {web: off, run: on}").unwrap();
         assert_eq!(c.run_mode(), RunMode::Auto);
         assert!(c.tools.on("run") && !c.tools.on("web"));

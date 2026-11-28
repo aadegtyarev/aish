@@ -2299,3 +2299,276 @@ fn multiline_asks_even_in_auto_and_a_huge_command_is_refused() {
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }
+
+// ---- run: judge ----------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum J {
+    Say(&'static str),
+    Err500,
+    /// answers after this many ms
+    Slow(u64),
+}
+
+/// Agent steps for requests that carry tools; the judge's (no tools) get `j`.
+fn judge_mock(steps: Vec<(&'static str, Calls)>, j: J) -> Mock {
+    let n = Arc::new(AtomicUsize::new(0));
+    Mock::start(move |r, c| {
+        if !r.body.contains("\"tools\"") {
+            match j {
+                J::Say(t) => mock::chat_stream(c, &[t], Duration::ZERO),
+                J::Err500 => mock::json(c, 500, "{}"),
+                J::Slow(ms) => {
+                    std::thread::sleep(Duration::from_millis(ms));
+                    mock::chat_stream(c, &["ALLOW"], Duration::ZERO)
+                }
+            }
+            return;
+        }
+        let i = n.fetch_add(1, Ordering::SeqCst).min(steps.len() - 1);
+        let (text, calls) = &steps[i];
+        let calls: Vec<(&str, &str, &str)> =
+            calls.iter().map(|(a, b, d)| (*a, *b, d.as_str())).collect();
+        if calls.is_empty() {
+            mock::chat_stream(c, &[text], Duration::ZERO)
+        } else {
+            mock::chat_calls_stream(c, text, &calls)
+        }
+    })
+}
+
+fn judge_session(home: &TempDir, m: &Mock, extra: &str) -> Session {
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            "{}run: {{mode: judge{extra}}}\n",
+            config_kind_run(&m.url(), "chat")
+        ),
+    )
+    .unwrap();
+    let mut cmd = base(home);
+    cmd.env("AISH_JUDGE_TIMEOUT_MS", "800");
+    spawn(cmd)
+}
+
+/// Not plain (it expands a variable) and not on the hard list.
+const JCMD: &str = "printf 'v-%s\\n' \"${HOME:+ok}\"";
+
+fn judge_requests(m: &Mock) -> Vec<String> {
+    m.requests()
+        .iter()
+        .filter(|r| !r.body.contains("\"tools\"") && r.path.contains("chat"))
+        .map(|r| r.body.clone())
+        .collect()
+}
+
+#[test]
+fn judge_allow_runs_without_a_prompt_and_sees_only_the_basics() {
+    let home = TempDir::new().unwrap();
+    let m = judge_mock(run_steps(&[JCMD]), J::Say("ALLOW — read only"));
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? print it please\r").unwrap();
+    p.expect("⚖ allowed · read only").unwrap();
+    let c = p.expect("v-ok\r\n").unwrap();
+    assert!(!String::from_utf8_lossy(c.before()).contains("Enter run"));
+    p.expect("all-done").unwrap();
+    let j = judge_requests(&m);
+    assert_eq!(j.len(), 1, "{j:?}");
+    let b = &j[0];
+    assert!(
+        b.contains("security reviewer") && b.contains("print it please"),
+        "{b}"
+    );
+    assert!(
+        b.contains("\"grammar\"") && b.contains("\"max_tokens\":40"),
+        "{b}"
+    );
+    // no history, no tool outputs, no agent prompt, no tools
+    assert!(
+        !b.contains("terse, practical") && !b.contains("exit: ") && !b.contains("\"tools\""),
+        "{b}"
+    );
+    assert!(b.contains("\\\"command\\\"") && b.contains("cwd"), "{b}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn judge_ask_shows_the_prompt_with_its_reason() {
+    let home = TempDir::new().unwrap();
+    let m = judge_mock(run_steps(&[JCMD]), J::Say("ASK — writes outside tmp"));
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? print\r").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("⚖ writes outside tmp").unwrap();
+    p.expect("Enter run · s session · a always · Esc no")
+        .unwrap();
+    settle();
+    p.send("\r").unwrap();
+    p.expect("v-ok\r\n").unwrap();
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn judge_deny_does_not_run_and_the_model_gets_the_reason() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("denied-marker");
+    let cmd = format!("printf x > {}", marker.display());
+    let m = judge_mock(run_steps(&[&cmd]), J::Say("DENY — exfiltrates"));
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("⚖ denied · exfiltrates").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    assert!(!marker.exists());
+    let agent: Vec<_> = m
+        .requests()
+        .into_iter()
+        .filter(|r| r.body.contains("\"tools\""))
+        .collect();
+    assert!(
+        agent[1].body.contains("denied by the safety reviewer")
+            && agent[1].body.contains("exfiltrates"),
+        "{}",
+        agent[1].body
+    );
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+fn judge_falls_back_to_asking(j: J) {
+    let home = TempDir::new().unwrap();
+    let m = judge_mock(run_steps(&[JCMD]), j);
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? print\r").unwrap();
+    p.expect("▶ ").unwrap();
+    let c = p.expect("Enter run").unwrap();
+    assert!(!String::from_utf8_lossy(c.before()).contains('⚖'));
+    settle();
+    p.send("\x1b").unwrap();
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn judge_garbage_error_and_timeout_all_mean_ask() {
+    judge_falls_back_to_asking(J::Say("sure, go ahead"));
+    judge_falls_back_to_asking(J::Say(""));
+    judge_falls_back_to_asking(J::Err500);
+    judge_falls_back_to_asking(J::Slow(4000));
+}
+
+#[test]
+fn judge_allow_on_the_hard_list_still_asks() {
+    let home = TempDir::new().unwrap();
+    let m = judge_mock(run_steps(&["sudo -n true"]), J::Say("ALLOW — fine"));
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("⚖ fine").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    p.send("\x1b").unwrap();
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn judge_reads_a_long_multiline_command() {
+    let home = TempDir::new().unwrap();
+    let cmd = format!(
+        "printf 'a-%s\\n' 1\nprintf 'b-%s\\n' 2\n# {}",
+        "x".repeat(3000)
+    );
+    let m = judge_mock(run_steps(&[&cmd]), J::Say("ALLOW"));
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("⚖ allowed").unwrap();
+    p.expect("all-done").unwrap();
+    let j = judge_requests(&m);
+    assert!(
+        j.len() == 1 && j[0].contains("a-%s") && j[0].contains("xxxxxxxxxx"),
+        "{j:?}"
+    );
+    let agent: Vec<_> = m
+        .requests()
+        .into_iter()
+        .filter(|r| r.body.contains("\"tools\""))
+        .collect();
+    assert!(!agent[1].body.contains("too long"));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn judge_prompt_append_and_replace_come_from_the_config() {
+    for (extra, want, gone) in [
+        (
+            ", judge_prompt: {append: 'ZZ-EXTRA-RULE'}",
+            "ZZ-EXTRA-RULE",
+            false,
+        ),
+        (
+            ", judge_prompt: {replace: 'ONLY-THIS-PROMPT'}",
+            "ONLY-THIS-PROMPT",
+            true,
+        ),
+    ] {
+        let home = TempDir::new().unwrap();
+        let m = judge_mock(run_steps(&[JCMD]), J::Say("DENY"));
+        let mut p = judge_session(&home, &m, extra);
+        p.expect("E> ").unwrap();
+        settle();
+        p.send("? x\r").unwrap();
+        p.expect("all-done").unwrap();
+        let j = judge_requests(&m);
+        assert!(j[0].contains(want), "{}", j[0]);
+        assert_eq!(!j[0].contains("security reviewer"), gone, "{}", j[0]);
+        p.send_line("exit").unwrap();
+        p.expect(Eof).unwrap();
+    }
+}
+
+#[test]
+fn ai_run_judge_is_set_shown_and_saved_into_a_mapping() {
+    let home = TempDir::new().unwrap();
+    let m = judge_mock(vec![("ok\n", vec![])], J::Say("ASK"));
+    let mut p = judge_session(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai run").unwrap();
+    p.expect("run: judge").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai run auto --save").unwrap();
+    p.expect("run: auto · saved").unwrap();
+    assert!(
+        cfg_text(&home).contains("mode: auto"),
+        "{}",
+        cfg_text(&home)
+    );
+    p.expect("E> ").unwrap();
+    settle();
+    p.send_line("ai run judge").unwrap();
+    p.expect("run: judge · this session").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}

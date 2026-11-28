@@ -367,14 +367,34 @@ pub fn set_top(src: &str, key: &str, value: &str) -> Option<String> {
 /// Set `name: value` inside the top-level `tools:` mapping (block or flow
 /// form), creating the section when it is missing.
 pub fn set_tool(src: &str, name: &str, value: &str) -> Option<String> {
+    set_nested(src, "tools", name, value)
+}
+
+/// Set `run: <mode>`; when `run:` is a mapping, its `mode:` key.
+pub fn set_run(src: &str, mode: &str) -> Option<String> {
+    let lines = split(src);
+    let nested = find_top(&lines, "run").is_some_and(|i| {
+        let rest = key_rest(&lines[i], "run").unwrap_or("");
+        let (a, b) = value_span(rest);
+        a == b || rest[a..b].starts_with('{')
+    });
+    if nested {
+        set_nested(src, "run", "mode", mode)
+    } else {
+        set_top(src, "run", mode)
+    }
+}
+
+/// Set `name: value` inside the top-level mapping `top` (block or flow).
+fn set_nested(src: &str, top: &str, name: &str, value: &str) -> Option<String> {
     let eol = eol_of(src);
     let mut lines = split(src);
-    let Some(i) = find_top(&lines, "tools") else {
+    let Some(i) = find_top(&lines, top) else {
         let at = lines.len();
-        push_line(&mut lines, at, format!("tools:\n  {name}: {value}"), eol);
+        push_line(&mut lines, at, format!("{top}:\n  {name}: {value}"), eol);
         return Some(join(&lines));
     };
-    let rest = key_rest(&lines[i], "tools")?.to_owned();
+    let rest = key_rest(&lines[i], top)?.to_owned();
     let (vs, ve) = value_span(&rest);
     let colon = body(&lines[i]).len() - rest.len();
     if vs != ve {
@@ -678,5 +698,19 @@ mod tests {
             "tools:\n  run: off\nx: 1\n"
         );
         assert_eq!(set_tool("tools: ~\n", "run", "off"), None);
+        assert_eq!(set_run("run: ask\n", "judge").unwrap(), "run: judge\n");
+        assert_eq!(set_run("a: 1\n", "judge").unwrap(), "a: 1\nrun: judge\n");
+        assert_eq!(
+            set_run("run:\n  mode: ask\n  judge: p/m\n", "auto").unwrap(),
+            "run:\n  mode: auto\n  judge: p/m\n"
+        );
+        assert_eq!(
+            set_run("run:\n  judge: p/m\n", "judge").unwrap(),
+            "run:\n  judge: p/m\n  mode: judge\n"
+        );
+        assert_eq!(
+            set_run("run: {judge: p/m}\n", "judge").unwrap(),
+            "run: {judge: p/m, mode: judge}\n"
+        );
     }
 }

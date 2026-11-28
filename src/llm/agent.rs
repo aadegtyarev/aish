@@ -227,7 +227,10 @@ enum ToolOut {
         bg: Option<Bg>,
         /// What the user is shown and the hard list judged.
         cmd: String,
-        hard: bool,
+        /// Passes the strict structural check.
+        plain: bool,
+        /// On the hard list.
+        listed: bool,
     },
 }
 
@@ -625,14 +628,21 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                     "command with control characters rejected".into(),
                 );
             }
-            if cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12 {
+            let mode = env.llm.run_mode();
+            // (the judge reads long commands; a person cannot)
+            let too_long = if mode == RunMode::Judge {
+                cmd.chars().count() > super::judge::MAX_COMMAND
+            } else {
+                cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12
+            };
+            if too_long {
                 return done(
                     "error: command too long to review: split it into smaller commands".into(),
                     "command too long to review".into(),
                 );
             }
-            let mode = env.llm.run_mode();
-            let hard = super::hard::needs_ask(&cmd) || cmd.contains('\n');
+            let plain = super::hard::plain(&cmd);
+            let listed = super::hard::on_hard_list(&cmd);
             let (line, bgj) = if bg {
                 let Some(dir) = jobs_dir() else {
                     return done("error: no state directory".into(), "run: no HOME".into());
@@ -667,7 +677,8 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 } else {
                     cmd
                 },
-                hard,
+                plain,
+                listed,
             }
         }
         "read_block" => {
@@ -958,8 +969,17 @@ pub fn drive(
                     line,
                     bg,
                     cmd,
-                    hard,
-                } => match approve(llm, task, &cmd, hard) {
+                    plain,
+                    listed,
+                } => match approve(
+                    llm,
+                    task,
+                    &cmd,
+                    plain,
+                    listed,
+                    &turn.q,
+                    &cwd_of(tracker),
+                ) {
                     Approval::Cancelled => {
                         note_only(task, "⏹");
                         return None;
@@ -968,6 +988,14 @@ pub fn drive(
                         &c.id,
                         "The user declined to run this command. Do not retry it: continue without it, \
                          or propose something different.",
+                    )),
+                    Approval::Denied(why) => turn.msgs.push(Message::tool_result(
+                        &c.id,
+                        format!(
+                            "The command was denied by the safety reviewer{}. It was not run. \
+                             Do not retry it or work around it: tell the user what you wanted and why it was refused.",
+                            if why.is_empty() { String::new() } else { format!(": {why}") }
+                        ),
                     )),
                     Approval::Go => paused = Some((c.id.clone(), line, bg, true)),
                 },
@@ -996,15 +1024,66 @@ pub fn drive(
 enum Approval {
     Go,
     Declined,
+    Denied(String),
     Cancelled,
 }
 
-/// Ask the user about a command the model wants to run (a dim prompt under
-/// the answer; one key decides). In `auto` only the hard list asks.
-fn approve(llm: &Llm, task: &Task, cmd: &str, hard: bool) -> Approval {
-    let full = llm.run_mode() == RunMode::Ask;
+fn judge_note(task: &Task, verdict: &str, reason: &str) {
+    let t = if reason.is_empty() {
+        format!("⚖ {verdict}")
+    } else {
+        format!("⚖ {verdict} · {reason}")
+    };
+    note_only(
+        task,
+        &fit_line(&t, usize::from(task.cols).saturating_sub(2)),
+    );
+}
+
+/// Decide about a command the model wants to run. `auto`: only what is not
+/// plain or is on the hard list asks. `judge`: the same, but a model reviews
+/// it first (ALLOW runs it, DENY refuses it, the rest asks the user with the
+/// reason in view). `ask`: the user decides everything.
+fn approve(
+    llm: &Llm,
+    task: &Task,
+    cmd: &str,
+    plain: bool,
+    listed: bool,
+    question: &str,
+    cwd: &str,
+) -> Approval {
+    let mode = llm.run_mode();
+    let hard = listed || !plain;
+    let full = matches!(mode, RunMode::Ask | RunMode::Judge);
+    let mut reason: Option<String> = None;
     if !full && !hard {
         return Approval::Go;
+    }
+    if mode == RunMode::Judge {
+        if !hard {
+            return Approval::Go;
+        }
+        let w = crate::editor::wait::Waiter::start_judging(task);
+        let v = super::judge::judge(llm, task, cmd, cwd, question);
+        drop(w);
+        if task.cancelled() {
+            return Approval::Cancelled;
+        }
+        match v {
+            super::judge::Verdict::Allow(r) if !listed => {
+                judge_note(task, "allowed", &r);
+                return Approval::Go;
+            }
+            // the hard list: the user still decides
+            super::judge::Verdict::Allow(r) | super::judge::Verdict::Ask(r) => {
+                reason = Some(r).filter(|r| !r.is_empty());
+            }
+            super::judge::Verdict::Deny(r) => {
+                judge_note(task, "denied", &r);
+                return Approval::Denied(r);
+            }
+        }
     }
     let r = Renderer::new(&task.theme, task.cols);
     let hints: &[&str] = if full {
@@ -1018,7 +1097,7 @@ fn approve(llm: &Llm, task: &Task, cmd: &str, hard: bool) -> Approval {
         &["Enter run · Esc no", "Enter · Esc", "⏎ Esc"]
     };
     let mut out = Vec::new();
-    r.run_prompt(cmd, hints, &mut out);
+    r.run_prompt(cmd, reason.as_deref(), hints, &mut out);
     task.write(&out);
     let end = |note: Option<&str>| {
         let mut out = Vec::new();
@@ -1173,7 +1252,8 @@ pub fn on_block(llm: &Llm, block: &Block) {
         return;
     }
     let ran = block.command.trim();
-    let same = ran == p.proposed.trim();
+    // what aish typed itself is the next block, whatever bash made of it
+    let same = p.ran_by_aish || ran == p.proposed.trim();
     if !same && !small_edit(&p.proposed, ran) {
         *g = None; // the user did something else: the agent stops silently
         return;

@@ -12,6 +12,7 @@ pub mod context;
 pub mod firstrun;
 pub mod hard;
 pub mod jobs;
+pub mod judge;
 pub mod mask;
 pub mod opts;
 pub mod prefix;

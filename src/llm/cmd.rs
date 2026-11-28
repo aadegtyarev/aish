@@ -184,7 +184,7 @@ const HELP: &[(&str, &str)] = &[
     ("chat|complete <model>", "same for a role"),
     ("profile [name]", "profiles, switch"),
     (
-        "run [ask|auto|off]",
+        "run [ask|judge|auto|off]",
         "may the model run commands; --save keeps it",
     ),
     ("tools [name on|off]", "switch tools; --save keeps it"),
@@ -337,7 +337,7 @@ fn persist(
 pub fn save_run(llm: &Llm, mode: RunMode) -> bool {
     persist(
         llm,
-        |s| crate::config_edit::set_top(s, "run", mode.name()),
+        |s| crate::config_edit::set_run(s, mode.name()),
         |c| c.run_mode() == mode,
     )
 }
@@ -357,7 +357,15 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
         if !llm.tool_on("run") {
             v.push(Ln::dim("tool run is off: ai tools run on"));
         } else {
-            v.push(Ln::dim("ask | auto | off · add --save to keep"));
+            if mode == RunMode::Judge {
+                let by = llm
+                    .config()
+                    .and_then(|c| c.run.judge.first().cloned())
+                    .or_else(|| llm.target("chat").map(|t| t.label))
+                    .unwrap_or_else(|| "no model".into());
+                v.push(Ln::dim(format!("judge: {by}")));
+            }
+            v.push(Ln::dim("ask|judge|auto|off · --save keeps"));
         }
         return v;
     };
@@ -365,7 +373,7 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
         let names: Vec<&str> = RunMode::ALL.iter().map(|m| m.name()).collect();
         return vec![Ln::dim(format!(
             "no mode: {a} {}",
-            did_you_mean(a, &names, "ask | auto | off")
+            did_you_mean(a, &names, "ask | judge | auto | off")
         ))];
     };
     llm.set_run_mode(mode);

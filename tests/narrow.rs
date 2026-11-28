@@ -1358,6 +1358,112 @@ fn run_prompt_fits_the_width_and_stays_dim() {
     }
 }
 
+fn judge_mock(verdict: &'static str) -> Mock {
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Mock::start(move |r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else if !r.body.contains("\"tools\"") {
+            mock::chat_stream(c, &[verdict], Duration::ZERO);
+        } else if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            let cmd = "printf 'v-%s\\n' \"${HOME:+ok}\" && sleep 1 && echo more-and-more-and-more";
+            mock::chat_calls_stream(
+                c,
+                "",
+                &[(
+                    "c1",
+                    "run",
+                    &serde_json::json!({ "command": cmd }).to_string(),
+                )],
+            );
+        } else {
+            mock::chat_stream(c, &["fine-done\n"], Duration::from_millis(10));
+        }
+    })
+}
+
+fn judge_lines_fit_the_width() {
+    let reason = "modifies files outside the build directory entirely";
+    for cols in [36u16, 80, 20] {
+        // ASK: the reason sits above the hint, the user decides
+        let home = TempDir::new().unwrap();
+        let m = judge_mock("ASK — modifies files outside the build directory entirely");
+        let dir = home.path().join(".config/aish");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.yaml"),
+            format!("{}run: {{mode: judge}}\n", config(&m.url())),
+        )
+        .unwrap();
+        let mut t = start_rows(&home, &prompt(12), "", cols, 40);
+        t.send("? go\r");
+        t.wait_for("Esc");
+        t.pump_for(Duration::from_millis(500));
+        t.assert_clean();
+        let c = cols as usize;
+        let y = t.scr.find_row("⚖").unwrap();
+        let hint = t.scr.find_row("Esc").unwrap();
+        assert_eq!(hint, y + 1, "{}", t.scr.dump());
+        let row = t.scr.row_text(y);
+        assert!(
+            row.starts_with("│ ") && row.chars().count() <= c,
+            "{}",
+            t.scr.dump()
+        );
+        assert!(
+            !t.scr.row_wrapped(y) && t.scr.is_dim(0, y) && t.scr.is_dim(4, y),
+            "{}",
+            t.scr.dump()
+        );
+        if cols >= 60 {
+            assert!(row.contains(reason), "{}", t.scr.dump());
+        }
+        t.send("\x1b");
+        t.wait_for("fine-done");
+        t.pump_for(Duration::from_millis(500));
+        t.assert_clean();
+
+        // DENY and ALLOW: one dim row each
+        for (v, want) in [
+            (
+                "DENY — modifies files outside the build directory entirely",
+                "⚖ denied",
+            ),
+            (
+                "ALLOW — modifies files outside the build directory entirely",
+                "⚖ allowed",
+            ),
+        ] {
+            let home = TempDir::new().unwrap();
+            let m = judge_mock(v);
+            let dir = home.path().join(".config/aish");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("config.yaml"),
+                format!("{}run: {{mode: judge}}\n", config(&m.url())),
+            )
+            .unwrap();
+            let mut t = start_rows(&home, &prompt(12), "", cols, 40);
+            t.send("? go\r");
+            t.wait_for(want);
+            t.pump_for(Duration::from_millis(1500));
+            t.assert_clean();
+            let y = t.scr.find_row(want).unwrap();
+            let row = t.scr.row_text(y);
+            assert!(
+                row.starts_with("│ ") && row.chars().count() <= c,
+                "{}",
+                t.scr.dump()
+            );
+            assert!(
+                !t.scr.row_wrapped(y) && t.scr.is_dim(4, y),
+                "{}",
+                t.scr.dump()
+            );
+        }
+    }
+}
+
 macro_rules! both {
     ($($n:ident),* $(,)?) => {
         mod utf8 {
@@ -1419,6 +1525,7 @@ fn conversation_commands_fit_the_width() {
 }
 
 both!(
+    judge_lines_fit_the_width,
     conversation_commands_fit_the_width,
     run_prompt_fits_the_width_and_stays_dim,
     waiting_phases,

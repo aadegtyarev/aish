@@ -568,6 +568,16 @@ pub fn needs_ask(cmd: &str) -> bool {
     !plain_ok(cmd) || needs_ask_depth(cmd, 0)
 }
 
+/// Does `cmd` pass the strict structural check (see `needs_ask`)?
+pub fn plain(cmd: &str) -> bool {
+    plain_ok(cmd)
+}
+
+/// Is `cmd` on the hard list (or not understood by it)?
+pub fn on_hard_list(cmd: &str) -> bool {
+    needs_ask_depth(cmd, 0)
+}
+
 /// Programs that run other programs or code: never judged, always asked.
 const OPAQUE: &[&str] = &[
     "sh",

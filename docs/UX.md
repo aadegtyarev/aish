@@ -197,12 +197,21 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     ("command too long to review"). A key decides only as a single keypress (Enter,
     `s`, `a`, Esc), not in the first 300 ms and not within 700 ms of other typing;
     anything else shows `press Enter, s, a or Esc`.
+  - `judge`: a plain command that is not on the hard list runs as in `auto`. Anything
+    else (also multi-line or long, up to 16k characters) goes to a one-shot **judge**
+    model (`run.judge`, default the chat model; no tools, no history, 8 s; it sees only
+    the command, the cwd and your last question, masked for a non-local provider). It
+    answers `ALLOW`/`ASK`/`DENY` + a reason: `│ ⚖ allowed · reason` runs the command,
+    `│ ⚖ denied · reason` refuses it (the model is told why), `ASK` or no clean answer
+    shows the normal prompt with `⚖ reason` above the keys (a very long command shows
+    its first rows and `… N more rows`). On the hard list ALLOW becomes ASK. The prompt
+    can be extended or replaced with `run.judge_prompt`. While it thinks: `⠹ judging`.
   - `off`: the old way — the command is put into the input line (the same checks
     as for a ```` ```bash ```` block) and the turn pauses. Run it (you may edit it;
     the model learns what was actually run), and when the block ends the model
     continues in a new `│` section. Ctrl-C on the line, or a different command
     instead of the proposed one, stops the agent silently.
-  - `ai run` shows the mode, `ai run ask|auto|off` sets it for the session, add
+  - `ai run` shows the mode, `ai run ask|judge|auto|off` sets it for the session, add
     `--save` to write `run:` to the config. Read-only commands run by themselves
     in every mode. The Ctrl-Q overlay never has `run` (the foreground may be another host).
 - Tools (`ai tools` switches `run`, `files`, `web`; an off tool is not sent to the
@@ -364,7 +373,7 @@ $ ai help          ← commands: `command — what it does`, long ones wrap (fit
 $ ai models        ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
 $ ai model chat ds ← switch a role's model AND save it to the config (`ai model ds` = chat; `ai chat ds` is the same)
 $ ai profile       ← profiles (the active one is marked `*`); `ai profile inet` switches and saves
-$ ai run [ask|auto|off]    ← may the model run commands (`--save` keeps it in the config)
+$ ai run [ask|judge|auto|off]    ← may the model run commands (`--save` keeps it in the config)
 $ ai tools [name on|off]   ← the agent's tools run/files/web (`--save` keeps it)
 $ ai off / ai on          ← turn model suggestions off/on
 $ ai config                ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)

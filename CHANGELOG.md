@@ -10,6 +10,13 @@ version and date, and the release notes on GitHub are taken from it.
 ## [Unreleased]
 
 ### Added
+- `run: judge`: a model decides instead of you. Plain commands run unasked; the rest
+  goes to a one-shot judge (no tools, no history; sees the command, cwd and your last
+  question) that answers ALLOW / ASK / DENY with a short reason: `⚖ allowed · …` runs
+  it, `⚖ denied · …` refuses it (the agent is told why), ASK, garbage, an error or an
+  8 s timeout shows the prompt with the reason. The hard list never runs on ALLOW.
+  `run:` also takes `{mode, judge, judge_prompt: {append|replace}}`; `ai run judge
+  [--save]`; the wait shows `judging`; local llama.cpp gets a GBNF grammar.
 - `prefix:` in the config picks the character that starts a question: `?` (default),
   `,`, `@`, `#` or `;`. Detection, highlighting, the right-edge marker and all hints
   follow it; anything else is a config error that names the allowed set.

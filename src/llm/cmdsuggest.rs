@@ -326,8 +326,9 @@ mod tests {
         // not the current mode
         assert_eq!(
             c(&s, "ai run ").unwrap(),
-            ("auto".into(), "· now ask".into())
+            ("judge".into(), "· now ask".into())
         );
+        assert_eq!(c(&s, "ai run j").unwrap().0, "udge");
         assert_eq!(c(&s, "ai run a").unwrap().0, "uto");
         assert_eq!(c(&s, "ai run as"), None);
         let off = State {

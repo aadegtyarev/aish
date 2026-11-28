@@ -73,6 +73,19 @@ roles:
 # Read-only commands keep running by themselves in every mode.
 # In a session: `ai run ask|auto|off` (add --save to write it here).
 # run: ask
+#
+#   judge — a model decides instead of you. A plain command (see UX.md) runs unasked;
+#           everything else, also long and multi-line commands (up to 16k chars), goes to
+#           the judge: ALLOW runs it (`⚖ allowed · reason`), DENY refuses it (the model is
+#           told why), ASK or no clear answer within 8 s shows the usual prompt with the
+#           reason. Hard-list commands never run on ALLOW. The judge sees only the
+#           command, the cwd and your last question, never outputs or history.
+# The long form (the scalar `run: judge` keeps working):
+# run:
+#   mode: judge                 # ask | judge | auto | off
+#   judge: local/qwen           # model (or list, tried in order); default: the chat role
+#   judge_prompt: {append: "Treat anything under ~/work as low risk."}
+#   # judge_prompt: {replace: "~/judge-prompt.txt"}   # a text or a file
 
 # Switch the agent's tools on/off. An off tool is not sent to the model at all.
 # `run: off` here removes the run tool entirely (not even read-only commands);

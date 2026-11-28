@@ -341,8 +341,14 @@ impl Renderer {
     /// The approval prompt of a command the model wants to run:
     /// `│ ▶ cmd` (the whole command, wrapped, whitespace made visible) and a
     /// dim hint row. The last row is the hint; no trailing newline.
-    pub fn run_prompt(&self, cmd: &str, hints: &[&str], out: &mut Vec<u8>) {
-        let rows = wrap_run(&show_cmd(cmd), self.cols.saturating_sub(2).max(1));
+    /// `note`: a dim line above the hint (the judge's reason); a command of
+    /// more than 12 rows shows its first rows and `… N more rows`.
+    pub fn run_prompt(&self, cmd: &str, note: Option<&str>, hints: &[&str], out: &mut Vec<u8>) {
+        let mut rows = wrap_run(&show_cmd(cmd), self.cols.saturating_sub(2).max(1));
+        let hidden = rows.len().saturating_sub(12);
+        if hidden > 0 {
+            rows.truncate(11);
+        }
         for (i, r) in rows.iter().enumerate() {
             out.extend_from_slice(b"\r\n");
             self.bar(out);
@@ -352,6 +358,12 @@ impl Renderer {
             self.sgr(out, &self.accent.clone());
             out.extend_from_slice(r.as_bytes());
             self.reset(out);
+        }
+        if hidden > 0 {
+            self.run_note(&format!("… {} more rows", hidden + 1), out);
+        }
+        if let Some(n) = note {
+            self.run_note(&format!("⚖ {n}"), out);
         }
         // the longest hint that fits: the bar, two spaces and the text
         let room = self.cols.saturating_sub(2);
@@ -366,6 +378,15 @@ impl Renderer {
         self.sgr(out, &self.dim.clone());
         out.extend_from_slice(b"  ");
         out.extend_from_slice(fit_line(&sanitize(hint), room).as_bytes());
+        self.reset(out);
+    }
+
+    fn run_note(&self, text: &str, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\r\n");
+        self.bar(out);
+        self.sgr(out, &self.dim.clone());
+        out.extend_from_slice(b"  ");
+        out.extend_from_slice(fit_line(&sanitize(text), self.cols.saturating_sub(2)).as_bytes());
         self.reset(out);
     }
 
