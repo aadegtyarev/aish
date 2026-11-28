@@ -1,4 +1,21 @@
-# Ideas
+# Backlog and ideas
+
+## Backlog (agreed, in order)
+
+1. **Session search for the model.** `find(query|regex, scope)` over block
+   commands/outputs and stored tool results (numbered, size-capped) returning
+   short hits `#12 L340: …`; `read_block(id, lines a..b)` for slices of huge
+   output; `ai find <text>` for the user.
+2. **Memory file.** `~/.config/aish/memory.md`, limit in config
+   (`memory: {limit: 2000 chars}` or tokens); tools `memory_read` and
+   `memory_write` (replace whole); over the limit the write is refused with
+   `now N, limit M` so the model rewrites it shorter.
+3. **Request order for provider caching.** Static system prompt → memory →
+   skills index → summary + conversation → dynamic context (cwd, git, recent
+   blocks, jobs) last.
+4. **Overridable system prompt.** `system: {replace: <file|text>, append: <text>}`.
+
+## Ideas
 
 Not planned yet; each needs a design pass before work starts.
 
