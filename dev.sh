@@ -17,6 +17,8 @@ exec docker run --rm -i "${tty[@]}" \
   "${user[@]}" \
   -v "$PWD":/src -w /src \
   -e CARGO_HOME=/src/target/cargo-home -e CARGO_TARGET_DIR=$target \
+  -e HOME=/src/target/home \
   $image sh -c '
+    mkdir -p "$HOME"
     case "$1" in fmt|clippy) rustup component add rustfmt clippy >/dev/null 2>&1 || true ;; esac
     exec cargo "$@"' sh "$@"
