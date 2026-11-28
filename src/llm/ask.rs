@@ -33,13 +33,16 @@ pub struct Parsed {
 pub fn short_reason(e: &Error, t: &Target) -> String {
     match e {
         Error::Connect(_) | Error::Timeout => format!("no answer from {}", t.label),
-        Error::Http { status, message } if matches!(status, 401 | 403) => {
-            let _ = message;
-            format!("{status} from {}", t.provider)
-        }
+        Error::Http {
+            status: status @ (401 | 403),
+            ..
+        } => format!("{status} from {}", t.provider),
         Error::Http { status, message } => {
-            let m: String = message.chars().take(60).collect();
-            format!("{status} from {}: {m}", t.provider)
+            format!(
+                "{status} from {}: {}",
+                t.provider,
+                message.chars().take(60).collect::<String>()
+            )
         }
         Error::Api(m) => format!("{}: {}", t.label, m.chars().take(60).collect::<String>()),
         Error::Cancelled => "⏹".into(),
@@ -124,19 +127,13 @@ pub fn spawn(
             "" => "Explain what went wrong or what the last output means, briefly.",
             q => q,
         };
-        let ctx = answer_context(&llm, &tracker, &target, &p);
+        let mut ctx = context::build(&tracker, p.blocks, target.window);
+        let jobs = llm.jobs.lock().map(|j| j.describe()).unwrap_or_default();
+        if !jobs.starts_with("no ") {
+            ctx.push_str(&format!("background jobs:\n{jobs}\n"));
+        }
         run_turn(&llm, &tracker, &target, task, ctx, q.to_owned(), false)
     });
-}
-
-fn answer_context(llm: &Llm, tracker: &Arc<Mutex<BlockTracker>>, t: &Target, p: &Parsed) -> String {
-    let mut ctx = context::build(tracker, p.blocks, t.window);
-    let jobs = llm.jobs.lock().map(|j| j.describe()).unwrap_or_default();
-    if !jobs.starts_with("no ") {
-        ctx.push_str(&format!("background jobs:\n{jobs}\n"));
-    }
-    // (masking happens per request, for the model that actually answers)
-    ctx
 }
 
 /// One question: compact if needed, start the turn with `ctx`, drive it.
@@ -195,7 +192,7 @@ pub fn tail_lines(s: &str, lines: usize, max_chars: usize) -> (String, usize) {
 
 /// The context text of an overlay question (unmasked).
 pub fn overlay_context(s: &Screen, window: Option<u64>) -> String {
-    let max = context::budget_tokens(window) * 4;
+    let max = context::budget_tokens(window) * context::CHARS_PER_TOKEN;
     let (tail, _) = tail_lines(&s.tail, OVERLAY_LINES, max);
     let mut c = format!(
         "A program is running in the terminal.\nrunning command: {}\nlocal shell cwd: {}\n",

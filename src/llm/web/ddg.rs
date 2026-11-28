@@ -73,6 +73,6 @@ pub fn search(base: &str, q: &str) -> Result<Vec<Hit>, String> {
         .post(base)
         .send_form(&[("q", q)])
         .map_err(|e| super::short_err(&e))?;
-    let body = read_text(resp, 1024 * 1024)?;
+    let body = read_text(resp, super::SEARCH_BODY_CAP)?;
     Ok(parse(&body))
 }

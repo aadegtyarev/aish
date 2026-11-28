@@ -31,5 +31,5 @@ pub fn search(base: &str, key: &str, q: &str) -> Result<Vec<Hit>, String> {
         .set("X-Subscription-Token", key)
         .call()
         .map_err(|e| super::short_err(&e))?;
-    parse(&read_text(resp, 1024 * 1024)?)
+    parse(&read_text(resp, super::SEARCH_BODY_CAP)?)
 }

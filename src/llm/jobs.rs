@@ -169,18 +169,10 @@ pub fn notice_text(f: &Finished, cols: usize) -> (bool, String) {
     let room = cols
         .saturating_sub(3 + head.chars().count() + tail.chars().count() + 1)
         .max(8);
-    let one: String = f
-        .cmd
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let cmd = if one.chars().count() > room {
-        let t: String = one.chars().take(room - 1).collect();
-        format!("{t}…")
-    } else {
-        one
-    };
-    (ok, format!("{head}{cmd}{tail}"))
+    (
+        ok,
+        format!("{head}{}{tail}", super::render::one_line(&f.cmd, room)),
+    )
 }
 
 /// Removes bash's own job report lines (`[1]+  Done  cmd`) from a stream of

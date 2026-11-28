@@ -72,6 +72,19 @@ pub fn fit_line(s: &str, cols: usize) -> String {
     out
 }
 
+/// `s` on one line (control characters as blanks), cut to `max` chars with `…`.
+pub fn one_line(s: &str, max: usize) -> String {
+    let mut one: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if one.chars().count() > max {
+        one = one.chars().take(max - 1).collect();
+        one.push('…');
+    }
+    one
+}
+
 pub(crate) fn unsafe_cmd(cmd: &str) -> bool {
     cmd.chars().any(|c| is_bad(c) && c != '\n' && c != '\t')
 }

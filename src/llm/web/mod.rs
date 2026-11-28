@@ -22,6 +22,8 @@ use super::mask::mask;
 use crate::config::{resolve_key, Config, Setting};
 
 pub const MAX_HITS: usize = 8;
+/// Largest search-result body taken.
+pub const SEARCH_BODY_CAP: usize = 1024 * 1024;
 /// Largest page body taken.
 pub const BODY_CAP: usize = 2 * 1024 * 1024;
 /// Largest result handed to the model.

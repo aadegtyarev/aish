@@ -16,7 +16,7 @@ use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
 use super::cmd::edit_distance;
 use super::context::{self, trim_middle};
-use super::render::{fit_line, run_rows, unsafe_cmd, Renderer};
+use super::render::{fit_line, one_line, run_rows, unsafe_cmd, Renderer};
 use super::web::{self, Web};
 use super::{Llm, Target};
 use crate::blocks::{Block, BlockTracker};
@@ -483,17 +483,7 @@ fn arg_u(v: &Value, k: &str) -> Option<usize> {
 }
 
 fn short(cmd: &str, cols: usize) -> String {
-    let one: String = cmd
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let max = cols.saturating_sub(24).max(20);
-    if one.chars().count() > max {
-        let t: String = one.chars().take(max - 1).collect();
-        format!("{t}…")
-    } else {
-        one
-    }
+    one_line(cmd, cols.saturating_sub(24).max(20))
 }
 
 /// `host/path…` of a URL, shortened.
@@ -594,10 +584,6 @@ pub fn read_file(path: &str, cwd: &str, start: usize, max: usize) -> Result<Stri
     }
     out.push_str(&format!("[lines {start}-{last} of {}]", all.len()));
     Ok(out)
-}
-
-fn jobs_dir() -> Option<PathBuf> {
-    crate::shell::state_dir().map(|d| d.join("jobs"))
 }
 
 /// `~/...` when under $HOME, else a quoted absolute path.
@@ -729,7 +715,7 @@ fn tool_run(env: &Env, v: &Value, cols: usize) -> ToolOut {
     }
     let listed = super::hard::on_hard_list(&cmd);
     let (line, bgj) = if bg {
-        let Some(dir) = jobs_dir() else {
+        let Some(dir) = crate::shell::state_dir().map(|d| d.join("jobs")) else {
             return done("error: no state directory", "run: no HOME");
         };
         let _ = std::fs::create_dir_all(&dir);
