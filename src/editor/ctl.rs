@@ -634,21 +634,7 @@ impl Controller {
             // prints a fresh prompt, where the editor takes over again.
             self.task = None;
             self.pending_prefill = done;
-            let up = self.scan.rows;
-            if up > 0 {
-                // A prompt whose last line wraps: on Enter readline would go
-                // up and repaint it over the answer's last row (so no Enter
-                // here, and PROMPT_COMMAND does not rerun for this case).
-                // Ask for a repaint below instead, with the rows it clears
-                // above the new prompt left blank.
-                let pad = "\r\n".repeat(usize::from(up) + 1);
-                let _ = self.stdout.write_all(pad.as_bytes());
-                self.scan.col = 0;
-                self.scan.b_seen = false;
-                self.send(REDRAW_KEY);
-            } else {
-                self.send(b"\r");
-            }
+            self.bare_enter();
         }
         // A notice that arrived after the prompt was taken: show it now if
         // nothing is typed (otherwise it waits for the next quiet moment).
@@ -730,7 +716,7 @@ impl Controller {
                             let _ = self.stdout.write_all(b"\x1b[0m");
                         }
                         self.leave(true);
-                        self.send(b"\r");
+                        self.bare_enter();
                     } else {
                         self.erase();
                         self.leave(true);
@@ -780,6 +766,24 @@ impl Controller {
         }
         b.push(b'\r');
         self.send(&b);
+    }
+
+    /// Have bash print a fresh prompt below what is on the screen. A bare
+    /// Enter does it (and reruns PROMPT_COMMAND), unless the prompt's last line
+    /// wraps: then readline would go up on Enter and repaint it over our last
+    /// row, so ask for a repaint below instead, with the rows it clears above
+    /// the new prompt left blank.
+    fn bare_enter(&mut self) {
+        let up = self.scan.rows;
+        if up > 0 {
+            let pad = "\r\n".repeat(usize::from(up) + 1);
+            let _ = self.stdout.write_all(pad.as_bytes());
+            self.scan.col = 0;
+            self.scan.b_seen = false;
+            self.send(REDRAW_KEY);
+        } else {
+            self.send(b"\r");
+        }
     }
 
     /// CR and up to the first row of the prompt's last line.

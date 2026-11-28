@@ -964,6 +964,115 @@ fn late_update_notice() {
     }
 }
 
+// ---- the question line stays as typed, one fresh prompt after the answer ----------
+
+fn question_cases() -> Vec<(u16, String)> {
+    let real = "\\[\\e[01;32m\\]adegtyarev@adegtyarev-pc-beelink\\[\\e[00m\\]:\\[\\e[01;34m\\]~\\[\\e[00m\\]$ ";
+    vec![
+        (36, real.to_string()),
+        (36, prompt(34)),
+        (36, prompt(33)),
+        (36, prompt(12)),
+        (36, TWO_LINE.to_string()),
+        (80, real.to_string()),
+    ]
+}
+
+/// After the dialogue: `prompt + question` rows as typed, then `middle`, then
+/// the one fresh prompt (nothing else, no empty prompt in between).
+fn assert_transcript(t: &Term, ps1: &str, question: &str, middle: &dyn Fn(&[String]) -> bool) {
+    let vis = visible(ps1);
+    let c = t.scr.cols;
+    let l = t.scr.lines_no_marker();
+    let last_line = vis.rsplit('\n').next().unwrap().to_string();
+    let head: Vec<char> = format!("{last_line}{question}").chars().collect();
+    let vl: Vec<&str> = vis.lines().collect();
+    let mut want: Vec<String> = vl[..vl.len() - 1].iter().map(|x| x.to_string()).collect();
+    want.extend(
+        head.chunks(c)
+            .map(|k| k.iter().collect::<String>().trim_end().to_string()),
+    );
+    if head.len().is_multiple_of(c) {
+        want.push(String::new());
+    }
+    let n = want.len();
+    // (a prompt filling the row exactly leaves its last char on the row above)
+    let q_rows: Vec<&String> = l.iter().take(n).collect();
+    assert_eq!(
+        q_rows
+            .iter()
+            .map(|r| r.as_str())
+            .collect::<Vec<_>>()
+            .join("|")
+            .replace(' ', ""),
+        want.join("|").replace(' ', ""),
+        "question line\n{}",
+        t.scr.dump()
+    );
+    let rest = &l[n..];
+    assert!(middle(rest), "answer\n{}", t.scr.dump());
+    // exactly one prompt after it: the prompt's first row occurs once in `rest`
+    let first: String = last_line
+        .chars()
+        .take(c)
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    let n_prompts = rest
+        .iter()
+        .filter(|r| r.starts_with(first.trim_end()))
+        .count();
+    assert_eq!(n_prompts, 1, "one fresh prompt\n{}", t.scr.dump());
+    assert!(
+        !rest
+            .iter()
+            .take_while(|r| !r.starts_with("│"))
+            .any(|r| !r.is_empty()
+                && r.starts_with(first.trim_end())
+                && !rest.iter().any(|x| x.starts_with("│"))),
+        "{}",
+        t.scr.dump()
+    );
+}
+
+fn question_answer() {
+    let m = Mock::start(|r, c| {
+        if r.path.ends_with("/models") {
+            mock::json(c, 200, r#"{"data":[{"id":"test"}]}"#);
+        } else {
+            mock::chat_stream(c, &["Привет, это ответ.\n"], Duration::from_millis(10));
+        }
+    });
+    for (cols, ps1) in question_cases() {
+        for q in ["? тест", "? q"] {
+            let home = TempDir::new().unwrap();
+            let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+            t.send(&format!("{q}\r"));
+            t.wait_for("Привет");
+            t.pump_for(Duration::from_millis(800));
+            t.assert_clean();
+            assert_transcript(&t, &ps1, q, &|rest| {
+                rest.first().is_some_and(|r| r.starts_with("│ Привет")) && rest.len() >= 2
+            });
+        }
+    }
+}
+
+fn question_without_a_model() {
+    for (cols, ps1) in question_cases() {
+        let home = TempDir::new().unwrap();
+        let mut t = start_rows(&home, &ps1, "", cols, 40);
+        t.send("? тест\r");
+        t.pump_for(Duration::from_millis(1200));
+        t.assert_clean();
+        assert_transcript(&t, &ps1, "? тест", &|rest| {
+            rest.first()
+                .is_some_and(|r| r.contains("модель не настроена") || r.starts_with("модель"))
+                || rest.iter().any(|r| r.contains("не настроена"))
+        });
+    }
+}
+
 macro_rules! both {
     ($($n:ident),* $(,)?) => {
         mod utf8 {
@@ -976,6 +1085,8 @@ macro_rules! both {
 }
 
 both!(
+    question_answer,
+    question_without_a_model,
     late_first_run,
     late_update_notice,
     long_prompt_typing_ghost_and_editing_stay_intact,
