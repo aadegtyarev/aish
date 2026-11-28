@@ -1,20 +1,23 @@
 //! aish: transparent PTY proxy around bash with command blocks.
 
-pub mod blocks;
-pub mod complete;
-pub mod config;
-pub mod config_edit;
-pub mod editor;
-pub mod fsio;
-pub mod init;
-pub mod llm;
-pub mod module;
-pub mod modules;
-pub mod osc;
-pub mod pty;
-pub mod shell;
-pub mod term;
-pub mod update;
+mod blocks;
+mod complete;
+mod config;
+mod config_edit;
+mod editor;
+mod fsio;
+mod init;
+mod llm;
+mod module;
+mod modules;
+mod osc;
+mod pty;
+mod shell;
+mod term;
+mod update;
+
+pub use llm::cmd::cli;
+pub use shell::init_logging;
 
 use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;

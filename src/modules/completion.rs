@@ -2,9 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use lineedit_wip::completion::{CompletionSource, Outcome, Reply, Request};
-use lineedit_wip::plugins::CompletionPager;
-use lineedit_wip::Plugin;
+use aish_editor::completion::{CompletionSource, Outcome, Reply, Request};
+use aish_editor::plugins::CompletionPager;
+use aish_editor::Plugin;
 
 use crate::blocks::BlockTracker;
 use crate::complete::{complete_files, finish, Sidecar, TIMEOUT};
@@ -86,7 +86,7 @@ impl CompletionSource for WithLlm {
         if items.is_empty() {
             return Outcome::None;
         }
-        Outcome::Ready(lineedit_wip::completion::Candidates {
+        Outcome::Ready(aish_editor::completion::Candidates {
             filenames: false,
             nospace: false,
             items,

@@ -1,5 +1,5 @@
 [package]
-name = "lineedit-wip" # placeholder, final name TBD
+name = "aish-editor"
 version.workspace = true
 edition.workspace = true
 description = "Small embeddable emacs-style line editor with a plugin architecture"
@@ -11,5 +11,3 @@ readme = "README.md"
 [dependencies]
 unicode-segmentation = "1"
 unicode-width = "0.2"
-# raw mode, window size and poll for the standalone reader only
-libc = "0.2"

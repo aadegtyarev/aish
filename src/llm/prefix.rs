@@ -28,13 +28,8 @@ pub fn from_config(s: &str) -> Result<char, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Form {
     /// `?`, `? text`, `?N`, `?N text`.
-    Question {
-        blocks: usize,
-        text: String,
-        /// Legacy `?! text`: forget the conversation first.
-        reset: bool,
-    },
-    /// `?n` (and the hidden legacy `?!`).
+    Question { blocks: usize, text: String },
+    /// `?n`
     New,
     /// `?c`
     Compact,
@@ -51,13 +46,12 @@ pub fn parse(line: &str, p: char) -> Option<Form> {
     }
     // (trailing blanks never turn `?n` into something else)
     let r = line.strip_prefix(p)?.trim_end();
-    let q = |blocks: usize, text: &str, reset: bool| Form::Question {
+    let q = |blocks: usize, text: &str| Form::Question {
         blocks,
         text: text.trim().to_owned(),
-        reset,
     };
     if r.is_empty() || r.starts_with(' ') {
-        return Some(q(1, r, false));
+        return Some(q(1, r));
     }
     match r {
         "n" => return Some(Form::New),
@@ -65,24 +59,11 @@ pub fn parse(line: &str, p: char) -> Option<Form> {
         "h" => return Some(Form::Help),
         _ => {}
     }
-    if p == '?' {
-        // hidden alias of `?n`, kept for one release
-        if r == "!" {
-            return Some(Form::New);
-        }
-        if let Some(t) = r.strip_prefix("! ") {
-            return Some(if t.trim().is_empty() {
-                Form::New
-            } else {
-                q(1, t, true)
-            });
-        }
-    }
     let digits = r.chars().take_while(char::is_ascii_digit).count();
     let (n, rest) = r.split_at(digits);
     if digits > 0 && (rest.is_empty() || rest.starts_with(' ')) {
         let blocks = n.parse().unwrap_or(20usize).clamp(1, 20);
-        return Some(q(blocks, rest, false));
+        return Some(q(blocks, rest));
     }
     None
 }
@@ -112,7 +93,6 @@ mod tests {
         Some(Form::Question {
             blocks,
             text: text.into(),
-            reset: false,
         })
     }
 
@@ -157,20 +137,6 @@ mod tests {
         assert_eq!(parse("# note", '?'), None);
         assert_eq!(parse("#note", '#'), None); // stays a comment
         assert_eq!(parse("# note", '#'), q(1, "note"));
-    }
-
-    #[test]
-    fn legacy_reset_works_for_the_question_mark_only() {
-        assert_eq!(parse("?!", '?'), Some(Form::New));
-        assert_eq!(
-            parse("?! again", '?'),
-            Some(Form::Question {
-                blocks: 1,
-                text: "again".into(),
-                reset: true
-            })
-        );
-        assert_eq!(parse(",!", ','), None);
     }
 
     #[test]

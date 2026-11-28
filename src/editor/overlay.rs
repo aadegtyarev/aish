@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use lineedit_wip::{Editor, Event, Theme};
+use aish_editor::{Editor, Event, Theme};
 
 use crate::blocks::BlockTracker;
 use crate::config::Setting;
@@ -70,8 +70,8 @@ impl AskKey {
     }
 
     /// The editor key bound to the same press.
-    pub fn editor_key(self) -> lineedit_wip::Key {
-        lineedit_wip::Key::Ctrl(self.letter)
+    pub fn editor_key(self) -> aish_editor::Key {
+        aish_editor::Key::Ctrl(self.letter)
     }
 
     /// The control byte (0x11 for ctrl-q).

@@ -15,8 +15,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use lineedit_wip::plugins::SharedHistory;
-use lineedit_wip::{CursorReportFilter, Editor, Event, Keymap, MemHistory, Theme};
+use aish_editor::plugins::SharedHistory;
+use aish_editor::{CursorReportFilter, Editor, Event, Keymap, MemHistory, Theme};
 
 use super::overlay::{self, AskKey, AskReq, Detector, Gate};
 use super::resolve::Resolver;
@@ -171,7 +171,6 @@ impl Controller {
         let resolver = Resolver::default();
         let env = Env {
             llm: llm.clone(),
-            tasks: tasks.clone(),
             tracker: tracker.clone(),
             resolver: resolver.clone(),
             history: SharedHistory::new(Box::new(MemHistory::default())),
@@ -273,11 +272,6 @@ impl Controller {
                 tail,
             },
         })
-    }
-
-    /// The key was pressed but the overlay could not open: the program gets it.
-    pub fn send_raw(&mut self, b: &[u8]) {
-        self.send(b);
     }
 
     pub fn in_prompt(&self) -> bool {

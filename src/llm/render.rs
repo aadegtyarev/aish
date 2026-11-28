@@ -3,7 +3,7 @@
 //! back, never printed). Output uses `\r\n` before every row (raw terminal)
 //! and never ends with one, so the shell's own newline closes the answer.
 
-use lineedit_wip::Theme;
+use aish_editor::Theme;
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -232,13 +232,6 @@ impl Renderer {
         self.sgr(out, &self.dim.clone());
         out.extend_from_slice(sanitize(tail).as_bytes());
         self.reset(out);
-    }
-
-    /// Like `note` for several lines of already-formed text.
-    pub fn plain_row(&self, text: &str, out: &mut Vec<u8>) {
-        out.extend_from_slice(b"\r\n");
-        self.bar(out);
-        out.extend_from_slice(sanitize(text).as_bytes());
     }
 
     fn sgr(&self, out: &mut Vec<u8>, code: &str) {
@@ -736,13 +729,12 @@ mod tests {
         let r = Renderer::new(&Theme::plain(), 80);
         let mut o = Vec::new();
         r.note("bad \u{1b}]0;x\u{7} \u{9b}31m\u{202E}end", &mut o);
-        r.plain_row("\u{1b}[2Jhi", &mut o);
         let s = String::from_utf8(o).unwrap();
         assert!(
             !s.contains('\u{1b}') && !s.contains('\u{7}') && !s.contains('\u{9b}'),
             "{s:?}"
         );
-        assert!(s.contains("end") && s.contains("hi"));
+        assert!(s.contains("end"));
     }
 
     #[test]

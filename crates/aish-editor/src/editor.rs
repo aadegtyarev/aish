@@ -639,7 +639,7 @@ impl Editor {
 
     /// After a [`draw`](Editor::draw): the column where the input (with
     /// suggestion) ends if it all fits on the first row and no popup is shown;
-    /// standalone prompts use it to keep a right prompt visible.
+    /// hosts use it to keep a right prompt visible.
     pub fn first_row_end(&self) -> Option<u16> {
         self.rend.first_row_end
     }

@@ -1,19 +1,18 @@
-# lineedit-wip (placeholder name)
+# aish-editor
 
 A small, embeddable emacs-style line editor for Rust, built as a core plus
 plugins. Basic editing (graphemes, kill ring, undo, bracketed paste) is in the
 core; history suggestions, fuzzy Ctrl-R, a completion pager and syntax
 highlighting are ordinary plugins you register. Dependencies: `unicode-segmentation`,
-`unicode-width`, and `libc` (raw mode / window size, standalone reader only).
+`unicode-width`.
 No async runtime: slow sources answer later through a `Handle` and stale
 answers are dropped.
 
-Two modes: **standalone** (`LineReader` prints a prompt and reads the tty itself) and **embedded** (the host owns the terminal and the
-prompt; feed bytes to `Editor::input`, draw with `Editor::draw`, react to `Event`s).
+The host owns the terminal and the prompt: feed bytes to `Editor::input`, draw with `Editor::draw`, react to `Event`s.
 
 ```rust
-use lineedit_wip::plugins::{HistorySearch, HistorySuggest, SharedHistory, SyntaxHighlight};
-use lineedit_wip::{Editor, LineReader, MemHistory, Prompt, Signal};
+use aish_editor::plugins::{HistorySearch, HistorySuggest, SharedHistory, SyntaxHighlight};
+use aish_editor::{Editor, MemHistory};
 
 fn main() -> std::io::Result<()> {
     let hist = SharedHistory::new(Box::new(MemHistory::parse("ls -la\ngit status\n")));
@@ -22,19 +21,11 @@ fn main() -> std::io::Result<()> {
         .with(HistorySearch::new(hist)) // Ctrl-R
         .with(SyntaxHighlight::new(|w| w == "ls" || w == "git"))
         .build();
-    let mut reader = LineReader::new(editor);
-    loop {
-        match reader.read_line(&Prompt::new("> "))? {
-            Signal::Line(l) => println!("got {l}"),
-            Signal::Eof => break,
-            _ => {}
-        }
-    }
+    // feed bytes with editor.input(..), draw with editor.draw(..)
+    let _ = editor;
     Ok(())
 }
 ```
-
-See `examples/standalone.rs` for history file, Tab completion and a right prompt.
 
 ## Customizing
 

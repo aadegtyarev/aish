@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use lineedit_wip::plugins::HintText;
+use aish_editor::plugins::HintText;
 
 const SHOW_AFTER: Duration = Duration::from_millis(300);
 const MIN_SHOWN: Duration = Duration::from_millis(200);

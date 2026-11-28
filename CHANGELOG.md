@@ -9,6 +9,12 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Removed
+- The legacy `?!` question form (`?n` starts a new conversation; `?!` is now an
+  ordinary shell line).
+- The reserved `tools: {skills: ...}` switch; it did nothing. An old config that
+  still has it keeps working.
+
 ### Changed
 - Smaller binary: 5.59 MB -> 4.78 MB (glibc release build) after dropping the
   regex, `time`, crossterm and `serde_yaml` dependencies (YAML now via the

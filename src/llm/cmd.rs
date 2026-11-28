@@ -13,9 +13,6 @@ pub const SUBS: &[&str] = &[
     "help", "run", "tools",
 ];
 
-/// Tools `ai tools` can switch (`skills` is reserved in the config only).
-pub const TOOL_NAMES: &[&str] = &["run", "files", "web"];
-
 fn is_cmd_line(s: &str, name: &str) -> bool {
     let mut w = s.split_whitespace();
     w.next() == Some(name) && w.next().is_none_or(|x| SUBS.contains(&x) || x == "-h")
@@ -33,7 +30,8 @@ pub fn is_short_line(s: &str, name: Option<&str>) -> bool {
     name.is_some_and(|n| s.split_whitespace().next() == Some(n))
 }
 
-fn edit_distance(a: &str, b: &str) -> usize {
+/// Levenshtein distance over chars.
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.iter().enumerate() {
@@ -390,7 +388,7 @@ fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
 fn tools_lines(llm: &Llm, arg: Option<&(String, Option<String>)>, save: bool) -> Vec<Ln> {
     let Some((name, state)) = arg else {
         let cfg_web = llm.config().is_none_or(|c| !matches!(c.web, Setting::Off));
-        let mut v: Vec<Ln> = TOOL_NAMES
+        let mut v: Vec<Ln> = crate::config::SWITCHABLE_TOOLS
             .iter()
             .map(|n| {
                 let on = llm.tool_on(n) && (*n != "web" || cfg_web);
@@ -400,10 +398,10 @@ fn tools_lines(llm: &Llm, arg: Option<&(String, Option<String>)>, save: bool) ->
         v.push(Ln::dim("ai tools <name> on|off · --save"));
         return v;
     };
-    if !TOOL_NAMES.contains(&name.as_str()) {
+    if !crate::config::SWITCHABLE_TOOLS.contains(&name.as_str()) {
         return vec![Ln::dim(format!(
             "no tool: {name} {}",
-            did_you_mean(name, TOOL_NAMES, "run | files | web")
+            did_you_mean(name, crate::config::SWITCHABLE_TOOLS, "run | files | web")
         ))];
     }
     let on = match state.as_deref() {

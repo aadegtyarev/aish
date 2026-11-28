@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
+use super::cmd::edit_distance;
 use super::context::{self, trim_middle};
 use super::render::{fit_line, run_rows, unsafe_cmd, Renderer};
 use super::web::{self, Web};
@@ -196,7 +197,6 @@ pub struct Turn {
 #[derive(Debug, Clone)]
 pub struct Bg {
     pub log: PathBuf,
-    pub command: String,
 }
 
 /// A turn paused on a command the user has to run.
@@ -650,13 +650,7 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 let n = format!("{}-{n}", std::process::id());
                 let log = dir.join(format!("{n}.log"));
                 let line = format!("{} &>{} &", cmd.trim_end(), shell_path(&log));
-                (
-                    line,
-                    Some(Bg {
-                        log,
-                        command: cmd.clone(),
-                    }),
-                )
+                (line, Some(Bg { log }))
             } else {
                 (cmd.clone(), None)
             };
@@ -1196,22 +1190,6 @@ fn note_only(task: &Task, text: &str) {
     task.write(&out);
 }
 
-/// Levenshtein distance over chars.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.iter().enumerate() {
-        let mut cur = vec![i + 1];
-        for (j, cb) in b.iter().enumerate() {
-            let sub = prev[j] + usize::from(ca != cb);
-            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
-        }
-        prev = cur;
-    }
-    prev[b.len()]
-}
-
 /// `ran` is the proposed command with a small edit: the same first two words
 /// and at most 30% of the characters changed. Anything else is a different
 /// command the agent must not continue with.
@@ -1397,7 +1375,6 @@ mod tests {
             output: "out".into(),
             exit_code: Some(0),
             cwd: String::new(),
-            started_at: std::time::SystemTime::now(),
             duration: std::time::Duration::ZERO,
         }
     }

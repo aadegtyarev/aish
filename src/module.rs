@@ -9,8 +9,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
-use lineedit_wip::plugins::SharedHistory;
-use lineedit_wip::{Plugin, Theme};
+use aish_editor::plugins::SharedHistory;
+use aish_editor::{Plugin, Theme};
 
 use crate::blocks::{Block, BlockTracker};
 use crate::editor::resolve::Resolver;
@@ -18,7 +18,6 @@ use crate::editor::resolve::Resolver;
 /// Shared services handed to modules.
 pub struct Env {
     pub llm: Arc<crate::llm::Llm>,
-    pub tasks: TaskMaker,
     pub tracker: Arc<Mutex<BlockTracker>>,
     pub resolver: Resolver,
     pub history: SharedHistory,

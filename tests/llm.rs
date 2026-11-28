@@ -2004,11 +2004,6 @@ fn new_conversation_forgets_the_turns() {
         "{}",
         b[2]
     );
-    // the old spelling still works
-    p.send("?!\r").unwrap();
-    p.expect("◇ new conversation").unwrap();
-    p.expect("E> ").unwrap();
-    settle();
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }

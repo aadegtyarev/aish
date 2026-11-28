@@ -2,7 +2,7 @@
 
 Two layers, both compile-time Rust traits today.
 
-## Editor plugins (`crates/aish-editor`, crate `lineedit-wip`)
+## Editor plugins (`crates/aish-editor`, crate `aish-editor`)
 
 `Editor::builder().with(plugin)...build()`. A `Plugin` has a `name`, a
 `priority` (higher first) and optional hooks:

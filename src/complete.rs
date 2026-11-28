@@ -21,7 +21,7 @@ fn reap(mut c: Child) {
     });
 }
 
-use lineedit_wip::completion::{unescape, Candidates, Request, MAX_ITEMS};
+use aish_editor::completion::{unescape, Candidates, Request, MAX_ITEMS};
 
 fn expand(path: &str, cwd: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix('~') {

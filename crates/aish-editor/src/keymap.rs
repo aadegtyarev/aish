@@ -131,11 +131,6 @@ impl Keymap {
         self.map.insert(key, Binding::Action(action.to_owned()));
     }
 
-    /// Remove a binding.
-    pub fn unbind(&mut self, key: &Key) {
-        self.map.remove(key);
-    }
-
     /// The binding of `key`.
     pub fn get(&self, key: &Key) -> Option<&Binding> {
         self.map.get(key)

@@ -4,7 +4,7 @@
 //! Private `1337;aish;{t,b}=<cmd>` (plain / base64) arrives just before D.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use vte::{Params, Parser, Perform};
 
@@ -21,7 +21,6 @@ pub struct Block {
     pub output: String,
     pub exit_code: Option<i32>,
     pub cwd: String,
-    pub started_at: SystemTime,
     pub duration: Duration,
 }
 
@@ -84,10 +83,6 @@ impl Blocks {
     pub fn len(&self) -> usize {
         self.ring.len()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.ring.is_empty()
-    }
 }
 
 /// Output accumulator that keeps the first HEAD_CAP and last TAIL_CAP bytes.
@@ -145,7 +140,6 @@ impl Capped {
 
 struct Run {
     started: Instant,
-    started_at: SystemTime,
     cwd: String,
     out: Capped,
 }
@@ -195,7 +189,6 @@ impl Collector {
                 output: run.out.finish(),
                 exit_code: exit,
                 cwd: run.cwd,
-                started_at: run.started_at,
                 duration: run.started.elapsed(),
             };
             tracing::debug!(cmd = %block.command, exit = ?block.exit_code, ms = block.duration.as_millis() as u64, bytes = block.output.len(), "block");
@@ -238,7 +231,6 @@ impl Perform for Collector {
                 Some(b'C') => {
                     self.run = Some(Run {
                         started: Instant::now(),
-                        started_at: SystemTime::now(),
                         cwd: self.cwd.clone(),
                         out: Capped::default(),
                     });
@@ -442,7 +434,7 @@ mod tests {
     fn empty_command_makes_no_block() {
         let mut t = BlockTracker::default();
         t.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
-        assert!(t.blocks().is_empty());
+        assert_eq!(t.blocks().len(), 0);
     }
 
     #[test]

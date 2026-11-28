@@ -90,7 +90,6 @@ roles:
 #   run: on
 #   files: on     # read_file
 #   web: on       # web_search, web_read (see `web:` below for the backends)
-#   skills: on    # reserved
 
 # Web tools for the agent: web_search(query) and web_read(url), read-only, run by themselves.
 # Each has a chain of backends, tried in order; one that is unavailable or finds nothing

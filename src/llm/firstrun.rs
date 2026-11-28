@@ -118,13 +118,9 @@ fn aliases(models: &[&String]) -> Vec<String> {
 
 const DEEPSEEK_URL: &str = "https://api.deepseek.com/v1";
 
-/// Pick roles and render the config. Returns `(yaml, chat, complete)` labels.
-pub fn build(found: &[Found], key: bool, cloud_url: &str) -> Option<(String, String, String)> {
-    build_with(found, key, cloud_url, None)
-}
-
-/// [`build`] with a DeepSeek provider (`$DEEPSEEK_API_KEY`) whose model ids
-/// were listed from `/models`.
+/// Pick roles and render the config, optionally with a DeepSeek provider
+/// (`$DEEPSEEK_API_KEY`) whose model ids were listed from `/models`.
+/// Returns `(yaml, chat, complete)` labels.
 pub fn build_with(
     found: &[Found],
     key: bool,
@@ -415,7 +411,7 @@ mod tests {
                 "nomic-embed-text",
             ],
         )];
-        let (y, chat, comp) = build(&found, false, "u").unwrap();
+        let (y, chat, comp) = build_with(&found, false, "u", None).unwrap();
         assert_eq!(comp, "ollama/qwen2.5-coder:1.5b");
         assert_eq!(chat, "ollama/qwen3:32b");
         let c = Config::parse(&y).unwrap();
@@ -429,7 +425,7 @@ mod tests {
     #[test]
     fn colliding_aliases_are_made_unique() {
         let found = [f("ollama", &["a:b", "a-b", "a/b"])];
-        let (y, _, _) = build(&found, false, "u").unwrap();
+        let (y, _, _) = build_with(&found, false, "u", None).unwrap();
         let c = Config::parse(&y).unwrap();
         assert_eq!(c.providers[0].models.len(), 3, "{y}");
     }
@@ -448,13 +444,13 @@ mod tests {
     #[test]
     fn key_makes_cloud_chat() {
         let found = [f("lmstudio", &["small-3b"])];
-        let (y, chat, comp) = build(&found, true, "https://x/v1").unwrap();
+        let (y, chat, comp) = build_with(&found, true, "https://x/v1", None).unwrap();
         assert_eq!(chat, format!("cloud/{DEFAULT_CLOUD_MODEL}"));
         assert_eq!(comp, "lmstudio/small-3b");
         let c = Config::parse(&y).unwrap();
         assert_eq!(c.resolve("chat").unwrap().provider.id, "cloud");
-        assert!(build(&[], false, "u").is_none());
-        let (y, _, comp) = build(&[], true, "u").unwrap();
+        assert!(build_with(&[], false, "u", None).is_none());
+        let (y, _, comp) = build_with(&[], true, "u", None).unwrap();
         assert_eq!(comp, "—");
         Config::parse(&y).unwrap();
     }

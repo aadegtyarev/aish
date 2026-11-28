@@ -1,7 +1,7 @@
 //! History from $HISTFILE: ghost suggestions, Up/Down, Ctrl-R.
 
-use lineedit_wip::plugins::{HistorySearch, HistorySuggest};
-use lineedit_wip::{MemHistory, Plugin};
+use aish_editor::plugins::{HistorySearch, HistorySuggest};
+use aish_editor::{MemHistory, Plugin};
 
 use crate::module::{Env, Module};
 

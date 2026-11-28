@@ -33,7 +33,7 @@ signal-hook = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry"] }
 unicode-width = "0.2"
-lineedit-wip = { path = "crates/aish-editor" }
+aish-editor = { path = "crates/aish-editor" }
 aish-llm = { path = "crates/aish-llm" }
 vte = "0.15"
 # Web tools (web_read): own fetch with a vetted resolver, no cookies.

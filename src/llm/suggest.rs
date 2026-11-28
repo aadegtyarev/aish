@@ -10,9 +10,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use aish_editor::plugins::SharedHistory;
+use aish_editor::{Ctx, Handle, Handled, Key, Plugin};
 use aish_llm::{Message, Request};
-use lineedit_wip::plugins::SharedHistory;
-use lineedit_wip::{Ctx, Handle, Handled, Key, Plugin};
 
 use super::cmd::is_aish_line;
 use super::mask::mask;

@@ -44,7 +44,7 @@ In bash `?` is a glob, "any one character", so the rule is strict: only the
 prefix alone, prefix + space + text, prefix + digits (`?3`, `?3 text`) and
 prefix + one command letter (`?n`, `?c`, `?h`) go to the model. `?.txt`,
 `?? *`, `?foo` and other glob patterns stay commands. To run a bare `?` as a
-glob, escape it: `\?`. (The old `?!` still works as a hidden alias of `?n`.)
+glob, escape it: `\?`.
 
 ### The prefix
 
@@ -219,7 +219,7 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
 - Tools (`ai tools` switches `run`, `files`, `web`; an off tool is not sent to the
   model, not mentioned in its prompt, and a call to it is refused. `tools: {run: off}`
   means no run tool at all, even read-only; that differs from `ai run off`, which
-  only stops the model from running other commands itself. `skills` is reserved):
+  only stops the model from running other commands itself):
   `run(command, background?)`, `read_block(n)`, `jobs()`,
   `job_output(id, lines)`, `read_file(path, start_line?, max_lines?)`
   (up to 200 lines / 32 KB; secret files — `~/.ssh/*`, `*.pem`, `.env*`,

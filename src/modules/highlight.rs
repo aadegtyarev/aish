@@ -4,8 +4,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use lineedit_wip::plugins::SyntaxHighlight;
-use lineedit_wip::Plugin;
+use aish_editor::plugins::SyntaxHighlight;
+use aish_editor::Plugin;
 
 use crate::blocks::BlockTracker;
 use crate::editor::resolve::{scan_path, Resolver};

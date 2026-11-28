@@ -223,7 +223,7 @@ pub struct Config {
     /// that are not read-only (default `ask`).
     #[serde(default)]
     pub run: RunCfg,
-    /// `tools: {run, files, web, skills}` — per-tool on/off.
+    /// `tools: {run, files, web}` — per-tool on/off.
     #[serde(default)]
     pub tools: ToolsCfg,
 }
@@ -328,9 +328,9 @@ impl<'de> Deserialize<'de> for RunCfg {
 }
 
 /// Switchable tools (`tools:` in the config).
-pub const SWITCHABLE_TOOLS: &[&str] = &["run", "files", "web", "skills"];
+pub const SWITCHABLE_TOOLS: &[&str] = &["run", "files", "web"];
 
-/// `tools:` section: `on` / `off` per tool; absent = on. `skills` is reserved.
+/// `tools:` section: `on` / `off` per tool; absent = on.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ToolsCfg {
     #[serde(default)]
@@ -339,8 +339,6 @@ pub struct ToolsCfg {
     pub files: Setting<String>,
     #[serde(default)]
     pub web: Setting<String>,
-    #[serde(default)]
-    pub skills: Setting<String>,
 }
 
 impl ToolsCfg {
@@ -349,7 +347,6 @@ impl ToolsCfg {
             "run" => &self.run,
             "files" => &self.files,
             "web" => &self.web,
-            "skills" => &self.skills,
             _ => return None,
         })
     }
@@ -808,10 +805,8 @@ roles:
         );
         assert_eq!(Config::parse("run: auto").unwrap().run_mode(), RunMode::Ask);
         assert!(Config::parse("tools: {web: maybe}").is_err());
-        assert!(!Config::parse("tools: {skills: off}")
-            .unwrap()
-            .tools
-            .on("skills"));
+        // a retired key (`skills`) is ignored, not an error
+        assert!(Config::parse("tools: {skills: off}").is_ok());
     }
 
     #[test]

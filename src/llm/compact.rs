@@ -221,10 +221,11 @@ fn prompt_of(llm: &Llm) -> String {
 /// the turn lock. Returns the estimated size before and after, in tokens.
 pub fn compact(llm: &Llm, chat: &Target, task: &Task) -> Result<(usize, usize), Error> {
     use std::sync::atomic::Ordering::SeqCst;
-    let (convo, generation) = {
-        let c = llm.convo.lock().map_err(|_| Error::Api("memory".into()))?;
-        (c.clone(), llm.convo_gen.load(SeqCst))
-    };
+    let convo = llm
+        .convo
+        .lock()
+        .map_err(|_| Error::Api("memory".into()))?
+        .clone();
     let before = est_tokens(&convo);
     let ct = llm.compact_target(chat);
     let size = llm.config().map_or(0.1, |c| c.compact_size());
@@ -262,10 +263,6 @@ pub fn compact(llm: &Llm, chat: &Target, task: &Task) -> Result<(usize, usize), 
     let new = vec![Message::user(format!("{SUMMARY_MARK}\n{summary}"))];
     let after = est_tokens(&new);
     let mut c = llm.convo.lock().map_err(|_| Error::Api("memory".into()))?;
-    if llm.convo_gen.load(SeqCst) != generation {
-        // `?n` came in meanwhile: the new conversation stays empty
-        return Err(Error::Api("conversation was reset".into()));
-    }
     *c = new;
     llm.summary_raw.store(all_local, SeqCst);
     Ok((before, after))
@@ -419,8 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_waits_for_a_running_turn_and_bumps_the_generation() {
-        use std::sync::atomic::Ordering::SeqCst;
+    fn reset_waits_for_a_running_turn() {
         let llm = Llm::new();
         *llm.convo.lock().unwrap() = vec![Message::user("q")];
         {
@@ -428,10 +424,8 @@ mod tests {
             assert!(!llm.reset_memory());
             assert_eq!(llm.convo.lock().unwrap().len(), 1);
         }
-        let g = llm.convo_gen.load(SeqCst);
         assert!(llm.reset_memory());
         assert!(llm.convo.lock().unwrap().is_empty());
-        assert_eq!(llm.convo_gen.load(SeqCst), g + 1);
     }
 
     #[test]

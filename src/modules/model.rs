@@ -1,8 +1,8 @@
 //! Questions (`?` or the configured prefix) and the `aish` command: the line
 //! stays on screen, the reply follows (dim `│` rows) and nothing reaches the shell.
 
-use lineedit_wip::plugins::{HintText, Intercept, RightHint};
-use lineedit_wip::{Class, Ctx, Handled, Plugin, Span};
+use aish_editor::plugins::{HintText, Intercept, RightHint};
+use aish_editor::{Class, Ctx, Handled, Plugin, Span};
 
 use std::sync::{Arc, Mutex};
 
@@ -153,16 +153,13 @@ impl Module for ModelModule {
         if let Ok(mut pend) = llm.pending.lock() {
             *pend = None; // a new question ends a paused turn
         }
-        let reset = matches!(form, Form::New | Form::Question { reset: true, .. });
-        if reset {
+        if form == Form::New {
             if !llm.reset_memory() {
                 out.extend_from_slice("◇ busy · Ctrl-C first".as_bytes());
                 return true;
             }
-            if form == Form::New {
-                out.extend_from_slice("◇ new conversation".as_bytes());
-                return true;
-            }
+            out.extend_from_slice("◇ new conversation".as_bytes());
+            return true;
         }
         let Some(target) = llm.target("chat") else {
             let n = format!("│ no model configured · {} config", llm.command_label());
@@ -256,12 +253,12 @@ mod tests {
 
     #[test]
     fn model_lines() {
-        for t in [
-            "?", "? x", "?3 x", "?!", "?! ", "?12", "? ", "?n", "?c", "?h",
-        ] {
+        for t in ["?", "? x", "?3 x", "?12", "? ", "?n", "?c", "?h"] {
             assert!(is_model_line(t, '?'), "{t}");
         }
-        for t in ["?.txt", "??", "?x", "?3x", "?!x", "", "ls ?", " ?", "\\?"] {
+        for t in [
+            "?.txt", "??", "?x", "?3x", "?!", "?! x", "?!x", "", "ls ?", " ?", "\\?",
+        ] {
             assert!(!is_model_line(t, '?'), "{t}");
         }
         assert!(is_model_line(", x", ',') && !is_model_line("? x", ','));

@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use lineedit_wip::{Ctx, Decoration, Plugin};
+use aish_editor::{Ctx, Decoration, Plugin};
 
 use super::Llm;
 use crate::config::RunMode;
@@ -244,7 +244,7 @@ impl CmdSuggest {
                 .unwrap_or_default(),
             profile: self.llm.config().and_then(|c| c.profile.clone()),
             run: self.llm.run_mode(),
-            tools: super::cmd::TOOL_NAMES
+            tools: crate::config::SWITCHABLE_TOOLS
                 .iter()
                 .map(|n| ((*n).to_owned(), self.llm.tool_on(n)))
                 .collect(),
