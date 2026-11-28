@@ -88,6 +88,12 @@ pub fn clean(line: &str, reply: &str) -> Option<String> {
     let mut t = first.trim_end_matches('\r');
     if let Some(rest) = t.strip_prefix(line) {
         t = rest; // the model repeated the line
+    } else if line
+        .split_whitespace()
+        .next()
+        .is_some_and(|w| t.strip_prefix(w).is_some_and(|r| r.starts_with(' ')))
+    {
+        return None; // the model wrote another whole command instead of continuing
     }
     if t.trim().is_empty() || t.chars().any(char::is_control) || line.len() + t.len() > MAX_LEN {
         return None;
@@ -385,6 +391,7 @@ mod tests {
         assert_eq!(clean("ls", &"a".repeat(300)), None);
         assert_eq!(clean("ls", "ls"), None);
         assert_eq!(clean("ls ", "-la").as_deref(), Some("-la"));
+        assert_eq!(clean("sudo apt install <x>", "sudo apt install htop"), None);
     }
 
     #[test]

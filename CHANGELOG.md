@@ -9,6 +9,14 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-28
+
+### Fixed
+- A ghost suggestion that is a different whole command (`sudo apt install htop`
+  after `sudo apt install <x>`) is no longer glued to the end of the line.
+- The model answers the question asked rather than the last error, and its
+  final command has no `<placeholders>`.
+
 ## [0.3.2] - 2026-11-28
 
 ### Changed
@@ -176,7 +184,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/aadegtyarev/aish/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/aadegtyarev/aish/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/aadegtyarev/aish/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/aadegtyarev/aish/compare/v0.2.1...v0.3.0

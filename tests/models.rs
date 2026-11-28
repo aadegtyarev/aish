@@ -15,7 +15,7 @@ const LONG_ID: &str = "deepseek-chat-very-long-model-identifier-2026";
 
 fn config(url: &str) -> String {
     format!(
-        "providers:\n  - id: local\n    url: http://127.0.0.1:9/v1\n    type: chat\n    models: {{mellum: {{id: mellum-1}}, oss: {{id: oss}}}}\n  - id: cloud\n    url: {url}\n    type: chat\n    models: {{ds: {{id: {LONG_ID}}}}}\n# my comment\nroles:\n  chat: {{id: [mellum, ds]}}   # fallback\n  complete: {{id: ds}}\n"
+        "providers:\n  - id: local\n    url: http://127.0.0.1:9/v1\n    type: chat\n    models: {{mellum: {{id: mellum-1}}, oss: {{id: oss}}}}\n  - id: cloud\n    url: {url}\n    type: chat\n    models: {{ds: {{id: {LONG_ID}, context_window: 32768}}}}\n# my comment\nroles:\n  chat: {{id: [mellum, ds]}}   # fallback\n  complete: {{id: ds}}\n"
     )
 }
 
