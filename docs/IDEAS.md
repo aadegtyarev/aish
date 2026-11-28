@@ -102,3 +102,9 @@ that language).
   `✎ ` on the first line). Costs a few tokens, works with any chat model.
 - `ai coach on|off` to toggle for the session.
 - Could ship as a built-in skill once skills exist.
+- Word completion while typing a question (after the prefix `?`), so the
+  coach helps before sending, not only after. Ghost text like command
+  suggestions, from the same `complete` model, with a prompt for natural
+  language instead of shell. Only when the coach is on, and with its own
+  toggle (`coach: {complete: off}` / `ai coach complete off`), so it can be
+  turned off when it gets in the way while command completion stays.
