@@ -43,17 +43,58 @@ pub struct TaskShared {
     /// The worker waits for one decision key (`Task::wait_key`): the
     /// controller hands keys to `offer_key` instead of buffering them.
     pub keys_wanted: AtomicBool,
-    key: Mutex<Option<u8>>,
+    keys: Mutex<KeyState>,
+}
+
+/// Ignore decision keys this long after the prompt is drawn.
+const KEY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// A decision key needs this much silence before it.
+const KEY_QUIET: std::time::Duration = std::time::Duration::from_millis(700);
+
+#[derive(Default)]
+struct KeyState {
+    key: Option<u8>,
+    bad: bool,
+    armed: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+}
+
+/// What `Task::wait_key` saw.
+pub enum Key {
+    /// `\r`, `s`, `a` or ESC (0x1b).
+    Press(u8),
+    /// Other input: show the hint and wait again.
+    Other,
+    /// Ctrl-C.
+    Cancelled,
 }
 
 impl TaskShared {
-    /// A key for the waiting worker (the first one wins).
-    pub fn offer_key(&self, k: u8) {
-        if let Ok(mut g) = self.key.lock() {
-            g.get_or_insert(k);
+    /// Input while the worker waits for a decision. It counts only when the
+    /// chunk is exactly one key (Enter, `s`, `a`, lone Esc), the prompt has
+    /// been up for `KEY_DELAY` and nothing else was typed in the last
+    /// `KEY_QUIET` (so typing "yes" or "nah" never decides). Anything else
+    /// asks the worker to show the hint.
+    pub fn offer_input(&self, data: &[u8]) {
+        let now = std::time::Instant::now();
+        let Ok(mut st) = self.keys.lock() else { return };
+        let quiet = st.last.is_none_or(|t| now.duration_since(t) >= KEY_QUIET);
+        st.last = Some(now);
+        if st.armed.is_none_or(|t| now < t) {
+            return;
+        }
+        let key = match data {
+            [b'\r'] | [b'\n'] => Some(b'\r'),
+            [k @ (b's' | b'a' | 0x1b)] => Some(*k),
+            _ => None,
+        };
+        match key {
+            Some(k) if quiet => {
+                st.key.get_or_insert(k);
+            }
+            _ => st.bad = true,
         }
     }
-
     /// Drop all further output; returns once no write is in flight.
     pub fn mute(&self) {
         let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -104,19 +145,25 @@ impl Task {
         let _ = (&*self.out).write_all(bytes);
     }
 
-    /// Block until the user presses a decision key (`\r`, `s`, `a` or ESC
-    /// as 0x1b; see the controller). `None`: cancelled with Ctrl-C.
-    pub fn wait_key(&self) -> Option<u8> {
-        if let Ok(mut g) = self.shared.key.lock() {
-            *g = None;
+    /// Block until the user decides (see `offer_input`).
+    pub fn wait_key(&self) -> Key {
+        if let Ok(mut g) = self.shared.keys.lock() {
+            g.key = None;
+            g.bad = false;
+            g.armed = Some(std::time::Instant::now() + KEY_DELAY);
         }
         self.shared.keys_wanted.store(true, Relaxed);
         let r = loop {
             if self.cancelled() {
-                break None;
+                break Key::Cancelled;
             }
-            if let Some(k) = self.shared.key.lock().ok().and_then(|mut g| g.take()) {
-                break Some(k);
+            if let Ok(mut g) = self.shared.keys.lock() {
+                if let Some(k) = g.key.take() {
+                    break Key::Press(k);
+                }
+                if std::mem::take(&mut g.bad) {
+                    break Key::Other;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(15));
         };
@@ -233,7 +280,7 @@ impl TaskMaker {
                 status_row: AtomicBool::new(false),
                 status_off: AtomicBool::new(false),
                 keys_wanted: AtomicBool::new(false),
-                key: Mutex::new(None),
+                keys: Mutex::new(KeyState::default()),
             }),
         }
     }

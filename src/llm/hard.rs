@@ -562,10 +562,373 @@ fn needs_ask_depth(cmd: &str, depth: usize) -> bool {
     false
 }
 
-/// Must the user be asked about `cmd` even in `run: auto`? True also when the
-/// command line is not understood.
+/// Must the user be asked about `cmd` even in `run: auto`? Only a plain
+/// structure passes (see `plain_ok`), and the hard list is checked on top.
 pub fn needs_ask(cmd: &str) -> bool {
-    needs_ask_depth(cmd, 0)
+    !plain_ok(cmd) || needs_ask_depth(cmd, 0)
+}
+
+/// Programs that run other programs or code: never judged, always asked.
+const OPAQUE: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "ksh",
+    "ash",
+    "csh",
+    "tcsh",
+    "python",
+    "python2",
+    "python3",
+    "perl",
+    "ruby",
+    "node",
+    "nodejs",
+    "php",
+    "lua",
+    "awk",
+    "gawk",
+    "mawk",
+    "sed",
+    "env",
+    "time",
+    "nice",
+    "nohup",
+    "timeout",
+    "watch",
+    "xargs",
+    "flock",
+    "exec",
+    "command",
+    "builtin",
+    "eval",
+    "source",
+    ".",
+    "busybox",
+    "strace",
+    "ltrace",
+    "chroot",
+    "unshare",
+    "nsenter",
+    "script",
+    "sudo",
+    "doas",
+    "su",
+    "pkexec",
+    "run0",
+    "setsid",
+    "stdbuf",
+    "ionice",
+    "taskset",
+    "systemd-run",
+    "ssh",
+    "unbuffer",
+    "parallel",
+    "xdg-open",
+    "coproc",
+    "function",
+    "if",
+    "then",
+    "else",
+    "elif",
+    "fi",
+    "for",
+    "while",
+    "until",
+    "do",
+    "done",
+    "case",
+    "esac",
+    "select",
+    "!",
+    "[[",
+    "{",
+    "}",
+    "time",
+];
+/// Programs that change the shell's own state or bindings.
+const STATE: &[&str] = &[
+    "alias", "unalias", "trap", "bind", "set", "shopt", "enable", "export", "declare", "typeset",
+    "readonly", "local", "unset", "hash", "ulimit", "umask", "history", "fc", "let", "wait",
+    "exit", "logout", "return", "break", "continue", "disown", "complete", "compgen", "mapfile",
+    "read",
+];
+/// Programs that overwrite or create files by design.
+const WRITERS: &[&str] = &[
+    "cp", "mv", "install", "ln", "truncate", "shred", "tee", "tar", "rsync", "patch", "dd", "zip",
+    "unzip", "gzip", "gunzip", "bzip2", "xz", "unxz", "split", "rename",
+];
+const GIT_SUBS: &[&str] = &[
+    "status",
+    "log",
+    "diff",
+    "show",
+    "branch",
+    "remote",
+    "rev-parse",
+    "ls-files",
+    "blame",
+    "add",
+    "commit",
+    "fetch",
+    "pull",
+    "push",
+    "stash",
+    "tag",
+    "describe",
+    "shortlog",
+    "grep",
+    "merge",
+    "rebase",
+    "cherry-pick",
+    "revert",
+    "init",
+    "clone",
+    "ls-remote",
+    "rev-list",
+    "reflog",
+];
+
+/// Split a command line that is nothing but plain literal words into simple
+/// commands (separated by `;`, `&&`, `|`). `None`: anything else (expansions,
+/// globs, braces, subshells, here-docs, assignments, newlines, background,
+/// escapes, history `!`, redirects other than `2>&1` and `/dev/null`).
+fn plain_split(s: &str) -> Option<Vec<Vec<String>>> {
+    let cs: Vec<char> = s.chars().collect();
+    let mut cmds: Vec<Vec<String>> = Vec::new();
+    let mut cmd: Vec<String> = Vec::new();
+    let mut cur: Option<String> = None;
+    let mut i = 0;
+    fn end_word(cur: &mut Option<String>, cmd: &mut Vec<String>) {
+        if let Some(w) = cur.take() {
+            cmd.push(w);
+        }
+    }
+    let end_cmd = |cmd: &mut Vec<String>, cmds: &mut Vec<Vec<String>>| -> Option<()> {
+        if cmd.is_empty() {
+            return None;
+        }
+        cmds.push(std::mem::take(cmd));
+        Some(())
+    };
+    while i < cs.len() {
+        let c = cs[i];
+        let next = cs.get(i + 1).copied();
+        match c {
+            '\'' => {
+                let w = cur.get_or_insert_with(String::new);
+                i += 1;
+                loop {
+                    match *cs.get(i)? {
+                        '\'' => break,
+                        x if x.is_control() || matches!(x, '$' | '`' | '{' | '}' | '!') => {
+                            return None
+                        }
+                        x => w.push(x),
+                    }
+                    i += 1;
+                }
+            }
+            '"' => {
+                let w = cur.get_or_insert_with(String::new);
+                i += 1;
+                loop {
+                    match *cs.get(i)? {
+                        '"' => break,
+                        x if x.is_control() || matches!(x, '$' | '`' | '{' | '}' | '!' | '\\') => {
+                            return None
+                        }
+                        x => w.push(x),
+                    }
+                    i += 1;
+                }
+            }
+            ' ' | '\t' => end_word(&mut cur, &mut cmd),
+            ';' => {
+                end_word(&mut cur, &mut cmd);
+                end_cmd(&mut cmd, &mut cmds)?;
+            }
+            '&' if next == Some('&') => {
+                end_word(&mut cur, &mut cmd);
+                end_cmd(&mut cmd, &mut cmds)?;
+                i += 1;
+            }
+            '|' if next != Some('|') && next != Some('&') => {
+                end_word(&mut cur, &mut cmd);
+                end_cmd(&mut cmd, &mut cmds)?;
+            }
+            '>' => {
+                // only `2>&1`, `>/dev/null`, `2>/dev/null`
+                match cur.as_deref() {
+                    Some("2") => cur = None,
+                    Some(_) => return None,
+                    None => {}
+                }
+                let rest: String = cs[i + 1..].iter().collect();
+                let rest = rest.trim_start_matches(' ');
+                let after = if let Some(r) = rest.strip_prefix("/dev/null") {
+                    r
+                } else if i > 0 && cs[i - 1] == '2' && rest.starts_with("&1") {
+                    &rest[2..]
+                } else {
+                    return None;
+                };
+                if !after.is_empty() && !after.starts_with([' ', ';', '&', '|']) {
+                    return None;
+                }
+                // skip the target
+                let consumed = cs.len() - i - 1 - after.chars().count();
+                i += consumed;
+            }
+            '#' if cur.is_none() => return None,
+            '~' if cur.is_none() => return None,
+            '*' | '?' | '[' | '$' | '`' | '{' | '}' | '(' | ')' | '<' | '!' | '\\' | '&' | '|' => {
+                return None
+            }
+            x if x.is_control() => return None,
+            x => cur.get_or_insert_with(String::new).push(x),
+        }
+        i += 1;
+    }
+    end_word(&mut cur, &mut cmd);
+    end_cmd(&mut cmd, &mut cmds)?;
+    Some(cmds)
+}
+
+fn short_has(t: &str, set: &str) -> bool {
+    !t.starts_with("--") && t.starts_with('-') && t[1..].chars().any(|c| set.contains(c))
+}
+
+/// Does `argv` (plain words) pass the strict program rules?
+fn argv_ok(argv: &[String]) -> bool {
+    let name = argv[0].as_str();
+    if name.contains('/') || name.contains('=') || name.starts_with('-') {
+        return false;
+    }
+    if OPAQUE.contains(&name) || STATE.contains(&name) || WRITERS.contains(&name) {
+        return false;
+    }
+    let args = &argv[1..];
+    let a = |f: &dyn Fn(&str) -> bool| args.iter().any(|t| f(t));
+    match name {
+        "curl" => !a(&|t| {
+            short_has(t, "oOKDcJTF")
+                || [
+                    "--out",
+                    "--remote",
+                    "--config",
+                    "--dump",
+                    "--cookie-jar",
+                    "--trace",
+                    "--stderr",
+                    "--upload",
+                    "--libcurl",
+                    "--create",
+                    "--form",
+                ]
+                .iter()
+                .any(|p| t.starts_with(p))
+        }),
+        "wget" => {
+            let to_stdout = args.windows(2).any(|w| w[0] == "-O" && w[1] == "-")
+                || args.iter().any(|t| {
+                    (!t.starts_with("--") && t.starts_with('-') && t.ends_with("O-"))
+                        || t == "--output-document=-"
+                });
+            to_stdout
+                && !a(&|t| {
+                    [
+                        "-o",
+                        "-a",
+                        "-P",
+                        "-r",
+                        "-m",
+                        "-e",
+                        "--output-file",
+                        "--append",
+                        "--directory",
+                        "--mirror",
+                        "--recursive",
+                        "--post-file",
+                        "--save-cookies",
+                        "--execute",
+                    ]
+                    .iter()
+                    .any(|p| t.starts_with(p))
+                })
+        }
+        "sort" => !a(&|t| short_has(t, "o") || t.starts_with("--output")),
+        "git" => git_ok(args),
+        "systemctl" | "loginctl" => !a(&|t| {
+            [
+                "poweroff",
+                "reboot",
+                "halt",
+                "kexec",
+                "rescue",
+                "emergency",
+                "shutdown",
+                "isolate",
+                "suspend",
+                "hibernate",
+            ]
+            .iter()
+            .any(|p| t.contains(p))
+        }),
+        _ => true,
+    }
+}
+
+fn git_ok(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') {
+        match args[i].as_str() {
+            "-C" => i += 2,
+            "--no-pager" | "-P" | "--no-optional-locks" | "--paginate" | "-p" => i += 1,
+            _ => return false, // -c, --exec-path, --git-dir ...
+        }
+    }
+    let Some(sub) = args.get(i) else { return true };
+    if !GIT_SUBS.contains(&sub.as_str()) {
+        return false; // checkout, restore, config, aliases ...
+    }
+    let rest = &args[i + 1..];
+    let any = |f: &dyn Fn(&str) -> bool| rest.iter().any(|t| f(t));
+    match sub.as_str() {
+        "branch" => !any(&|t| {
+            matches!(t, "-D" | "-d" | "-f" | "-M" | "-m" | "-C" | "-c")
+                || t.starts_with("--delete")
+                || t.starts_with("--force")
+                || t.starts_with("--move")
+                || t.starts_with("--copy")
+        }),
+        "push" => !any(&|t| {
+            short_has(t, "fd")
+                || t.starts_with("--force")
+                || t.starts_with("--delete")
+                || t.starts_with("--mirror")
+                || t.starts_with(':')
+                || t.starts_with('+')
+                || t.contains(":+")
+                || t.ends_with(':')
+        }),
+        "stash" => !any(&|t| matches!(t, "drop" | "clear" | "pop")),
+        "tag" => !any(&|t| {
+            matches!(t, "-d" | "-f") || t.starts_with("--delete") || t.starts_with("--force")
+        }),
+        "remote" => {
+            !any(&|t| matches!(t, "add" | "remove" | "rm" | "set-url" | "rename" | "prune"))
+        }
+        "init" | "clone" => false,
+        _ => true,
+    }
+}
+
+/// The command is a plain list of simple commands of well-understood programs.
+fn plain_ok(cmd: &str) -> bool {
+    plain_split(cmd).is_some_and(|cs| cs.iter().all(|c| argv_ok(c)))
 }
 
 #[cfg(test)]
@@ -707,25 +1070,21 @@ mod tests {
             "cargo build --release",
             "echo \"rm -rf x\"",
             "echo 'sudo reboot'",
-            "echo a\\>b",
             "echo \"a > b\"",
             "echo '>' x",
+            "printf 'out-%s\\n' 42",
             "git commit -m \"revert rm -rf and --force\"",
             "git push origin main",
             "git push -u origin feature",
-            "git reset --soft HEAD~1",
-            "git reset HEAD file",
-            "git clean -n",
             "git status",
-            "git log --oneline | head",
+            "git -C /tmp/x log --oneline | head",
             "ls > /dev/null",
             "ls 2>/dev/null",
             "ls 2>&1 | head",
             "make 2>&1",
-            "echo x >&2",
-            "cat < input.txt",
             "grep -rf pats .",
             "ls -R",
+            "cd /tmp && ls",
             "chmod 644 x",
             "chmod +x run.sh",
             "chown me x",
@@ -735,26 +1094,137 @@ mod tests {
             "systemctl status nginx",
             "systemctl restart nginx",
             "curl -s https://x | jq .",
-            "curl -o x.tgz https://x",
+            "wget -qO- https://x",
+            "wget -O - https://x",
             "make -j4 && make install",
-            "FOO=1 make",
             "echo a | sort | uniq -c",
-            "echo hi # sudo reboot",
             "apt install -y jq",
-            "sh script.sh",
-            "bash -c 'echo hi'",
-            "bash -c \"ls -la\"",
-            "timeout 5 ls",
-            "env",
-            "env FOO=1 make",
-            "xargs",
+            "sleep 30",
             "find . -name '*.rs'",
-            "mv a b",
-            "cp -r a b",
-            "{ echo a; echo b; }",
-            "for f in a b; do echo $f; done",
+            "touch a; mkdir b",
         ] {
             assert!(!needs_ask(c), "should not ask: {c:?}");
+        }
+    }
+
+    #[test]
+    fn only_plain_structure_runs_unasked() {
+        for c in [
+            "a=1 ls",
+            "X=1 make",
+            "x=1",
+            "echo $HOME",
+            "echo ${HOME}",
+            "echo \"$x\"",
+            "echo '$x'",
+            "echo `id`",
+            "echo $(id)",
+            "ls *.rs",
+            "ls ?",
+            "ls [a]",
+            "ls ~",
+            "ls ~root",
+            "echo {a,b}",
+            "ls\nls",
+            "ls &",
+            "ls || ls",
+            "ls |& cat",
+            "(ls)",
+            "{ ls; }",
+            "ls <<EOF",
+            "cat <<< x",
+            "cat < f",
+            "ls > f",
+            "ls 2> f",
+            "ls >> /dev/null2",
+            "ls >&2",
+            "echo a\\ b",
+            "\\ls",
+            "/bin/ls",
+            "./run.sh",
+            "echo hi # c",
+            "echo !!",
+            "echo \"a\\nb\"",
+            "f() { ls; }",
+            "ls;;",
+            ";ls",
+            "",
+            "bash script.sh",
+            "python3 x.py",
+            "awk '{print}' x",
+            "sed -n 1p x",
+            "sed -i s/a/b/ x",
+            "env ls",
+            "nohup ls",
+            "timeout 5 ls",
+            "xargs ls",
+            "flock x ls",
+            "exec ls",
+            "command ls",
+            "time ls",
+            "ssh host ls",
+            "alias ls=x",
+            "export A=b",
+            "set -e",
+            "trap x EXIT",
+            "umask 0",
+            "unset A",
+            "cp a b",
+            "mv a b",
+            "install a b",
+            "ln -f a b",
+            "truncate -s 0 f",
+            "tee f",
+            "curl -o f https://x",
+            "curl -O https://x",
+            "curl --output f https://x",
+            "wget https://x",
+            "git checkout -- f",
+            "git checkout main",
+            "git restore f",
+            "git branch -D x",
+            "git push --delete origin x",
+            "git push origin :x",
+            "git push -f",
+            "git -c alias.x=y x",
+            "git --exec-path=/x status",
+            "git config a b",
+            "git x",
+            "systemctl start poweroff.target",
+            "systemctl isolate rescue.target",
+            "rm -rf x",
+            "sudo ls",
+        ] {
+            assert!(needs_ask(c), "should ask: {c:?}");
+        }
+    }
+
+    /// Bypasses found in review.
+    #[test]
+    fn reviewed_bypasses_ask() {
+        for c in [
+            "PROMPT_COMMAND='sudo reboot'",
+            "alias ls='rm -rf ~'",
+            "rm {-rf,x}",
+            "find . -name x $'-delete'",
+            "echo 'sudo reboot' | bash -c bash",
+            "echo 'rm -rf x' | xargs -I{} sh -c {}",
+            "bash -o posix -c 'sudo reboot'",
+            "time -p rm -rf x",
+            "env --split-string='rm -rf x'",
+            "env -iS 'rm -rf x'",
+            "watch 'rm -rf x'",
+            "coproc rm -rf x",
+            "exec -a n rm -rf x",
+            "python3 -c 'import os;os.system(\"sudo reboot\")'",
+            "git -c alias.x='!sudo reboot' x",
+            "x='$(sudo reboot)'; echo ${x@P}",
+            "x='a[$(sudo reboot)]'; [[ $x -eq 0 ]]",
+            "systemctl start poweroff.target",
+            "flock /tmp/l rm -rf x",
+            "trap 'rm -rf ~' EXIT",
+        ] {
+            assert!(needs_ask(c), "should ask: {c:?}");
         }
     }
 }

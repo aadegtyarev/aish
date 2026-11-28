@@ -15,11 +15,12 @@ use serde_json::{json, Value};
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
 use super::context::{self, trim_middle};
-use super::render::{fit_line, unsafe_cmd, Renderer};
+use super::render::{fit_line, run_rows, unsafe_cmd, Renderer};
 use super::web::{self, Web};
 use super::{Llm, Target};
 use crate::blocks::{Block, BlockTracker};
 use crate::config::RunMode;
+use crate::module::Key;
 use crate::module::Task;
 
 pub const MAX_STEPS: usize = 12;
@@ -624,8 +625,14 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                     "command with control characters rejected".into(),
                 );
             }
+            if cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12 {
+                return done(
+                    "error: command too long to review: split it into smaller commands".into(),
+                    "command too long to review".into(),
+                );
+            }
             let mode = env.llm.run_mode();
-            let hard = super::hard::needs_ask(&cmd);
+            let hard = super::hard::needs_ask(&cmd) || cmd.contains('\n');
             let (line, bgj) = if bg {
                 let Some(dir) = jobs_dir() else {
                     return done("error: no state directory".into(), "run: no HOME".into());
@@ -1018,18 +1025,28 @@ fn approve(llm: &Llm, task: &Task, cmd: &str, hard: bool) -> Approval {
         r.run_prompt_done(note, &mut out);
         task.write(&out);
     };
+    let hint_keys = if full {
+        "press Enter, s, a or Esc"
+    } else {
+        "press Enter or Esc"
+    };
     loop {
         match task.wait_key() {
-            None => return Approval::Cancelled,
-            Some(b'\r') => {
+            Key::Cancelled => return Approval::Cancelled,
+            Key::Other => {
+                let mut out = Vec::new();
+                r.run_prompt_hint(hint_keys, &mut out);
+                task.write(&out);
+            }
+            Key::Press(b'\r') => {
                 end(None);
                 return Approval::Go;
             }
-            Some(0x1b) => {
+            Key::Press(0x1b) => {
                 end(Some("declined"));
                 return Approval::Declined;
             }
-            Some(k @ (b's' | b'a')) if full => {
+            Key::Press(k @ (b's' | b'a')) if full => {
                 llm.set_run_mode(RunMode::Auto);
                 let kept = k == b'a' && super::cmd::save_run(llm, RunMode::Auto);
                 end(if k == b'a' && !kept {
@@ -1039,7 +1056,7 @@ fn approve(llm: &Llm, task: &Task, cmd: &str, hard: bool) -> Approval {
                 });
                 return Approval::Go;
             }
-            Some(_) => {}
+            Key::Press(_) => {}
         }
     }
 }

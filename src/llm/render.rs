@@ -76,6 +76,71 @@ pub(crate) fn unsafe_cmd(cmd: &str) -> bool {
     cmd.chars().any(|c| is_bad(c) && c != '\n' && c != '\t')
 }
 
+/// The command as the user must see it: newlines as `⏎`, leading, trailing
+/// and repeated blanks (and blanks next to a newline) as `·` or `·×N`.
+pub fn show_cmd(cmd: &str) -> String {
+    let cs: Vec<char> = cmd.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == '\n' || c == '\r' {
+            out.push('⏎');
+            i += 1;
+        } else if c == ' ' || c == '\t' {
+            let start = i;
+            while i < cs.len() && (cs[i] == ' ' || cs[i] == '\t') {
+                i += 1;
+            }
+            let n = i - start;
+            let edge = start == 0
+                || i == cs.len()
+                || matches!(cs[start - 1], '\n' | '\r')
+                || matches!(cs[i], '\n' | '\r');
+            if n == 1 && !edge && c == ' ' {
+                out.push(' ');
+            } else if n <= 3 {
+                out.extend(std::iter::repeat_n('·', n));
+            } else {
+                out.push_str(&format!("·×{n}"));
+            }
+        } else if is_bad(c) {
+            out.push('�');
+            i += 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn wrap_run(display: &str, w: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut cur = String::new();
+    let mut cw = 0;
+    for c in display.chars() {
+        if cw + width(c) > w {
+            rows.push(std::mem::take(&mut cur));
+            cw = 0;
+        }
+        cur.push(c);
+        cw += width(c);
+    }
+    rows.push(cur);
+    rows
+}
+
+/// Rows the approval prompt shows for `cmd` on a terminal `cols` wide.
+pub fn run_rows(cmd: &str, cols: u16) -> usize {
+    let w = usize::from(cols)
+        .saturating_sub(2)
+        .max(10)
+        .saturating_sub(2)
+        .max(1);
+    wrap_run(&show_cmd(cmd), w).len()
+}
+
 fn width(c: char) -> usize {
     c.width().unwrap_or(0)
 }
@@ -274,31 +339,10 @@ impl Renderer {
     }
 
     /// The approval prompt of a command the model wants to run:
-    /// `│ ▶ cmd` (long commands wrapped, at most `RUN_ROWS` rows) and a dim
-    /// hint row. The last row is the hint; no trailing newline.
+    /// `│ ▶ cmd` (the whole command, wrapped, whitespace made visible) and a
+    /// dim hint row. The last row is the hint; no trailing newline.
     pub fn run_prompt(&self, cmd: &str, hints: &[&str], out: &mut Vec<u8>) {
-        const RUN_ROWS: usize = 6;
-        let w = self.cols.saturating_sub(2).max(1);
-        let mut rows: Vec<String> = Vec::new();
-        for l in cmd.lines() {
-            let l = l.replace('\t', "    ");
-            let mut cur = String::new();
-            let mut cw = 0;
-            for c in l.chars().filter(|&c| !is_bad(c)) {
-                if cw + width(c) > w {
-                    rows.push(std::mem::take(&mut cur));
-                    cw = 0;
-                }
-                cur.push(c);
-                cw += width(c);
-            }
-            rows.push(cur);
-        }
-        if rows.len() > RUN_ROWS {
-            let more = rows.len() - (RUN_ROWS - 1);
-            rows.truncate(RUN_ROWS - 1);
-            rows.push(format!("… {more} more rows"));
-        }
+        let rows = wrap_run(&show_cmd(cmd), self.cols.saturating_sub(2).max(1));
         for (i, r) in rows.iter().enumerate() {
             out.extend_from_slice(b"\r\n");
             self.bar(out);
@@ -322,6 +366,16 @@ impl Renderer {
         self.sgr(out, &self.dim.clone());
         out.extend_from_slice(b"  ");
         out.extend_from_slice(fit_line(&sanitize(hint), room).as_bytes());
+        self.reset(out);
+    }
+
+    /// Replace the hint row of `run_prompt` by a dim line (the cursor stays on it).
+    pub fn run_prompt_hint(&self, text: &str, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\r\x1b[2K");
+        self.bar(out);
+        self.sgr(out, &self.dim.clone());
+        out.extend_from_slice(b"  ");
+        out.extend_from_slice(fit_line(&sanitize(text), self.cols.saturating_sub(2)).as_bytes());
         self.reset(out);
     }
 

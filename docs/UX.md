@@ -183,15 +183,20 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     runs and the model is told so. **s** — the model runs commands without asking
     until aish exits. **a** — the same, and `run: auto` is saved to the config
     (a targeted edit). **Esc** — declined: the model is told, it continues.
-  - `auto`: no prompt, except the **hard list**, which always asks: sudo/doas/su;
-    `rm` with `-r/-R/-f` (or long forms); dd; mkfs*; fdisk/parted/wipefs;
-    shutdown/reboot/poweroff/halt, `systemctl reboot|poweroff`; any redirection
-    into a file (`>`, `>>`, `&>`; `/dev/null` and `2>&1` are fine) or `tee`;
-    `curl|wget … | sh|bash`; `chmod/chown -R`; `git push --force/-f`,
-    `git reset --hard`, `git clean -f`. The line is parsed like a shell would
-    (quotes, `\rm`, `command rm`, `env X=1 rm`, `sudo` anywhere in `;`/`&&`/`|`
-    chains, `sh -c '…'`, `xargs`); `$(…)`, backticks, unterminated quotes and
-    unknown program names count as hard: when unsure, it asks.
+  - `auto`: no prompt, but only for a **plain structure**: a pipeline or `;`/`&&` list
+    of simple commands made of literal words (quotes allowed; no `$`, backticks, braces,
+    globs, `~`, `!`, `\`, subshells, here-docs, assignments, newlines or `&`; the only
+    redirects are `2>&1` and `/dev/null`), whose programs are not interpreters,
+    wrappers, shell-state builtins or paths, and not file writers (`cp mv ln tee sed
+    curl -o git checkout/restore ...`). Anything else asks, as does the **hard list**
+    (sudo/su, `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown/reboot, `curl | sh`,
+    `chmod/chown -R`, `git push --force`, `git reset --hard`, `git clean -f`). When
+    unsure, it asks. Multi-line commands always ask.
+  - The prompt shows the whole command as it will be typed (newlines as `⏎`, edge or
+    repeated blanks as `·`/`·×N`); more than 12 rows or 1000 characters is refused
+    ("command too long to review"). A key decides only as a single keypress (Enter,
+    `s`, `a`, Esc), not in the first 300 ms and not within 700 ms of other typing;
+    anything else shows `press Enter, s, a or Esc`.
   - `off`: the old way — the command is put into the input line (the same checks
     as for a ```` ```bash ```` block) and the turn pauses. Run it (you may edit it;
     the model learns what was actually run), and when the block ends the model

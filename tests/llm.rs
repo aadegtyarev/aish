@@ -1618,6 +1618,7 @@ fn run_once_types_the_command_and_the_model_gets_exit_and_output() {
     p.expect("Enter run · s session · a always · Esc no")
         .unwrap();
     assert_eq!(m.requests().len(), 1, "waits for the user");
+    settle();
     p.send("\r").unwrap();
     // typed into bash like by the user: after the prompt, visible
     p.expect("E> ").unwrap();
@@ -1732,6 +1733,7 @@ fn hard_list_commands_ask_even_in_auto() {
     p.expect("Enter run · Esc no").unwrap();
     settle();
     assert!(marker.exists());
+    settle();
     p.send("\x1b").unwrap();
     p.expect("all-done").unwrap();
     p.expect("E> ").unwrap();
@@ -1838,6 +1840,7 @@ fn ai_run_off_prefills_instead_of_running() {
     assert!(!String::from_utf8_lossy(c.before()).contains('▶'));
     settle();
     assert_eq!(m.requests().len(), 1, "waits for Enter in the line");
+    settle();
     p.send("\r").unwrap();
     p.expect("out-42").unwrap();
     p.expect("all-done").unwrap();
@@ -2225,6 +2228,74 @@ fn summary_is_capped_and_a_local_summariser_gets_unmasked_text_only_when_all_are
         .find(|r| r.body.contains("Write the notes now"))
         .unwrap();
     assert!(!sum.body.contains("abc123secret"), "{}", sum.body);
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn typing_words_at_the_prompt_never_decides() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("typed-marker");
+    let cmd = format!("touch {}", marker.display());
+    let m = stepped("chat", run_steps(&[&cmd]));
+    let mut p = with_run(&home, &m, "# note\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    for word in ["yes", "nah", "ok, go ahead"] {
+        p.send(word).unwrap();
+        p.expect("press Enter, s, a or Esc").unwrap();
+        std::thread::sleep(Duration::from_millis(900));
+    }
+    // typed one letter at a time, then Enter right after: still nothing
+    for ch in ["y", "e", "s", "\r"] {
+        p.send(ch).unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    settle();
+    assert_eq!(m.requests().len(), 1, "still waiting");
+    assert!(!marker.exists());
+    assert!(!cfg_text(&home).contains("run:"));
+    std::thread::sleep(Duration::from_millis(800));
+    p.send("\x1b").unwrap();
+    p.expect("all-done").unwrap();
+    p.expect("E> ").unwrap();
+    assert!(!marker.exists());
+    assert!(!cfg_text(&home).contains("run:"), "{}", cfg_text(&home));
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn multiline_asks_even_in_auto_and_a_huge_command_is_refused() {
+    let home = TempDir::new().unwrap();
+    let long = format!("echo {}", "x".repeat(1200));
+    let m = stepped(
+        "chat",
+        vec![
+            ("", run_call("c1", "echo a\necho b")),
+            ("", run_call("c2", &long)),
+            ("fin-all\n", vec![]),
+        ],
+    );
+    let mut p = with_run(&home, &m, "run: auto\n");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("▶ ").unwrap();
+    p.expect("⏎").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    p.send("\x1b").unwrap();
+    p.expect("fin-all").unwrap();
+    let reqs = m.requests();
+    assert!(
+        reqs[2].body.contains("too long to review"),
+        "{}",
+        reqs[2].body
+    );
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }

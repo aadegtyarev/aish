@@ -548,20 +548,16 @@ impl Controller {
                 data = out;
             }
             let wanted = t.keys_wanted.load(std::sync::atomic::Ordering::Relaxed);
-            let esc_alone = data == [0x1b];
-            let has_esc = data.contains(&0x1b);
+            if wanted && !data.contains(&0x03) {
+                // the agent asks: one exact key decides, nothing is kept
+                if !data.is_empty() {
+                    t.offer_input(&data);
+                }
+                return Input::Handled(false);
+            }
             for b in data {
                 if b == 0x03 {
                     t.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                } else if wanted {
-                    // the agent asks: Enter, s, a or a lone Esc decide; the
-                    // rest (arrows, text) is not kept for later
-                    match b {
-                        0x1b if esc_alone => t.offer_key(0x1b),
-                        b'\r' | b'\n' if !has_esc => t.offer_key(b'\r'),
-                        b's' | b'a' if !has_esc => t.offer_key(b),
-                        _ => {}
-                    }
                 } else if self.typeahead.len() < 65536 {
                     self.typeahead.push(b);
                 }
