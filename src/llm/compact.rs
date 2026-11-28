@@ -52,28 +52,17 @@ pub fn summary_tokens(window: u64, size: f64, summariser_window: u64) -> u32 {
 /// Tokens a turn costs besides the memory: the context budget, the system
 /// prompt and the tool schemas.
 pub fn overhead_tokens(llm: &Llm, t: &Target, window: u64) -> usize {
-    use super::agent;
-    let mut chars = super::ask::SYSTEM.len();
-    if t.tools {
-        let run = llm.tool_on("run").then(|| llm.run_mode());
-        let files = llm.tool_on("files");
-        chars += agent::agent_guide(run, files).len();
-        let web = llm.tool_on("web");
-        if web {
-            chars += agent::WEB_GUIDE.len();
-        }
-        let web_defs = if web {
-            agent::web_defs(true, true)
-        } else {
-            Vec::new()
-        };
-        for d in agent::enabled_defs(run, files)
-            .iter()
-            .chain(web_defs.iter())
-        {
-            chars += d.name.len() + d.description.len() + d.parameters.to_string().len();
-        }
-    }
+    let web = llm.tool_on("web");
+    let offer = super::agent::Offer {
+        tools: t.tools,
+        native: false,
+        search: web,
+        read: web,
+    };
+    let (system, tools) = super::agent::request_parts(llm, false, &offer);
+    let chars = tools.iter().fold(system.len(), |n, d| {
+        n + d.name.len() + d.description.len() + d.parameters.to_string().len()
+    });
     super::context::budget_tokens(Some(window)) + tokens_of(chars)
 }
 
