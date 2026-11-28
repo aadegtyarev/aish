@@ -106,11 +106,83 @@ pub struct WebCfg {
 pub const SEARCH_BACKENDS: &[&str] = &["provider", "duckduckgo", "brave"];
 pub const READ_BACKENDS: &[&str] = &["provider", "direct", "jina"];
 
-#[derive(Debug, Clone, Deserialize)]
+/// A role: one model reference, or several tried in order (fallbacks).
+/// Written as `{id: ref, effort: ..}`, `{id: [a, b]}`, a bare `ref` or `[a, b]`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Role {
-    pub id: String,
-    #[serde(default)]
+    pub ids: Vec<String>,
     pub effort: Setting<String>,
+}
+
+impl<'de> Deserialize<'de> for Role {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        fn refs<E: Error>(v: &serde_yaml::Value) -> Result<Vec<String>, E> {
+            let ids: Vec<String> = match v {
+                serde_yaml::Value::String(s) => vec![s.clone()],
+                serde_yaml::Value::Sequence(q) => q
+                    .iter()
+                    .map(|x| {
+                        x.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| E::custom("model reference must be a string"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(E::custom("role id must be a string or a list of strings")),
+            };
+            if ids.is_empty() || ids.iter().any(|s| s.trim().is_empty()) {
+                return Err(E::custom("role id is empty"));
+            }
+            Ok(ids)
+        }
+        let v = serde_yaml::Value::deserialize(d)?;
+        match &v {
+            serde_yaml::Value::Mapping(m) => {
+                let id = m
+                    .get("id")
+                    .ok_or_else(|| D::Error::custom("role needs `id`"))?;
+                let effort = match m.get("effort") {
+                    Some(e) => serde_yaml::from_value(e.clone()).map_err(D::Error::custom)?,
+                    None => Setting::Unset,
+                };
+                Ok(Role {
+                    ids: refs(id)?,
+                    effort,
+                })
+            }
+            other => Ok(Role {
+                ids: refs(other)?,
+                effort: Setting::Unset,
+            }),
+        }
+    }
+}
+
+/// `profiles:` in file order.
+#[derive(Debug, Clone, Default)]
+pub struct Profiles(pub Vec<(String, HashMap<String, Role>)>);
+
+impl<'de> Deserialize<'de> for Profiles {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Profiles;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a mapping of profiles")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<Profiles, A::Error> {
+                let mut v = Vec::new();
+                while let Some((k, r)) = a.next_entry::<String, HashMap<String, Role>>()? {
+                    v.push((k, r));
+                }
+                Ok(Profiles(v))
+            }
+        }
+        d.deserialize_map(V)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -119,6 +191,12 @@ pub struct Config {
     pub providers: Vec<Provider>,
     #[serde(default)]
     pub roles: HashMap<String, Role>,
+    /// Named sets of roles; `profile:` picks the active one.
+    #[serde(default)]
+    pub profiles: Profiles,
+    /// Active profile; absent: the `roles:` section.
+    #[serde(default)]
+    pub profile: Option<String>,
     /// Enabled modules by name; absent = all (see docs/PLUGINS.md).
     #[serde(default)]
     pub modules: Option<Vec<String>>,
@@ -192,19 +270,68 @@ impl Config {
                 }
             }
         }
+        for (i, (n, _)) in self.profiles.0.iter().enumerate() {
+            if self.profiles.0[..i].iter().any(|(m, _)| m == n) {
+                bail!("duplicate profile '{n}'");
+            }
+        }
+        if let Some(p) = &self.profile {
+            if self.profile_roles(p).is_none() {
+                bail!("profile '{p}' is not in `profiles:`");
+            }
+        }
         for name in self.roles.keys() {
-            self.resolve(name)?;
+            self.resolve_chain(name, None)?;
+        }
+        for (pn, roles) in &self.profiles.0 {
+            for name in roles.keys() {
+                self.resolve_chain(name, Some(pn))
+                    .map_err(|e| anyhow!("profile '{pn}': {e}"))?;
+            }
         }
         Ok(())
     }
 
-    pub fn resolve(&self, role: &str) -> Result<Resolved<'_>> {
+    pub fn profile_roles(&self, name: &str) -> Option<&HashMap<String, Role>> {
+        self.profiles
+            .0
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|x| &x.1)
+    }
+
+    /// The role as configured now: the active profile's entry, else `roles:`.
+    pub fn role(&self, role: &str) -> Option<&Role> {
+        self.role_in(role, self.profile.as_deref())
+    }
+
+    fn role_in(&self, role: &str, profile: Option<&str>) -> Option<&Role> {
+        profile
+            .and_then(|p| self.profile_roles(p))
+            .and_then(|r| r.get(role))
+            .or_else(|| self.roles.get(role))
+    }
+
+    fn resolve_chain(&self, role: &str, profile: Option<&str>) -> Result<Vec<Resolved<'_>>> {
         let r = self
-            .roles
-            .get(role)
+            .role_in(role, profile)
             .ok_or_else(|| anyhow!("unknown role '{role}'"))?;
-        self.resolve_ref(&r.id, &r.effort)
-            .map_err(|e| anyhow!("role '{role}': {e}"))
+        r.ids
+            .iter()
+            .map(|id| {
+                self.resolve_ref(id, &r.effort)
+                    .map_err(|e| anyhow!("role '{role}': {e}"))
+            })
+            .collect()
+    }
+
+    /// Every model of the role in fallback order.
+    pub fn resolve_all(&self, role: &str) -> Result<Vec<Resolved<'_>>> {
+        self.resolve_chain(role, self.profile.as_deref())
+    }
+
+    pub fn resolve(&self, role: &str) -> Result<Resolved<'_>> {
+        Ok(self.resolve_all(role)?.remove(0))
     }
 
     /// Providers that have a model with this alias.
@@ -264,10 +391,14 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// Missing file is fine (`Ok(None)`); a present but broken file is an error.
 pub fn load() -> Result<Option<Config>> {
-    let Some(path) = config_path() else {
-        return Ok(None);
-    };
-    match std::fs::read_to_string(&path) {
+    match config_path() {
+        Some(p) => load_from(&p),
+        None => Ok(None),
+    }
+}
+
+pub fn load_from(path: &std::path::Path) -> Result<Option<Config>> {
+    match std::fs::read_to_string(path) {
         Ok(s) => Config::parse(&s)
             .with_context(|| path.display().to_string())
             .map(Some),

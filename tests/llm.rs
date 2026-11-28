@@ -154,7 +154,7 @@ fn aish_status_switch_and_config_prefill() {
     let mut p = with_config(&home, &m);
     p.expect("E> ").unwrap();
     settle();
-    p.send("aish\r").unwrap();
+    p.send("aish status\r").unwrap();
     p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("complete").unwrap();
     p.expect("подсказки: вкл").unwrap();
@@ -398,7 +398,7 @@ fn ai_is_the_short_command_when_the_shell_has_no_ai() {
     let mut p = with_config(&home, &m);
     p.expect("E> ").unwrap();
     settle();
-    p.send("ai\r").unwrap();
+    p.send("ai status\r").unwrap();
     p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("подсказки: вкл").unwrap();
     p.expect("E> ").unwrap();
@@ -453,7 +453,7 @@ fn ai_wins_even_over_an_executable_of_that_name() {
     let mut p = spawn(cmd);
     p.expect("E> ").unwrap();
     settle();
-    p.send("ai\r").unwrap();
+    p.send("ai status\r").unwrap();
     p.expect("chat     mock/m").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();
@@ -467,7 +467,7 @@ fn custom_command_name_works_and_ai_is_left_to_bash() {
     let mut p = with_command(&home, &m, "mm");
     p.expect("E> ").unwrap();
     settle();
-    p.send("mm\r").unwrap();
+    p.send("mm status\r").unwrap();
     p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("E> ").unwrap();
     settle();
@@ -489,7 +489,7 @@ fn command_off_leaves_ai_to_bash_but_aish_works() {
     p.expect("ai: command not found").unwrap();
     p.expect("E> ").unwrap();
     settle();
-    p.send("aish\r").unwrap();
+    p.send("aish status\r").unwrap();
     p.expect("chat     mock/m · test · ok ").unwrap();
     p.expect("E> ").unwrap();
     p.send_line("exit").unwrap();

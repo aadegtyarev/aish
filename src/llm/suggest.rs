@@ -253,13 +253,24 @@ fn worker(
         if quiet_until.is_some_and(|t| Instant::now() < t) && !job.immediate {
             continue;
         }
-        let Some(t) = llm.target("complete") else {
+        let ts = llm.targets("complete");
+        if ts.is_empty() {
             continue;
-        };
+        }
         if let Some(s) = llm.status.get() {
             s.begin();
         }
-        let res = ask(&t, tracker, ls, &job);
+        // a model that is down: the next one, silently
+        let mut res = Err(aish_llm::Error::Cancelled);
+        for t in &ts {
+            res = ask(t, tracker, ls, &job);
+            match &res {
+                Err(e) if super::failover(e) && !job.cancel.load(Ordering::Relaxed) => {
+                    llm.mark_failed(&t.label);
+                }
+                _ => break,
+            }
+        }
         if let Some(s) = llm.status.get() {
             s.end();
         }

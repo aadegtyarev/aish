@@ -18,6 +18,20 @@ version and date, and the release notes on GitHub are taken from it.
 - Bare model aliases: `ai chat ds` works when only one provider has `ds`
   (`provider/alias` still works and is required when names collide); roles in
   the config accept them too, and `ai chat` suggests them.
+- `ai help` (and `ai -h`), `ai models`, `ai model [chat|complete] <model>` and
+  `ai profile [name]`; `ai chat|complete <model>` now saves the choice to the
+  config too (only the role's lines are edited, comments and the rest stay;
+  if the file's shape is unusual the change is for the session only).
+- Fallback models: a role may be a list (`chat: {id: [mellum, ds]}`); when a
+  model refuses, times out, answers 5xx or 404 before any output, the next one
+  answers (`↪ ds · mellum недоступна`) and the failed one is skipped for 60 s,
+  also for `complete`, silently. Secret masking follows the model that answers.
+- Profiles: `profiles:` and `profile:` in the config choose sets of roles.
+- Lines starting with `ai` never reach bash or the model: anything but a
+  subcommand prints a dim `может, chat?` (when close), `спросить модель: ? <вопрос>`
+  and the help (a bare `ai` shows the help too). Unknown models, roles and profiles
+  get a dim hint with the closest name; `ai`/`aish` are no longer highlighted as unknown
+  commands; ghost hint `→ chat` for a near-miss.
 
 ### Fixed
 - `aish status`: a space between `complete` and the model name.

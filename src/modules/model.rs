@@ -10,7 +10,7 @@ use crate::blocks::BlockTracker;
 use crate::editor::overlay::toggle_prefix;
 use crate::llm::agent;
 use crate::llm::cmd::{self, is_aish_line, is_short_line, Cmd};
-use crate::llm::render::Renderer;
+use crate::llm::render::{fit_line, Renderer};
 use crate::llm::suggest::{LsCache, ModelSuggest};
 use crate::llm::{ask, Llm};
 use crate::module::{Env, Module, Task};
@@ -196,7 +196,28 @@ fn aish_command(llm: &Arc<Llm>, line: &str, out: &mut Vec<u8>, task: &mut Option
             None => return false,
         },
         _ => {
-            out.extend_from_slice(format!("│ {}", cmd::apply(llm, &cmd)).as_bytes());
+            let Some(t) = task.take() else {
+                // busy: only the cheap switches work without a task
+                let ls = cmd::run(llm, &cmd, 34);
+                let text: Vec<String> = ls.iter().map(|l| format!("{}{}", l.0, l.1)).collect();
+                out.extend_from_slice(format!("│ {}", text.join(" ")).as_bytes());
+                return true;
+            };
+            // (on a worker, like status: the editor finishes its own line first)
+            let (llm, cmd) = (llm.clone(), cmd);
+            std::thread::spawn(move || {
+                let r = Renderer::new(&t.theme, t.cols);
+                let w = usize::from(t.cols).saturating_sub(3).max(10);
+                let mut b = Vec::new();
+                for l in cmd::run(&llm, &cmd, w).iter() {
+                    let (h, d) = (fit_line(&l.0, w + 1), &l.1);
+                    let room = (w + 1).saturating_sub(h.chars().count());
+                    let d = fit_line(d, room.max(1));
+                    r.split_row(&h, &d, &mut b);
+                }
+                t.write(&b);
+                t.finish(None);
+            });
         }
     }
     true

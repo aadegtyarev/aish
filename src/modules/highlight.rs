@@ -32,7 +32,11 @@ impl Module for HighlightModule {
             let (p, c) = scan_path(None);
             scan.set_path(p, c, false);
         });
-        vec![Box::new(SyntaxHighlight::new(move |w| r.resolves(w)))]
+        // our own command (`ai`, `aish`) is known although no such program exists
+        let llm = env.llm.clone();
+        vec![Box::new(SyntaxHighlight::new(move |w| {
+            w == "aish" || llm.command().as_deref() == Some(w) || r.resolves(w)
+        }))]
     }
 
     fn on_prompt(&mut self) {

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use super::allow::{is_secret_path, plan, resolve_program, safe_path_dirs, Plan};
 use super::ask::{masked_history, remember_turn, short_reason, SYSTEM};
 use super::context::trim_middle;
-use super::render::{unsafe_cmd, Renderer};
+use super::render::{fit_line, unsafe_cmd, Renderer};
 use super::web::{self, Web};
 use super::{Llm, Target};
 use crate::blocks::{Block, BlockTracker};
@@ -631,16 +631,21 @@ pub fn drive(
     mut turn: Turn,
     task: &Task,
 ) -> Option<String> {
+    let mut tried = vec![t.label.clone()];
+    let mut cur = t.clone();
+    let t = &mut cur;
     let mut use_tools = t.tools;
     let web = llm.config().and_then(|c| Web::from_config(&c));
     // native search needs `provider` in the search chain
-    let native = t.native_search
-        && web
-            .as_ref()
-            .is_some_and(|w| w.search.contains(&web::Backend::Provider));
-    let mut native_on = native;
+    let native_of = |t: &Target| {
+        t.native_search
+            && web
+                .as_ref()
+                .is_some_and(|w| w.search.contains(&web::Backend::Provider))
+    };
+    let mut native_on = native_of(t);
     let (mut offer_search, mut offer_read) =
-        web.as_ref().map_or((false, false), |w| w.offers(native));
+        web.as_ref().map_or((false, false), |w| w.offers(native_on));
     let env = Env {
         llm,
         tracker,
@@ -690,8 +695,10 @@ pub fn drive(
         let mut r = Renderer::new(&task.theme, task.cols);
         let mut full = String::new();
         let mut searches: Vec<String> = Vec::new();
+        let mut got_output = false;
         let res = aish_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |e| match e {
             Event::Delta(d) => {
+                got_output = true;
                 full.push_str(&d);
                 let mut out = Vec::new();
                 r.push(&d, &mut out);
@@ -729,6 +736,35 @@ pub fn drive(
                 tracing::warn!("model rejects tools: {message}");
                 llm.mark_no_tools(&t.label);
                 use_tools = false;
+                continue;
+            }
+            Err(e)
+                if !got_output && searches.is_empty() && super::failover(&e) && {
+                    llm.mark_failed(&t.label);
+                    llm.targets("chat")
+                        .into_iter()
+                        .any(|n| !tried.contains(&n.label))
+                } =>
+            {
+                // nothing came back from this model: the next one answers instead
+                tracing::warn!("ask: {} down: {e}", t.label);
+                let next = llm
+                    .targets("chat")
+                    .into_iter()
+                    .find(|n| !tried.contains(&n.label))?;
+                let alias = |l: &str| l.split_once('/').map_or(l.to_owned(), |x| x.1.to_owned());
+                let note = format!("↪ {} · {} недоступна", alias(&next.label), alias(&t.label));
+                r.note(
+                    &fit_line(&note, usize::from(task.cols).saturating_sub(2)),
+                    &mut out,
+                );
+                task.write(&out);
+                tried.push(next.label.clone());
+                use_tools = next.tools;
+                *t = next;
+                native_on = native_of(t);
+                (offer_search, offer_read) =
+                    web.as_ref().map_or((false, false), |w| w.offers(native_on));
                 continue;
             }
             Err(e) => {

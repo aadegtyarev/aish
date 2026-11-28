@@ -21,7 +21,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use aish_llm::{Endpoint, Kind, Message};
 
@@ -66,6 +66,8 @@ pub struct Llm {
     waker: std::sync::OnceLock<Arc<std::fs::File>>,
     /// Models that answered 400 to tools in this session (`provider/alias`).
     no_tools: Mutex<std::collections::HashSet<String>>,
+    /// Models that did not answer lately (`provider/alias` -> when): tried last.
+    failed: Mutex<HashMap<String, Instant>>,
     /// An agent turn waiting for the user to run a proposed command.
     pub pending: Mutex<Option<agent::Pending>>,
     pub jobs: Mutex<jobs::Jobs>,
@@ -88,6 +90,7 @@ impl Llm {
             notice_shown: Mutex::new(None),
             waker: std::sync::OnceLock::new(),
             no_tools: Mutex::default(),
+            failed: Mutex::default(),
             pending: Mutex::new(None),
             jobs: Mutex::default(),
             status: std::sync::OnceLock::new(),
@@ -115,7 +118,11 @@ impl Llm {
         if !c.loaded || c.mtime != mtime {
             c.loaded = true;
             c.mtime = mtime;
-            match config::load() {
+            let loaded = match &self.path {
+                Some(p) => config::load_from(p),
+                None => Ok(None),
+            };
+            match loaded {
                 Ok(v) => c.cfg = v.map(Arc::new),
                 Err(e) => tracing::warn!("config reload: {e:#}"), // keep the old one
             }
@@ -152,14 +159,40 @@ impl Llm {
         }
     }
 
+    /// The first model of the role that is not known to be down.
     pub fn target(&self, role: &str) -> Option<Target> {
-        let cfg = self.config()?;
-        let over = self.over.lock().ok()?.get(role).cloned();
-        let r = match over {
-            Some(id) => cfg.resolve_ref(&id, &Setting::Unset).ok()?,
-            None => cfg.resolve(role).ok()?,
+        self.targets(role).into_iter().next()
+    }
+
+    /// Every model of the role in fallback order; ones that failed in the last
+    /// `FAIL_MEMORY` go last (still tried when nothing else is left).
+    pub fn targets(&self, role: &str) -> Vec<Target> {
+        self.targets_at(role, Instant::now())
+    }
+
+    pub fn targets_at(&self, role: &str, now: Instant) -> Vec<Target> {
+        let Some(cfg) = self.config() else {
+            return Vec::new();
         };
-        Some(Target {
+        let over = self.over.lock().ok().and_then(|o| o.get(role).cloned());
+        let all: Vec<Target> = match over {
+            Some(id) => cfg
+                .resolve_ref(&id, &Setting::Unset)
+                .ok()
+                .map(|r| vec![self.make_target(&r)])
+                .unwrap_or_default(),
+            None => cfg
+                .resolve_all(role)
+                .map(|v| v.iter().map(|r| self.make_target(r)).collect())
+                .unwrap_or_default(),
+        };
+        let (down, up): (Vec<_>, Vec<_>) =
+            all.into_iter().partition(|t| self.is_down(&t.label, now));
+        up.into_iter().chain(down).collect()
+    }
+
+    fn make_target(&self, r: &config::Resolved<'_>) -> Target {
+        Target {
             ep: Endpoint {
                 kind: match r.provider.kind {
                     ProviderType::Chat => Kind::Chat,
@@ -187,7 +220,54 @@ impl Llm {
                     .no_tools
                     .lock()
                     .is_ok_and(|s| s.contains(&format!("{}/{}", r.provider.id, r.alias))),
+        }
+    }
+
+    fn is_down(&self, label: &str, now: Instant) -> bool {
+        self.failed.lock().is_ok_and(|f| {
+            f.get(label)
+                .is_some_and(|t| now.saturating_duration_since(*t) < fail_memory())
         })
+    }
+
+    /// The model did not answer: following requests go to the next one.
+    pub fn mark_failed(&self, label: &str) {
+        self.mark_failed_at(label, Instant::now());
+    }
+
+    pub fn mark_failed_at(&self, label: &str, now: Instant) {
+        if let Ok(mut f) = self.failed.lock() {
+            f.insert(label.to_owned(), now);
+        }
+    }
+
+    /// `provider/alias` of every model of the role, configured order (a
+    /// session override replaces them).
+    pub fn labels(&self, role: &str) -> Vec<String> {
+        let Some(cfg) = self.config() else {
+            return Vec::new();
+        };
+        let over = self.over.lock().ok().and_then(|o| o.get(role).cloned());
+        match over {
+            Some(id) => cfg
+                .resolve_ref(&id, &Setting::Unset)
+                .map(|r| vec![format!("{}/{}", r.provider.id, r.alias)])
+                .unwrap_or_default(),
+            None => cfg
+                .resolve_all(role)
+                .map(|v| {
+                    v.iter()
+                        .map(|r| format!("{}/{}", r.provider.id, r.alias))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn clear_overrides(&self) {
+        if let Ok(mut o) = self.over.lock() {
+            o.clear();
+        }
     }
 
     pub fn mark_no_tools(&self, label: &str) {
@@ -253,6 +333,26 @@ impl Llm {
     }
 }
 
+/// How long a model that did not answer is skipped. `AISH_FAIL_MEMORY_MS`
+/// overrides it (tests).
+pub fn fail_memory() -> Duration {
+    std::env::var("AISH_FAIL_MEMORY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(Duration::from_secs(60), Duration::from_millis)
+}
+
+/// Errors that make the next model of a role worth trying (nothing was
+/// answered yet): no connection, timeout, server error, model not found.
+pub fn failover(e: &aish_llm::Error) -> bool {
+    use aish_llm::Error;
+    match e {
+        Error::Connect(_) | Error::Timeout => true,
+        Error::Http { status, .. } => *status == 404 || *status >= 500,
+        _ => false,
+    }
+}
+
 /// localhost / loopback / private LAN host in a URL.
 pub fn is_local(url: &str) -> bool {
     let rest = url.split_once("://").map_or(url, |x| x.1);
@@ -283,7 +383,79 @@ pub fn is_local(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_local;
+    use super::*;
+
+    fn llm_with(cfg: &str) -> (Arc<Llm>, tempfile::TempDir) {
+        let d = tempfile::TempDir::new().unwrap();
+        let p = d.path().join("config.yaml");
+        std::fs::write(&p, cfg).unwrap();
+        let l = Llm::new();
+        let l = Arc::new(Llm {
+            path: Some(p),
+            ..Arc::try_unwrap(l).ok().unwrap()
+        });
+        (l, d)
+    }
+
+    const FB: &str = "providers:\n  - {id: p, url: 'http://127.0.0.1:1/v1', type: chat, models: {a: {id: A}, b: {id: B}, c: {id: C}}}\nroles:\n  chat: {id: [a, b, c]}\n  complete: b\n";
+
+    fn labels(l: &Llm, now: Instant) -> Vec<String> {
+        l.targets_at("chat", now)
+            .into_iter()
+            .map(|t| t.label)
+            .collect()
+    }
+
+    #[test]
+    fn fallback_order_and_sixty_second_memory() {
+        let (l, _d) = llm_with(FB);
+        let t0 = Instant::now();
+        assert_eq!(labels(&l, t0), ["p/a", "p/b", "p/c"]);
+        assert_eq!(l.target("complete").unwrap().label, "p/b");
+        l.mark_failed_at("p/a", t0);
+        // down for 60 s: tried last; afterwards first again
+        assert_eq!(
+            labels(&l, t0 + Duration::from_secs(59)),
+            ["p/b", "p/c", "p/a"]
+        );
+        assert_eq!(
+            labels(&l, t0 + Duration::from_secs(60)),
+            ["p/a", "p/b", "p/c"]
+        );
+        l.mark_failed_at("p/b", t0);
+        assert_eq!(
+            labels(&l, t0 + Duration::from_secs(1)),
+            ["p/c", "p/a", "p/b"]
+        );
+        // all down: configured order is kept
+        l.mark_failed_at("p/c", t0);
+        assert_eq!(labels(&l, t0), ["p/a", "p/b", "p/c"]);
+    }
+
+    #[test]
+    fn failover_errors() {
+        use aish_llm::Error;
+        assert!(failover(&Error::Connect("x".into())));
+        assert!(failover(&Error::Timeout));
+        assert!(failover(&Error::Http {
+            status: 503,
+            message: String::new()
+        }));
+        assert!(failover(&Error::Http {
+            status: 404,
+            message: String::new()
+        }));
+        assert!(!failover(&Error::Http {
+            status: 401,
+            message: String::new()
+        }));
+        assert!(!failover(&Error::Http {
+            status: 400,
+            message: String::new()
+        }));
+        assert!(!failover(&Error::Api("x".into())));
+        assert!(!failover(&Error::Cancelled));
+    }
 
     #[test]
     fn locality() {

@@ -136,7 +136,9 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   single-step answer (`tools: off` per model forces it). See docs/UX.md.
 - `ai` (inside a session; always wins over any program of that name — rename or disable it with
   `command: mm` / `command: off` in the config) and its always-available long form `aish` show the roles and whether they answer;
-  `ai chat <provider/alias>`, `ai complete <..>` switch a role for this session, `ai on|off` toggles model
+  `ai help` lists the commands, `ai models` the models by provider, `ai model [chat|complete] <alias|provider/alias>`
+  (also `ai chat <..>`, `ai complete <..>`) sets a role's model and saves it to the config (a role may list
+  fallbacks: `chat: {id: [mellum, ds]}`), `ai profile [name]` lists/switches `profiles:`, `ai on|off` toggles model
   suggestions, `ai config` puts `${EDITOR:-vi} ~/.config/aish/config.yaml` in the line. `aish status` and
   `aish config` also work as CLI commands; any other arguments go to bash. Tab completes them.
 - First start without a config probes ollama (`:11434`), LM Studio (`:1234`), llama.cpp `llama-server` (`:8080`) and `$OPENAI_API_KEY`

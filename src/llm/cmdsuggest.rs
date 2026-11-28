@@ -17,6 +17,9 @@ pub struct State {
     pub models: Vec<String>,
     pub chat: Option<String>,
     pub complete: Option<String>,
+    /// Profile names, and the active one.
+    pub profiles: Vec<String>,
+    pub profile: Option<String>,
 }
 
 /// `(rest of the line to append, short description)`.
@@ -44,47 +47,89 @@ pub fn compute(st: &State, line: &str) -> Option<(String, String)> {
                 ("status", "статус моделей"),
                 ("chat", "сменить модель чата"),
                 ("complete", "сменить модель подсказок"),
+                ("model", "сменить модель роли"),
+                ("models", "список моделей"),
+                ("profile", "профили"),
                 toggle,
                 other,
                 ("config", "открыть конфиг"),
                 ("init", "настроить запуск и модели"),
+                ("help", "список команд"),
             ];
+            // a full command name is not completed into a longer one
+            if subs.iter().any(|(n, _)| n == part) {
+                return None;
+            }
             // `o` suggests the toggle that does something, whichever it is
             let mut cands: Vec<(&str, &str)> = subs.to_vec();
             if part.starts_with('o') {
                 cands.sort_by_key(|(n, _)| *n != toggle.0);
             }
-            let (n, d) = cands
+            let found = cands
                 .into_iter()
-                .find(|(n, _)| n.starts_with(part) && n != part)?;
-            Some((n[part.len()..].to_owned(), format!("· {d}")))
+                .find(|(n, _)| n.starts_with(part) && n != part);
+            match found {
+                Some((n, d)) => Some((n[part.len()..].to_owned(), format!("· {d}"))),
+                // not a prefix of anything, but close to one: only a hint
+                None if part.chars().all(|c| c.is_ascii_alphabetic()) => {
+                    super::cmd::closest(part, subs.iter().map(|s| s.0))
+                        .map(|n| (String::new(), format!("→ {n}")))
+                }
+                None => None,
+            }
         }
-        [role @ ("chat" | "complete"), part] => {
-            let cur = if *role == "chat" {
-                &st.chat
-            } else {
-                &st.complete
-            };
-            // `m` names the current model, as `provider/alias` or bare alias
-            let is_cur = |m: &str| {
-                cur.as_deref().is_some_and(|c| {
-                    c == m || (!m.contains('/') && c.split_once('/').is_some_and(|(_, a)| a == m))
-                })
-            };
-            let mut it = st
-                .models
+        [role @ ("chat" | "complete"), part] | ["model", role @ ("chat" | "complete"), part] => {
+            complete_ref(st, role, part)
+        }
+        ["model", part] => {
+            // a role name, or a model for chat
+            let role = ["chat", "complete"]
+                .into_iter()
+                .find(|r| r.starts_with(part) && r != part && (!part.is_empty() || *r == "chat"));
+            match role {
+                Some(r) => Some((r[part.len()..].to_owned(), "· роль".to_owned())),
+                None => complete_ref(st, "chat", part),
+            }
+        }
+        ["profile", part] => {
+            let pick = st
+                .profiles
                 .iter()
-                .filter(|m| m.starts_with(part) && *m != part);
-            // the likely switch target first: not the current one
-            let pick = it.clone().find(|m| !is_cur(m)).or_else(|| it.next());
-            let pick = pick.filter(|m| !is_cur(m))?;
+                .filter(|p| p.starts_with(part) && *p != part)
+                .find(|p| st.profile.as_ref() != Some(p))?;
             Some((
                 pick[part.len()..].to_owned(),
-                format!("· сейчас {}", cur.as_deref().unwrap_or("не задана")),
+                format!("· сейчас {}", st.profile.as_deref().unwrap_or("нет")),
             ))
         }
         _ => None,
     }
+}
+
+/// A model reference for `role`: the likely switch target first (not the
+/// current one).
+fn complete_ref(st: &State, role: &str, part: &str) -> Option<(String, String)> {
+    let cur = if role == "chat" {
+        &st.chat
+    } else {
+        &st.complete
+    };
+    // `m` names the current model, as `provider/alias` or bare alias
+    let is_cur = |m: &str| {
+        cur.as_deref().is_some_and(|c| {
+            c == m || (!m.contains('/') && c.split_once('/').is_some_and(|(_, a)| a == m))
+        })
+    };
+    let mut it = st
+        .models
+        .iter()
+        .filter(|m| m.starts_with(part) && *m != part);
+    let pick = it.clone().find(|m| !is_cur(m)).or_else(|| it.next());
+    let pick = pick.filter(|m| !is_cur(m))?;
+    Some((
+        pick[part.len()..].to_owned(),
+        format!("· сейчас {}", cur.as_deref().unwrap_or("не задана")),
+    ))
 }
 
 pub struct CmdSuggest {
@@ -135,6 +180,12 @@ impl CmdSuggest {
                 .unwrap_or_default(),
             chat: self.llm.target("chat").map(|t| t.label),
             complete: self.llm.target("complete").map(|t| t.label),
+            profiles: self
+                .llm
+                .config()
+                .map(|c| c.profiles.0.iter().map(|(n, _)| n.clone()).collect())
+                .unwrap_or_default(),
+            profile: self.llm.config().and_then(|c| c.profile.clone()),
         }
     }
 
@@ -151,6 +202,7 @@ impl CmdSuggest {
         self.full = self
             .cur
             .as_ref()
+            .filter(|(r, _)| !r.is_empty())
             .map(|(r, _)| format!("{line}{r}"))
             .unwrap_or_default();
     }
@@ -193,6 +245,8 @@ mod tests {
             ],
             chat: Some("cloud/main".into()),
             complete: Some("local/coder".into()),
+            profiles: vec!["local".into(), "inet".into()],
+            profile: Some("local".into()),
         }
     }
 
@@ -227,9 +281,34 @@ mod tests {
         assert_eq!(c(&s, "ai con").unwrap().0, "fig");
         assert_eq!(c(&s, "aish s").unwrap().0, "tatus");
         assert_eq!(c(&s, "ai x"), None);
+        // a typo: no ghost text, only the hint
+        assert_eq!(c(&s, "ai chst"), Some((String::new(), "→ chat".into())));
+        assert_eq!(c(&s, "ai тест"), None);
         assert_eq!(c(&s, "ai status"), None);
         assert_eq!(c(&s, "ai"), None);
         assert_eq!(c(&s, "ls c"), None);
+    }
+
+    #[test]
+    fn new_subcommands_and_args() {
+        let s = st(true);
+        assert_eq!(c(&s, "ai mod").unwrap().0, "el");
+        assert_eq!(c(&s, "ai model"), None);
+        assert_eq!(c(&s, "ai models"), None);
+        assert_eq!(c(&s, "ai pro").unwrap().0, "file");
+        assert_eq!(c(&s, "ai he").unwrap().0, "lp");
+        // roles, then models for chat
+        assert_eq!(c(&s, "ai model ").unwrap().0, "chat");
+        assert_eq!(c(&s, "ai model co").unwrap().0, "mplete");
+        assert_eq!(c(&s, "ai model lo").unwrap().0, "cal/big");
+        assert_eq!(c(&s, "ai model chat ").unwrap().0, "local/big");
+        assert_eq!(c(&s, "ai model complete ").unwrap().0, "cloud/main");
+        assert_eq!(c(&s, "ai model complete cl").unwrap().0, "oud/main");
+        assert_eq!(c(&s, "ai model chat a b"), None);
+        // the active profile is not offered
+        assert_eq!(c(&s, "ai profile ").unwrap().0, "inet");
+        assert_eq!(c(&s, "ai profile l"), None);
+        assert_eq!(c(&s, "ai profile i").unwrap().0, "net");
     }
 
     #[test]

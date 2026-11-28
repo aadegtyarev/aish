@@ -3,6 +3,7 @@
 pub mod blocks;
 pub mod complete;
 pub mod config;
+pub mod config_edit;
 pub mod editor;
 pub mod init;
 pub mod llm;

@@ -31,6 +31,20 @@ roles:
     id: cloud/main
     effort: low
 
+# A role may list several models, tried in order: if the first refuses the
+# connection, times out, answers 5xx or 404 before any output, the next one answers
+# (a dim `↪ ds · mellum недоступна` line; the failed one is skipped for 60 s).
+# `ai model chat ds` saves the choice here and moves it to the front of the list.
+# roles:
+#   chat: {id: [local/big, cloud/main]}
+
+# Profiles: named sets of roles; `profile:` picks the active one (absent: `roles:`
+# above). `ai profile` lists them, `ai profile inet` switches and saves.
+# profiles:
+#   local: {chat: [big], complete: coder}
+#   inet:  {chat: [main, big], complete: coder}
+# profile: local
+
 # Name of the in-session control command (status, chat, complete, on/off, config).
 # It always wins over any program of that name; `off` disables it (`aish ...` still works).
 # command: ai

@@ -151,6 +151,16 @@ impl Renderer {
         self.reset(out);
     }
 
+    /// A row: `head` as is, `tail` dim.
+    pub fn split_row(&self, head: &str, tail: &str, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\r\n");
+        self.bar(out);
+        out.extend_from_slice(sanitize(head).as_bytes());
+        self.sgr(out, &self.dim.clone());
+        out.extend_from_slice(sanitize(tail).as_bytes());
+        self.reset(out);
+    }
+
     /// Like `note` for several lines of already-formed text.
     pub fn plain_row(&self, text: &str, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\r\n");

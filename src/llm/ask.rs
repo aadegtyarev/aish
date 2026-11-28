@@ -149,15 +149,11 @@ fn answer(
     if !jobs.starts_with("no ") {
         ctx.push_str(&format!("background jobs:\n{jobs}\n"));
     }
-    if !t.local {
-        ctx = mask(&ctx);
-    }
+    // (masking happens per request, for the model that actually answers)
     let q = if p.question.is_empty() {
         "Explain what went wrong or what the last output means, briefly.".to_owned()
-    } else if t.local {
-        p.question.clone()
     } else {
-        mask(&p.question)
+        p.question.clone()
     };
     let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
@@ -232,16 +228,11 @@ pub fn overlay_answer(
     question: &str,
     task: &Task,
 ) -> Option<String> {
-    let mut ctx = overlay_context(screen, t.window);
-    if !t.local {
-        ctx = mask(&ctx);
-    }
+    let ctx = overlay_context(screen, t.window);
     let q = if question.is_empty() {
         "Explain what is happening in the output above and what to do next, briefly.".to_owned()
-    } else if t.local {
-        question.to_owned()
     } else {
-        mask(question)
+        question.to_owned()
     };
     let _turn = llm.turn.lock().unwrap_or_else(|e| e.into_inner());
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
