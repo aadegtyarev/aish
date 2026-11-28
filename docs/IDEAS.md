@@ -33,9 +33,17 @@ Body: imperative steps and facts. No prose, no examples unless essential.
   them goes through the normal permission rules. No includes, no templating,
   no code.
 
-**Discovery.** `~/.config/aish/skills/*.md` (personal) and `.aish/skills/*.md`
-in the current repo (project, only after the user trusts that directory
-once). `ai skills` lists them with sizes; `ai skills new <name>` opens a stub.
+**Discovery and trust.** `~/.config/aish/skills/*.md` (personal) and
+`.aish/skills/*.md` in the current repo. A file that passes the format check
+(header, limits) is trusted: a skill is only text within hard limits and
+grants nothing, so users can write and share their own freely. `ai skills`
+lists them with sizes; `ai skills new <name>` opens a stub.
+
+**Import.** `ai skills import <github url>` (a file, a directory or a whole
+repo of skills): fetch over HTTPS, validate every file against the format,
+show the list (`name — when · size`) and install on Enter into
+`~/.config/aish/skills/<source>/`. `ai skills update` re-fetches imported
+sources; `ai skills rm <name|source>` removes them.
 
 **Loading into context.** Never all bodies at once.
 
@@ -58,5 +66,5 @@ imperative mood, triggers that are words users actually type, and splitting
 instead of growing. The model can draft a skill from the current conversation
 ("save this as a skill"); the user reviews it before it is written.
 
-Open questions: trust model for repo skills; whether skills can be shared
-(a URL or a git repo of skills); versioning when a skill goes stale.
+Open questions: versioning when a skill goes stale; conflicts between two
+skills with the same name from different sources.
