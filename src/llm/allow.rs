@@ -210,28 +210,36 @@ pub fn is_secret_path(p: &str) -> bool {
         || (e.ends_with(".config/aish/config.yaml"))
 }
 
-/// Lexical normalisation (`.`/`..`), `~` expanded, relative to `cwd`.
-fn absolute(p: &str, cwd: &str) -> PathBuf {
-    let e = expand_tilde(p);
-    let joined = if Path::new(&e).is_absolute() {
-        PathBuf::from(e)
-    } else {
-        Path::new(cwd).join(e)
-    };
-    let mut out = PathBuf::new();
-    for c in joined.components() {
-        match c {
-            Component::ParentDir => {
-                out.pop();
+/// `w` as the kernel resolves it from `cwd`: `~` expanded, symlinks followed
+/// before `..`; a path that does not exist yet resolves its deepest existing
+/// ancestor.
+fn resolve(w: &str, cwd: &str) -> PathBuf {
+    let joined = Path::new(cwd).join(expand_tilde(w));
+    let (mut cur, mut rest) = (joined.as_path(), Vec::new());
+    loop {
+        if let Ok(real) = std::fs::canonicalize(cur) {
+            return rest.iter().rev().fold(real, |p, c| p.join(c));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                cur = parent;
             }
-            Component::CurDir => {}
-            c => out.push(c),
+            _ => return joined,
         }
     }
-    out
 }
 
-/// A recursive search from `root` would walk into secret directories.
+/// Another process's files (`/proc/<pid>/environ`, `/dev/fd/..` leads there).
+fn in_proc_pid(p: &Path) -> bool {
+    p.strip_prefix("/proc")
+        .ok()
+        .and_then(|r| r.components().next())
+        .and_then(|c| c.as_os_str().to_str())
+        .is_some_and(|c| c == "self" || c == "thread-self" || c.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A recursive search from `root` (resolved) would walk into secret directories.
 fn root_too_wide(root: &Path) -> bool {
     let h = home();
     let mut dangerous: Vec<PathBuf> = vec![
@@ -256,12 +264,12 @@ fn root_too_wide(root: &Path) -> bool {
             dangerous.push(Path::new(&h).join(d));
         }
     }
-    // the root itself, or any ancestor of a dangerous directory; anything in /proc
-    root.starts_with("/proc")
-        || dangerous.iter().any(|d| d.starts_with(root))
-        || std::fs::canonicalize(root)
-            .map(|r| dangerous.iter().any(|d| d.starts_with(&r)))
-            .unwrap_or(false)
+    // the root itself, or any ancestor of a dangerous directory
+    in_proc_pid(root)
+        || dangerous
+            .iter()
+            .map(|d| std::fs::canonicalize(d).unwrap_or_else(|_| d.clone()))
+            .any(|d| d.starts_with(root))
 }
 
 /// Option spec of one command: exact names only.
@@ -356,256 +364,51 @@ fn parse(spec: &Spec, args: &[String]) -> Option<Parsed> {
     Some(p)
 }
 
-const GIT_LOG_LONG: &[&str] = &[
-    "stat",
-    "shortstat",
-    "numstat",
-    "name-only",
-    "name-status",
-    "oneline",
-    "pretty",
-    "format",
-    "graph",
-    "decorate",
-    "all",
-    "no-merges",
-    "merges",
-    "first-parent",
-    "abbrev-commit",
-    "abbrev",
-    "cached",
-    "staged",
-    "no-color",
-    "color",
-    "patch",
-    "no-patch",
-    "summary",
-    "raw",
-    "unified",
-    "word-diff",
-    "check",
-    "reverse",
-    "date",
-    "follow",
-    "relative",
-    "minimal",
-    "histogram",
-    "patience",
-    "ignore-space-change",
-    "ignore-all-space",
-    "no-ext-diff",
-    "no-textconv",
-    "topo-order",
-    "date-order",
-    "parents",
-    "children",
-    "left-right",
-    "cherry-pick",
-    "stat-width",
-    "compact-summary",
-    "dirstat",
-    "full-index",
-    "find-renames",
-    "no-renames",
-];
-const GIT_LOG_VAL: &[&str] = &[
-    "since",
-    "until",
-    "author",
-    "committer",
-    "grep",
-    "max-count",
-    "skip",
-    "diff-filter",
-    "branches",
-    "tags",
-    "remotes",
+/// Whole read-only git commands, compared word for word: git takes some
+/// option values only attached (`-U3`, `--branches=x`), so there is no option
+/// parsing to get out of step with it.
+const GIT_READ: &[&[&str]] = &[
+    &["status"],
+    &["status", "-s"],
+    &["status", "--short"],
+    &["status", "-sb"],
+    &["diff"],
+    &["diff", "--stat"],
+    &["diff", "--cached"],
+    &["diff", "--staged"],
+    &["log", "--oneline"],
+    &["branch"],
+    &["branch", "-a"],
+    &["remote", "-v"],
+    &["rev-parse", "--show-toplevel"],
 ];
 
-fn git_plan(args: &[String], cwd: &str) -> Option<Vec<String>> {
-    let mut a = args.iter().peekable();
-    while a.peek().is_some_and(|x| *x == "--no-pager") {
-        a.next();
-    }
-    let sub = a.next()?.clone();
-    let rest: Vec<String> = a.cloned().collect();
-    let mut out = vec!["git".to_owned(), "--no-pager".to_owned(), sub.clone()];
-    let ok = match sub.as_str() {
-        "log" | "diff" | "show" => {
-            out.push("--no-ext-diff".into());
-            out.push("--no-textconv".into());
-            parse(
-                &Spec {
-                    short: "pbwsuMCa",
-                    short_val: "nU",
-                    long: GIT_LOG_LONG,
-                    long_val: GIT_LOG_VAL,
-                    digits: true,
-                },
-                &rest,
-            )
-            .is_some()
-        }
-        "status" => parse(
-            &Spec {
-                short: "sbznvV",
-                short_val: "u",
-                long: &[
-                    "short",
-                    "branch",
-                    "porcelain",
-                    "long",
-                    "ignored",
-                    "untracked-files",
-                    "ahead-behind",
-                    "no-ahead-behind",
-                    "renames",
-                    "no-renames",
-                    "show-stash",
-                    "verbose",
-                    "ignore-submodules",
-                    "column",
-                    "no-column",
-                ],
-                ..NONE
-            },
-            &rest,
-        )
-        .is_some(),
-        "rev-parse" => parse(
-            &Spec {
-                short: "q",
-                long: &[
-                    "short",
-                    "abbrev-ref",
-                    "show-toplevel",
-                    "git-dir",
-                    "is-inside-work-tree",
-                    "verify",
-                    "symbolic",
-                    "symbolic-full-name",
-                    "show-prefix",
-                    "show-cdup",
-                    "absolute-git-dir",
-                    "git-common-dir",
-                    "is-bare-repository",
-                    "quiet",
-                    "sq",
-                ],
-                ..NONE
-            },
-            &rest,
-        )
-        .is_some(),
-        "ls-files" => parse(
-            &Spec {
-                short: "cdmoiskuz",
-                long: &[
-                    "cached",
-                    "deleted",
-                    "modified",
-                    "others",
-                    "ignored",
-                    "stage",
-                    "killed",
-                    "unmerged",
-                    "exclude-standard",
-                    "full-name",
-                    "error-unmatch",
-                    "directory",
-                    "no-empty-directory",
-                    "eol",
-                    "deduplicate",
-                    "abbrev",
-                ],
-                ..NONE
-            },
-            &rest,
-        )
-        .is_some(),
-        "blame" => parse(
-            &Spec {
-                short: "bewfnpstl",
-                short_val: "L",
-                long: &[
-                    "porcelain",
-                    "line-porcelain",
-                    "incremental",
-                    "show-name",
-                    "show-number",
-                    "show-email",
-                    "root",
-                    "date",
-                ],
-                ..NONE
-            },
-            &rest,
-        )
-        .is_some(),
-        "branch" => parse(
-            &Spec {
-                short: "arlvV",
-                long: &[
-                    "all",
-                    "remotes",
-                    "verbose",
-                    "list",
-                    "show-current",
-                    "color",
-                    "no-color",
-                    "abbrev",
-                    "sort",
-                    "format",
-                    "column",
-                ],
-                long_val: &[
-                    "contains",
-                    "no-contains",
-                    "merged",
-                    "no-merged",
-                    "points-at",
-                ],
-                ..NONE
-            },
-            &rest,
-        )
-        .is_some_and(|p| {
-            // a bare name would create a branch
-            p.pos.is_empty()
-                || p.has("list")
-                || p.has("l")
-                || p.has("contains")
-                || p.has("merged")
-                || p.has("no-merged")
-                || p.has("points-at")
-                || p.has("no-contains")
-        }),
-        "remote" => rest.is_empty() || rest == ["-v"] || rest == ["--verbose"],
-        _ => false,
+fn git_plan(args: &[String]) -> Option<Vec<String>> {
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let a = a.strip_prefix(&["--no-pager"]).unwrap_or(&a);
+    let sub = *a.first()?;
+    let count = |s: &str| {
+        s.strip_prefix('-')
+            .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty())
     };
-    if !ok || !in_work_tree(&rest, cwd) {
-        return None;
-    }
-    // positional args (paths, revs) go after the injected flags
-    out.extend(rest);
-    Some(out)
+    let ok = GIT_READ.contains(&a) || matches!(a, ["log", n] | ["log", "--oneline", n] if count(n));
+    // (no external diff or textconv program: the flags come first)
+    let guard: &[&str] = if matches!(sub, "diff" | "log") {
+        &["--no-ext-diff", "--no-textconv"]
+    } else {
+        &[]
+    };
+    ok.then(|| {
+        ["git", "--no-pager", sub]
+            .into_iter()
+            .chain(guard.iter().copied())
+            .chain(a[1..].iter().copied())
+            .map(str::to_owned)
+            .collect()
+    })
 }
 
-/// Paths outside the work tree make `git diff` compare plain files
-/// (`--no-index`): every existing path word must resolve inside it.
-fn in_work_tree(words: &[String], cwd: &str) -> bool {
-    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
-    let tree = cwd.ancestors().find(|d| d.join(".git").exists());
-    words
-        .iter()
-        .filter(|w| !w.starts_with('-'))
-        .all(|w| match std::fs::canonicalize(cwd.join(w)) {
-            Ok(real) => tree.is_some_and(|t| real.starts_with(t)),
-            Err(_) => true,
-        })
-}
-
-pub(super) fn ps_ok(args: &[String]) -> bool {
+fn ps_ok(args: &[String]) -> bool {
     let spec = Spec {
         short: "eAaxfFjlLmMuwTvVHhcCNZ",
         short_val: "opUtgGqs",
@@ -748,7 +551,7 @@ fn safe_dirs_in(path: &std::ffi::OsStr, cwd_real: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn stage_plan(w: &[String], cwd: &str) -> Option<Stage> {
+fn stage_plan(w: &[String]) -> Option<Stage> {
     let name = w.first()?.as_str();
     let args = &w[1..];
     let simple = |spec: &Spec| -> Option<Parsed> { parse(spec, args) };
@@ -874,8 +677,9 @@ fn stage_plan(w: &[String], cwd: &str) -> Option<Stage> {
                 "portability",
                 "print-type",
                 "total",
+                "output",
             ],
-            long_val: &["type", "exclude-type", "output", "block-size"],
+            long_val: &["type", "exclude-type", "block-size"],
             digits: false,
         })),
         "free" => plain(simple(&Spec {
@@ -1039,32 +843,9 @@ fn stage_plan(w: &[String], cwd: &str) -> Option<Stage> {
         }
         "find" => find_stage(w),
         "git" => Some(Stage {
-            argv: git_plan(args, cwd)?,
+            argv: git_plan(args)?,
             roots: None,
         }),
-        "cargo" => {
-            if args.first().map(String::as_str) != Some("metadata") {
-                return None;
-            }
-            let p = parse(
-                &Spec {
-                    long: &["offline", "frozen", "no-deps", "locked"],
-                    long_val: &[
-                        "format-version",
-                        "manifest-path",
-                        "features",
-                        "filter-platform",
-                    ],
-                    ..NONE
-                },
-                &args[1..],
-            )?;
-            // no network: resolving may fetch (and run build scripts of nothing)
-            (p.has("offline") || p.has("frozen")).then(|| Stage {
-                argv: w.to_vec(),
-                roots: None,
-            })
-        }
         "systemctl" => {
             let mut i = 0;
             while args
@@ -1087,41 +868,6 @@ fn stage_plan(w: &[String], cwd: &str) -> Option<Stage> {
                 &args[i + 1..],
             ))
         }
-        "journalctl" => plain(simple(&Spec {
-            short: "xbeaqrlkm",
-            short_val: "unopSUtgc",
-            long: &[
-                "no-pager",
-                "reverse",
-                "kernel",
-                "dmesg",
-                "boot",
-                "catalog",
-                "all",
-                "quiet",
-                "utc",
-                "no-hostname",
-                "full",
-                "system",
-                "user",
-                "this-boot",
-            ],
-            long_val: &[
-                "unit",
-                "user-unit",
-                "lines",
-                "output",
-                "priority",
-                "since",
-                "until",
-                "identifier",
-                "grep",
-                "case-sensitive",
-                "cursor",
-                "after-cursor",
-            ],
-            digits: false,
-        })),
         _ => None,
     }
 }
@@ -1245,14 +991,8 @@ fn paths_ok(words: &[String], cwd: &str) -> bool {
         if is_secret_path(w) {
             return false;
         }
-        let abs = absolute(w, cwd);
-        if is_secret_path(&abs.to_string_lossy()) {
-            return false;
-        }
-        match std::fs::canonicalize(&abs) {
-            Ok(r) => !is_secret_path(&r.to_string_lossy()),
-            Err(_) => true,
-        }
+        let real = resolve(w, cwd);
+        !(is_secret_path(&real.to_string_lossy()) || in_proc_pid(&real))
     })
 }
 
@@ -1300,25 +1040,20 @@ pub fn plan(cmd: &str, extra: &[String], cwd: &str) -> Option<Plan> {
             out.push(words);
             continue;
         }
-        let st = stage_plan(&words, cwd)?;
+        let st = stage_plan(&words)?;
         if let Some(roots) = st.roots {
             let roots = if roots.is_empty() {
                 vec![".".to_owned()]
             } else {
                 roots
             };
-            if roots.iter().any(|r| root_too_wide(&absolute(r, cwd))) {
+            if roots.iter().any(|r| root_too_wide(&resolve(r, cwd))) {
                 return None;
             }
         }
         out.push(st.argv);
     }
     Some(Plan { stages: out })
-}
-
-/// Whether `cmd` only reads (relative to the current directory).
-pub fn is_read_only(cmd: &str, extra: &[String]) -> bool {
-    plan(cmd, extra, ".").is_some()
 }
 
 #[cfg(test)]
@@ -1359,25 +1094,16 @@ mod tests {
             "pwd",
             "date +%s",
             "git status",
-            "git status --short -b",
-            "git log --oneline -n 5",
-            "git log -5 --stat",
-            "git diff HEAD~1 -- src",
-            "git show abc123",
-            "git branch",
+            "git status -sb",
+            "git log --oneline -5",
+            "git log -5",
+            "git diff --cached",
             "git branch -a",
-            "git branch --list 'feat*'",
-            "git branch --contains abc",
             "git remote -v",
-            "git rev-parse HEAD",
-            "git ls-files",
-            "git blame -L 1,5 src/main.rs",
-            "git --no-pager log",
-            "cargo metadata --offline --format-version 1",
-            "cargo metadata --frozen",
+            "git rev-parse --show-toplevel",
+            "git --no-pager log --oneline",
             "systemctl status sshd",
             "systemctl --user status foo",
-            "journalctl -u sshd -n 50 --no-pager",
             "ls | head -3",
             "ls 2>&1 | grep x",
             "cat \"a b\"",
@@ -1493,8 +1219,6 @@ mod tests {
         }
         // quoted: literal pattern, handed to the program as is, no shell
         assert!(ok("find . -name '*.rs'"));
-        let p = plan("git diff -- '*.rs'", &[], "/tmp/x").unwrap();
-        assert_eq!(p.stages[0].last().unwrap(), "*.rs");
         // no shell: quoting is ours; the argv is exact
         let p = plan("grep 'a b' \"c d\" | head -2", &[], "/tmp/x").unwrap();
         assert_eq!(p.stages[0], ["grep", "a b", "c d"]);
@@ -1630,24 +1354,22 @@ mod tests {
     }
 
     #[test]
-    fn review_7_systemctl_and_cargo() {
+    fn review_7_systemctl_is_local_and_cargo_is_not_run() {
         for c in [
             "systemctl status -H user@host x",
             "systemctl status --host=h x",
             "systemctl status -M m x",
             "systemctl status --machine=m x",
-            "cargo metadata",
-            "cargo metadata --no-deps",
-            "cargo metadata --config x=y --offline",
+            "cargo metadata --offline --no-deps",
+            "journalctl -n 5",
         ] {
             assert!(!ok(c), "{c:?}");
         }
-        assert!(ok("cargo metadata --offline --no-deps"));
     }
 
     #[test]
     fn review_8_git_is_neutered() {
-        let p = plan("git diff HEAD", &[], "/tmp/x").unwrap();
+        let p = plan("git diff --stat", &[], "/tmp/x").unwrap();
         assert_eq!(
             p.stages[0],
             [
@@ -1656,7 +1378,7 @@ mod tests {
                 "diff",
                 "--no-ext-diff",
                 "--no-textconv",
-                "HEAD"
+                "--stat"
             ]
         );
         let p = plan("git status", &[], "/tmp/x").unwrap();
@@ -1793,7 +1515,6 @@ mod tests {
         ] {
             assert!(!ok(c), "{c}");
         }
-        assert!(ok("git show HEAD:src/main.rs"));
         assert!(ok("grep --file=pats.txt x"));
     }
 
@@ -1819,7 +1540,6 @@ mod tests {
         let bad = [
             "git diff ~ EMPTY".to_owned(),
             "git diff --stat ~ EMPTY".to_owned(),
-            "git diff outside a".to_owned(),
             "git diff EMPTY".to_owned(),
             "cat notes.txt".to_owned(),
             "cat readme.txt".to_owned(),
@@ -1839,13 +1559,55 @@ mod tests {
             let c = c.replace("EMPTY", &empty);
             assert!(plan(&c, &[], &cwd).is_none(), "accepted: {c}");
         }
-        for c in [
-            "git diff a",
-            "git log --oneline -5",
-            "git status --short",
-            "cat a",
-        ] {
+        for c in ["git log --oneline -5", "git status --short", "cat a"] {
             assert!(plan(c, &[], &cwd).is_some(), "refused: {c}");
         }
+    }
+
+    /// git takes `-U`'s value (and `--branches`, ...) only attached: no word after
+    /// them may be skipped as a value, so no option is parsed at all.
+    #[test]
+    fn git_runs_only_whole_listed_commands() {
+        for c in [
+            "git log -1 '--format=tformat:touch x' -U --output=~/.bashrc",
+            "git log -U --ext-diff",
+            "git diff -U --textconv",
+            "git log --branches --output=x",
+            "git log --tags --output=x",
+            "git log --oneline --output=x",
+            "git log --oneline -n 5",
+            "git log -1x",
+            "git log --",
+            "git status -s x",
+            "git diff HEAD",
+            "git show HEAD",
+            "git branch -D x",
+            "git remote add x y",
+            "git",
+        ] {
+            assert!(!ok(c), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn an_optional_value_is_not_swallowed() {
+        // df takes --output's list only attached: `-o` is a flag we do not know
+        assert!(ok("df --output -h"));
+        assert!(!ok("df --output -o"));
+    }
+
+    #[test]
+    fn paths_are_resolved_as_the_kernel_does() {
+        let pid = std::process::id();
+        let cwd = "/tmp/proj-x";
+        for c in [
+            format!("cat /dev/fd/../../{pid}/environ"),
+            format!("grep -r tok /dev/fd/../../{pid}"),
+            format!("ls /proc/{pid}/fd"),
+            "cat /proc/self/environ".to_owned(),
+        ] {
+            assert!(plan(&c, &[], cwd).is_none(), "accepted: {c}");
+        }
+        assert!(plan("cat /proc/cpuinfo", &[], cwd).is_some());
     }
 }

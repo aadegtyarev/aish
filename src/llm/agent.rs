@@ -1245,7 +1245,7 @@ pub fn on_block(llm: &Llm, block: &Block) {
     // a line aish typed must come back as typed (bash may join lines with `;`,
     // and reports no history entry for a repeat); only the user edits a line
     let same = if p.ran_by_aish {
-        ran.is_empty() || squash(ran) == squash(&p.proposed)
+        (ran.is_empty() && !p.not_run) || squash(ran) == squash(&p.proposed)
     } else {
         ran == p.proposed.trim()
     };
@@ -1417,6 +1417,14 @@ mod tests {
         on_block(&llm, &block("echo hi"));
         let g = llm.pending.lock().unwrap();
         assert!(g.as_ref().unwrap().result.as_ref().unwrap().contains("out"));
+    }
+
+    #[test]
+    fn after_not_run_an_empty_history_entry_is_not_the_result() {
+        let llm = pending_llm("echo hi");
+        not_run(&llm);
+        on_block(&llm, &block(""));
+        assert!(llm.pending.lock().unwrap().is_none());
     }
 
     #[test]

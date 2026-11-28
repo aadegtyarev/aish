@@ -339,7 +339,7 @@ pub fn set_profile(src: &str, name: &str) -> Option<String> {
     Some(join(&lines))
 }
 
-/// Set a top-level plain scalar (`run: auto`), adding the key when missing.
+/// Set a top-level plain scalar (`run: judge`), adding the key when missing.
 /// `None` if the existing value is not a single-line scalar.
 pub fn set_top(src: &str, key: &str, value: &str) -> Option<String> {
     let eol = eol_of(src);
@@ -659,11 +659,14 @@ mod tests {
     #[test]
     fn top_scalar_and_tools_edits() {
         assert_eq!(
-            set_top("a: 1\nrun: ask # c\nb: 2\n", "run", "auto").unwrap(),
-            "a: 1\nrun: auto # c\nb: 2\n"
+            set_top("a: 1\nrun: ask # c\nb: 2\n", "run", "judge").unwrap(),
+            "a: 1\nrun: judge # c\nb: 2\n"
         );
-        assert_eq!(set_top("a: 1", "run", "auto").unwrap(), "a: 1\nrun: auto\n");
-        assert_eq!(set_top("run: [x]\n", "run", "auto"), None);
+        assert_eq!(
+            set_top("a: 1", "run", "judge").unwrap(),
+            "a: 1\nrun: judge\n"
+        );
+        assert_eq!(set_top("run: [x]\n", "run", "judge"), None);
         assert_eq!(
             set_tool("a: 1\n", "web", "off").unwrap(),
             "a: 1\ntools:\n  web: off\n"
@@ -701,8 +704,8 @@ mod tests {
         assert_eq!(set_run("run: ask\n", "judge").unwrap(), "run: judge\n");
         assert_eq!(set_run("a: 1\n", "judge").unwrap(), "a: 1\nrun: judge\n");
         assert_eq!(
-            set_run("run:\n  mode: ask\n  judge: p/m\n", "auto").unwrap(),
-            "run:\n  mode: auto\n  judge: p/m\n"
+            set_run("run:\n  mode: ask\n  judge: p/m\n", "judge").unwrap(),
+            "run:\n  mode: judge\n  judge: p/m\n"
         );
         assert_eq!(
             set_run("run:\n  judge: p/m\n", "judge").unwrap(),

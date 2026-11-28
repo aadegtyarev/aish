@@ -1,5 +1,5 @@
-//! The hard list: commands the model may never run without asking, even in
-//! `run: auto`. The command line is split like a shell would (quotes,
+//! The hard list: commands a judge's ALLOW never runs without asking the user.
+//! The command line is split like a shell would (quotes,
 //! escapes, `;` `&&` `||` `|` `&`, redirections); wrappers (`env`, `command`,
 //! `nohup`, `timeout`, `xargs`, `sh -c '...'` ...) are looked through. Whatever
 //! is not understood counts as hard: a false positive costs one Enter.
@@ -316,62 +316,91 @@ struct Stage {
     hard: bool,
 }
 
+/// Programs that are hard whatever their arguments: privilege changes, disk
+/// tools, power, code evaluators and shell state (later prompts and lines run
+/// what is put there).
+const ALWAYS_HARD: &[&str] = &[
+    "sudo",
+    "doas",
+    "su",
+    "pkexec",
+    "run0",
+    "sg",
+    "runuser",
+    "newgrp",
+    "dd",
+    "mke2fs",
+    "mkswap",
+    "fdisk",
+    "sfdisk",
+    "cfdisk",
+    "gdisk",
+    "sgdisk",
+    "parted",
+    "wipefs",
+    "blkdiscard",
+    "shred",
+    "cryptsetup",
+    "shutdown",
+    "reboot",
+    "poweroff",
+    "halt",
+    "init",
+    "telinit",
+    "eval",
+    "source",
+    ".",
+    "[[",
+    "let",
+    "alias",
+    "trap",
+    "bind",
+    "enable",
+    "export",
+    "declare",
+    "typeset",
+    "readonly",
+    "unset",
+    "set",
+    "shopt",
+    "hash",
+    "mapfile",
+    "readarray",
+    "read",
+    "getopts",
+];
+const POWER_STATES: &[&str] = &[
+    "reboot",
+    "poweroff",
+    "halt",
+    "kexec",
+    "suspend",
+    "hibernate",
+    "hybrid-sleep",
+    "isolate",
+    "rescue",
+    "emergency",
+];
+const FIND_UNSAFE: &[&str] = &[
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+];
+
 /// Is `prog` with `args` on the hard list? (Not looking through wrappers.)
 fn hard_cmd(prog: &str, args: &[W]) -> bool {
     let texts = || args.iter().map(|a| a.text.as_str());
     let any_expands = args.iter().any(|a| a.expands);
     match prog {
-        "sudo" | "doas" | "su" | "pkexec" | "run0" | "sg" | "runuser" | "newgrp" => true,
-        "dd" | "mke2fs" | "mkswap" | "fdisk" | "sfdisk" | "cfdisk" | "gdisk" | "sgdisk"
-        | "parted" | "wipefs" | "blkdiscard" | "shred" | "cryptsetup" => true,
-        p if p.starts_with("mkfs") => true,
-        "shutdown" | "reboot" | "poweroff" | "halt" | "init" | "telinit" => true,
-        // these evaluate their words as code
-        "eval" | "source" | "." | "[[" | "let" => true,
+        p if ALWAYS_HARD.contains(&p) || p.starts_with("mkfs") => true,
         // code the judge cannot see
         p if INTERPRETERS.iter().any(|i| p.starts_with(i)) => !args.is_empty(),
-        // shell state: later prompts and lines run what is put there
-        "alias" | "trap" | "bind" | "enable" | "export" | "declare" | "typeset" | "readonly"
-        | "unset" | "set" | "shopt" | "hash" | "mapfile" | "readarray" | "read" | "getopts" => true,
         "printf" => texts().any(|t| t == "-v"),
-        "tee" => args.iter().any(|_| true),
+        "tee" => !args.is_empty(),
         "rm" => any_expands || rm_hard(texts()),
         "chmod" | "chown" | "chgrp" => any_expands || recursive(texts()),
         "systemctl" | "loginctl" => {
-            any_expands
-                || texts().any(|t| {
-                    matches!(
-                        t.strip_suffix(".target").unwrap_or(t),
-                        "reboot"
-                            | "poweroff"
-                            | "halt"
-                            | "kexec"
-                            | "suspend"
-                            | "hibernate"
-                            | "hybrid-sleep"
-                            | "isolate"
-                            | "rescue"
-                            | "emergency"
-                    )
-                })
+            any_expands || texts().any(|t| POWER_STATES.contains(&t.trim_end_matches(".target")))
         }
-        "find" => {
-            any_expands
-                || texts().any(|t| {
-                    matches!(
-                        t,
-                        "-delete"
-                            | "-exec"
-                            | "-execdir"
-                            | "-ok"
-                            | "-okdir"
-                            | "-fprint"
-                            | "-fprint0"
-                            | "-fprintf"
-                            | "-fls"
-                    )
-                })
-        }
+        "find" => any_expands || texts().any(|t| FIND_UNSAFE.contains(&t)),
         // `-c alias.x=!cmd`, `-c core.pager=cmd` run what they are given
         "git" => {
             any_expands
@@ -388,41 +417,30 @@ fn hard_cmd(prog: &str, args: &[W]) -> bool {
 
 /// Any word of a simple command may be a command start behind a wrapper
 /// nobody listed (`setarch x86_64 rm -rf`, `prlimit rm`): look at each, and
-/// at what follows `-c` as a command line. A false positive costs one Enter.
-/// Command lines glued to an option: `--command=CMD`, `-qcCMD`; a lone `-c`
-/// (or `-qc`) takes the next word instead.
-fn attached_commands(t: &str) -> Vec<&str> {
-    if let Some(v) = t.strip_prefix("--command=") {
-        return vec![v];
-    }
-    if t.starts_with("--") || !t.starts_with('-') {
-        return Vec::new();
-    }
-    t.match_indices('c')
-        .map(|(i, _)| &t[i + 1..])
-        .filter(|r| !r.is_empty())
-        .collect()
-}
-
-/// Any word of a simple command may be a command start behind a wrapper
-/// nobody listed (`setarch x86_64 rm -rf`, `prlimit rm`): look at each, and
-/// at what follows `-c` as a command line. A false positive costs one Enter.
+/// at a command line given to `-c` or `--command`, attached or as the next
+/// word. A false positive costs one Enter.
 fn hard_anywhere(w: &[W], depth: usize) -> bool {
     let line_hard = |s: &str| needs_ask_depth(s, depth + 1);
     (0..w.len()).any(|k| {
         let first = &w[k];
-        let name = base(&first.text);
+        let t = first.text.as_str();
+        let name = base(t);
         // (`.` is a command only first; anywhere else it is a directory)
         let literal = !first.expands && !name.contains(['*', '?', '[', '~']) && name != ".";
-        let t = first.text.as_str();
-        let next_is_command =
-            t == "--command" || (t.starts_with('-') && !t.starts_with("--") && t.ends_with('c'));
+        let short = t.starts_with('-') && !t.starts_with("--");
+        let mut lines: Vec<&str> = t.strip_prefix("--command=").into_iter().collect();
+        if short {
+            lines.extend(
+                t.match_indices('c')
+                    .map(|(i, _)| &t[i + 1..])
+                    .filter(|r| !r.is_empty()),
+            );
+        }
+        let next_is_command = t == "--command" || (short && t.ends_with('c'));
         (k == 0 || literal) && hard_cmd(name, &w[k + 1..])
-            || next_is_command
-                && w.get(k + 1)
-                    .is_some_and(|s| s.expands || line_hard(&s.text))
             || t.contains("@P}")
-            || attached_commands(t).into_iter().any(line_hard)
+            || lines.into_iter().any(line_hard)
+            || next_is_command && w.get(k + 1).is_some_and(|s| s.expands || line_hard(&s.text))
             // watch runs its words as one shell line
             || name == "watch" && w[k + 1..].iter().any(|s| s.expands || line_hard(&s.text))
     })
@@ -466,8 +484,7 @@ fn stage(words: &[W], depth: usize) -> Stage {
     }
     let args = &w[1..];
     let prog = name.as_str();
-    let is_hard = hard_anywhere(w, depth);
-    if is_hard {
+    if hard_anywhere(w, depth) {
         return hard(prog);
     }
     match prog {
@@ -480,9 +497,6 @@ fn stage(words: &[W], depth: usize) -> Stage {
                 let t = args[j].text.as_str();
                 if skip_value {
                     skip_value = false;
-                } else if t == "-S" || t == "--split-string" || t.starts_with("-S") && prog == "env"
-                {
-                    return hard(prog);
                 } else if t == "--" {
                     j += 1;
                     break;
@@ -646,7 +660,34 @@ fn needs_ask_depth(cmd: &str, depth: usize) -> bool {
 /// Is `cmd` on the hard list (or not understood by it)? Then even the judge's
 /// ALLOW is only a recommendation: the user decides.
 pub fn on_hard_list(cmd: &str) -> bool {
-    needs_ask_depth(cmd, 0)
+    history_expands(cmd) || needs_ask_depth(cmd, 0)
+}
+
+/// Typed lines run with history expansion: `!sudo`, `!!`, `!-1`, `!?x` and a
+/// leading `^a^b` re-run old lines. Not in single quotes or after a backslash.
+fn history_expands(cmd: &str) -> bool {
+    let (mut sq, mut dq, mut esc) = (false, false, false);
+    let mut cs = cmd.chars().peekable();
+    if cmd.starts_with('^') {
+        return true;
+    }
+    while let Some(c) = cs.next() {
+        match c {
+            _ if esc => esc = false,
+            '\\' if !sq => esc = true,
+            '\'' if !dq => sq = !sq,
+            '"' if !sq => dq = !dq,
+            '!' if !sq
+                && cs
+                    .peek()
+                    .is_some_and(|n| !n.is_whitespace() && !"=(".contains(*n)) =>
+            {
+                return true
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -897,5 +938,23 @@ mod tests {
             assert!(on_hard_list(c), "should be hard: {c:?}");
         }
         assert!(!on_hard_list("git log --oneline"));
+    }
+
+    #[test]
+    fn history_expansion_re_runs_old_lines() {
+        for c in [
+            "true; !sudo",
+            "!!",
+            "echo hi && !-1",
+            "!?x",
+            "^a^b",
+            "echo \"!x\"",
+            "ls \"it's\" !sudo",
+        ] {
+            assert!(on_hard_list(c), "should be hard: {c:?}");
+        }
+        for c in ["echo '!sudo'", "echo \\!x", "ls ! -x", "echo hi!", "ls -la"] {
+            assert!(!on_hard_list(c), "not hard: {c:?}");
+        }
     }
 }

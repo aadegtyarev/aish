@@ -13,8 +13,8 @@ UI text is English only; the conversation follows the user's language.
    indistinguishable from `bash`. PS1, aliases, `.bashrc`, `vim`, `ssh` are all yours.
 2. **2–3 steps to any action.** No settings menu, no dialogs.
 3. **Propose, don't do.** The model puts a command into your input line, or, with
-   your permission (`ai run`), types it into your bash. Nothing runs unasked, and
-   the hard list (sudo, `rm -rf`, redirection into files ...) always asks.
+   your permission (`ai run`), types it into your bash. Nothing runs unasked except
+   read-only commands; in `judge` mode the hard list (sudo, `rm -rf` ...) still asks.
 4. **Instant.** Typing never waits for the network. LLM suggestions catch up,
    they don't block. Keypress latency < 1 ms, history < 5 ms.
 5. **Quiet.** Network and model errors are one dim line, not a stack trace.
@@ -157,15 +157,19 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
 - **Read-only commands** (an allowlist: `ls`, `cat`, `head`, `tail` without `-f`,
   `wc`, `grep`/`rg`, `find` without `-exec/-delete`, `stat`, `file`, `du`, `df`,
   `free`, `uname`, `whoami`, `id`, `ps`, `which`, `type`, `pwd`, `date`,
-  `git status|log|diff|show|branch|remote -v|rev-parse|ls-files|blame`,
-  `cargo metadata`, `systemctl status`, `journalctl` without
-  `-f/--vacuum/--rotate`) are run by aish itself, not in your terminal:
+  `systemctl status`, and git only as whole commands: `status`, `status -s|--short|-sb`,
+  `diff [--stat|--cached|--staged]`, `log --oneline [-N]`, `log -N`, `branch [-a]`,
+  `remote -v`, `rev-parse --show-toplevel`; paths are resolved as the kernel does and
+  secrets, other processes' files under `/proc` and wide recursions are refused) are
+  run by aish itself, not in your terminal:
   `bash -c` in the current cwd, stdin `/dev/null`, 10 s, output up to 16 KB.
   The answer gets one dim line `│ $ cmd · N lines` (or `· exit 1`); the output
   goes to the model. Parsing uses a real tokenizer: `;`, `&`, `$(…)`, backticks,
   `<(…)`, redirects into files, environment assignments and a pipe into a
   command that is not allowed make a command "not read-only".
-  Your own prefixes go in `allow:` in config.yaml.
+  Your own prefixes go in `allow:` in config.yaml. A planted `.git/config` (a clean
+  filter, textconv, gpg.program) could still make these git commands run a program:
+  the same risk as running the command yourself in that repository.
 - **Everything else** goes through `run` and depends on the mode (`ai run`):
   - `ask` (default): a dim prompt under the answer, one key decides:
     ```
@@ -501,4 +505,4 @@ overlay hints get shorter. New UI elements are checked by tests at a narrow widt
   `Authorization:`, private keys, passwords in URLs.
 - For a local provider masking can be turned off.
 - Nothing runs without Enter (or your `s`/`a` for the session), except allowlisted
-  read-only commands. The hard list always asks.
+  read-only commands. In `judge` mode the hard list still asks.

@@ -13,8 +13,10 @@ version and date, and the release notes on GitHub are taken from it.
 - The hard list (which turns a judge ALLOW into a question) now also sees a command
   behind any wrapper (`setarch x86_64 rm -rf`, `env -S`, `script -c`), `git -c`,
   interpreters and shell-state builtins.
-- Read-only commands that run unasked can no longer reach outside the work tree with
-  `git diff ~ /dir` (implicit `--no-index`) or recurse into `/proc`.
+- Read-only commands that run unasked are stricter: git only as whole commands
+  (`status`, `diff --stat`, `log --oneline -5` ...), no `cargo metadata` or
+  `journalctl`, paths resolved as the kernel does (no `/dev/fd/../..` into another
+  process's environment).
 - Commands too long to be shown whole (12 rows, 1000 characters) are refused in every
   mode, before anything is judged or asked.
 - If bash never starts the command aish typed (syntax error, cancelled quote), the
@@ -33,7 +35,9 @@ version and date, and the release notes on GitHub are taken from it.
   one-shot judge (no tools, no history; sees the command, cwd and your last
   question) that answers ALLOW / ASK / DENY with a short reason: `⚖ allowed · …` runs
   it, `⚖ denied · …` refuses it (the agent is told why), ASK, garbage, an error or an
-  8 s timeout shows the prompt with the reason. The hard list never runs on ALLOW.
+  8 s timeout shows the prompt with the reason. A command on the hard list (sudo/su, `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown, `curl | sh`,
+  `chmod/chown -R`, `git push --force`, `git -c`, `!` history expansion, interpreters, shell state,
+  also behind any wrapper) never runs on ALLOW: you decide.
   `run:` also takes `{mode, judge, judge_prompt: {append|replace}}`; `ai run judge
   [--save]`; the wait shows `judging`; local llama.cpp gets a GBNF grammar. In `ask`,
   `s` switches the session to `judge` and `a` saves `run: judge`; an unknown `run:`
@@ -65,14 +69,11 @@ version and date, and the release notes on GitHub are taken from it.
   read-only the agent shows a dim prompt under the answer (`│ ▶ cmd`, `Enter run ·
   s session · a always · Esc no`). Enter types the command into your bash as if you
   did (visible, sudo can prompt, `cd` persists, Ctrl-C works) and the model gets the
-  exit code, the output tail and the duration; `s` stops asking until aish exits,
-  `a` also saves `run: auto`, Esc declines (the model is told and goes on). It is
-  typed only into an empty line at an idle prompt. A hard list always asks, also in
-  auto: sudo/doas/su, `rm -r/-f`, dd, mkfs, fdisk/parted/wipefs, shutdown/reboot,
-  redirection or `tee` into files, `curl | sh`, `chmod/chown -R`, `git push --force`,
-  `git reset --hard`, `git clean -f` (parsed conservatively: when unsure, it asks).
-  `ai run` shows the mode, `ai run ask|auto|off` sets it (`--save` keeps it); `off`
-  is the old behaviour (the command goes into your input line). `run:` in the config.
+  exit code, the output tail and the duration; `s` switches to `judge` until aish
+  exits, `a` also saves `run: judge`, Esc declines (the model is told and goes on). It
+  is typed only into an empty line at an idle prompt. `ai run` shows the mode, `ai run
+  ask|judge|off` sets it (`--save` keeps it); `off` is the old behaviour (the command
+  goes into your input line). `run:` in the config.
 - Per-tool switches: `tools: {run, files, web, skills}` in the config (`skills` is
   reserved), `ai tools` lists them, `ai tools web off [--save]` changes one. An off
   tool is not sent to the model and not mentioned in its prompt; a call to it is
