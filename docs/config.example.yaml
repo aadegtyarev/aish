@@ -109,6 +109,10 @@ roles:
 # Read at the start of a session.
 # prefix: ","
 
+# The language the model always replies in, whatever the question's language
+# (default English, like aish itself).
+# language: Russian
+
 # Conversation memory. When it grows past `at` of the chat model's context window
 # (`context_window` on the model; else a local llama.cpp's n_ctx from /props; else 8192),
 # the next question first replaces it with a summary of about `size` of the window.

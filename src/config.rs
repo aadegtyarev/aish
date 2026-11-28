@@ -216,6 +216,9 @@ pub struct Config {
     /// The character that starts a question to the model (`?` by default).
     #[serde(default, deserialize_with = "scalar_string")]
     pub prefix: Option<String>,
+    /// The language the model always replies in (default English).
+    #[serde(default, deserialize_with = "scalar_string")]
+    pub language: Option<String>,
     /// Conversation compaction (`compact:`).
     #[serde(default)]
     pub compact: Option<CompactCfg>,

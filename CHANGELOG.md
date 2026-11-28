@@ -9,6 +9,15 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Changed
+- The model answers with facts it gathers itself (read-only commands, files,
+  the terminal history, the web) instead of listing commands to try; asked how
+  to do something, it explains and offers to do it.
+
+### Added
+- The model always replies in English, like aish itself, whatever the
+  question's language; `language:` in the config picks another one.
+
 ## [0.4.0] - 2026-11-28
 
 ### Removed
