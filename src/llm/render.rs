@@ -341,14 +341,10 @@ impl Renderer {
     /// The approval prompt of a command the model wants to run:
     /// `│ ▶ cmd` (the whole command, wrapped, whitespace made visible) and a
     /// dim hint row. The last row is the hint; no trailing newline.
-    /// `note`: a dim line above the hint (the judge's reason); a command of
-    /// more than 12 rows shows its first rows and `… N more rows`.
+    /// `note`: a dim line above the hint (the judge's reason). The caller has
+    /// refused commands too long to be shown whole (`run_rows`).
     pub fn run_prompt(&self, cmd: &str, note: Option<&str>, hints: &[&str], out: &mut Vec<u8>) {
-        let mut rows = wrap_run(&show_cmd(cmd), self.cols.saturating_sub(2).max(1));
-        let hidden = rows.len().saturating_sub(12);
-        if hidden > 0 {
-            rows.truncate(11);
-        }
+        let rows = wrap_run(&show_cmd(cmd), self.cols.saturating_sub(2).max(1));
         for (i, r) in rows.iter().enumerate() {
             out.extend_from_slice(b"\r\n");
             self.bar(out);
@@ -358,9 +354,6 @@ impl Renderer {
             self.sgr(out, &self.accent.clone());
             out.extend_from_slice(r.as_bytes());
             self.reset(out);
-        }
-        if hidden > 0 {
-            self.run_note(&format!("… {} more rows", hidden + 1), out);
         }
         if let Some(n) = note {
             self.run_note(&format!("⚖ {n}"), out);

@@ -10,6 +10,22 @@ version and date, and the release notes on GitHub are taken from it.
 ## [Unreleased]
 
 ### Fixed
+- `run: auto` and `judge` run unasked only an allowlist of read-only programs with
+  exact flags (`ls`, `cat`, `grep` without `-r`, `sort` without `-o`, `git log`, ...);
+  everything else asks. `echo`/`printf`, `curl`, `env`, pagers, secret paths,
+  `~`/`$HOME` tricks and programs your shell redefines as aliases or functions ask too.
+- The hard list now also sees a command behind any wrapper (`setarch x86_64 rm -rf`),
+  so a judge ALLOW is turned into a question.
+- Commands too long to be shown whole (12 rows, 1000 characters) are refused in every
+  mode, also `judge`, before anything is judged or asked.
+- If bash never starts the command aish typed (syntax error, cancelled quote), the
+  model is told it did not run; the next command you run is no longer taken for its
+  result.
+- In `judge` mode the prompt offers only Enter and Esc: `s`/`a` no longer replace the
+  judge by `auto`.
+- Keys typed before an approval prompt appeared count towards the 700 ms quiet window,
+  so finishing a line with Enter cannot approve a command.
+- `AISH_JUDGE_TIMEOUT_MS` works in debug builds only.
 - A refused `read_file` says why (`read_file refused: secret file · ~/.ssh/…`),
   reason first so it survives narrow screens.
 - Tool lines (`read_file`, `run`, `⚖`, …) are cut to the screen width and

@@ -155,11 +155,15 @@ struct Collector {
     /// When set, OSC 133 marks must carry `aish=<nonce>` (foreign shells' marks are ignored).
     nonce: Option<String>,
     path: Option<String>,
+    /// Programs the shell redefines as aliases or functions (`sh=` report).
+    shadowed: Vec<String>,
     path_version: u64,
     jobs: Vec<JobRow>,
     jobs_changed: bool,
     job_ends: Vec<JobEnd>,
     cwd: String,
+    /// A prompt came back with no command started since the last one.
+    empty_prompt: bool,
     pending_cmd: Option<String>,
     run: Option<Run>,
     blocks: Blocks,
@@ -245,6 +249,7 @@ impl Perform for Collector {
                     let exit = rest
                         .first()
                         .and_then(|p| std::str::from_utf8(p).ok()?.parse().ok());
+                    self.empty_prompt |= self.run.is_none();
                     self.finish(exit);
                 }
                 _ => {}
@@ -290,6 +295,19 @@ impl Perform for Collector {
                         }
                     }
                     self.jobs_changed = true;
+                    return;
+                }
+                if let Some(p) = payload.strip_prefix(b"sh=") {
+                    // `names;aish=<nonce>`
+                    let p = String::from_utf8_lossy(p);
+                    let (names, tag) = p.rsplit_once(';').unwrap_or((&p, ""));
+                    if self
+                        .nonce
+                        .as_ref()
+                        .is_none_or(|n| tag == format!("aish={n}"))
+                    {
+                        self.shadowed = names.split_whitespace().map(str::to_owned).collect();
+                    }
                     return;
                 }
                 if let Some(p) = payload.strip_prefix(b"path=") {
@@ -355,6 +373,12 @@ impl BlockTracker {
         self.state.run.as_ref().map(|r| r.out.clone().finish())
     }
 
+    /// Did a prompt come back since the last call without a command having
+    /// started (a syntax error, an unfinished quote, an empty line)?
+    pub fn take_empty_prompt(&mut self) -> bool {
+        std::mem::take(&mut self.state.empty_prompt)
+    }
+
     /// The job table and finished jobs, if the shell reported news since the last call.
     pub fn take_job_update(&mut self) -> Option<(Vec<JobRow>, Vec<JobEnd>)> {
         if !std::mem::take(&mut self.state.jobs_changed) {
@@ -364,6 +388,11 @@ impl BlockTracker {
             self.state.jobs.clone(),
             std::mem::take(&mut self.state.job_ends),
         ))
+    }
+
+    /// Programs the user's shell redefines as aliases or functions.
+    pub fn shadowed(&self) -> &[String] {
+        &self.state.shadowed
     }
 
     /// PATH of the shell (reported by the integration whenever it changes)
@@ -420,6 +449,16 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_without_a_started_command_is_noticed() {
+        let mut t = BlockTracker::default();
+        t.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        assert!(t.take_empty_prompt());
+        assert!(!t.take_empty_prompt());
+        t.feed(b"\x1b]133;C\x07x\x1b]133;D;0\x07");
+        assert!(!t.take_empty_prompt());
+    }
+
+    #[test]
     fn empty_command_makes_no_block() {
         let mut t = BlockTracker::default();
         t.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
@@ -472,6 +511,17 @@ mod tests {
             t.feed(b"\x1b]133;C\x07a\x1b]133;D;0\x07");
         }
         assert_eq!(t.blocks().len(), MAX_BLOCKS);
+    }
+
+    #[test]
+    fn shadowed_programs_are_reported_with_the_nonce() {
+        let mut t = BlockTracker::with_nonce("n1".into());
+        t.feed(b"\x1b]1337;aish;sh=ls grep;aish=n1\x07");
+        assert_eq!(t.shadowed(), ["ls", "grep"]);
+        t.feed(b"\x1b]1337;aish;sh=;aish=other\x07");
+        assert_eq!(t.shadowed(), ["ls", "grep"]);
+        t.feed(b"\x1b]1337;aish;sh=;aish=n1\x07");
+        assert!(t.shadowed().is_empty());
     }
 
     #[test]

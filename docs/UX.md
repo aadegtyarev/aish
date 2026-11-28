@@ -173,39 +173,59 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
     │   Enter run · s session · a always · Esc no
     ```
     The command is shown as it is (control and bidi characters are refused, long
-    commands wrap with the bar, at most 6 rows; the hint gets shorter on a narrow
+    commands wrap with the bar, at most 12 rows; the hint gets shorter on a narrow
     screen). **Enter** types the command into your bash as if you typed it: it is
     visible, its output is an ordinary block, sudo can ask for a password, `cd`
     persists, Ctrl-C stops it. The agent waits for the end of the block and gets
     the exit code, the output tail (masked for a non-local provider) and the
     duration (`interrupted by the user` after Ctrl-C). It is typed only when bash is
     at an idle prompt with an empty line: if you typed something meanwhile, nothing
-    runs and the model is told so. **s** — the model runs commands without asking
-    until aish exits. **a** — the same, and `run: auto` is saved to the config
+    runs and the model is told so. If bash never starts the line (a syntax error, an
+    unfinished quote you cancel), the model is told it did not run; what you run
+    next is never taken for its result. **s** — the model runs commands without asking
+    until aish exits (`ask` only). **a** — the same, and `run: auto` is saved to the config
     (a targeted edit). **Esc** — declined: the model is told, it continues.
   - `auto`: no prompt, but only for a **plain structure**: a pipeline or `;`/`&&` list
     of simple commands made of literal words (quotes allowed; no `$`, backticks, braces,
-    globs, `~`, `!`, `\`, subshells, here-docs, assignments, newlines or `&`; the only
-    redirects are `2>&1` and `/dev/null`), whose programs are not interpreters,
-    wrappers, shell-state builtins or paths, and not file writers (`cp mv ln tee sed
-    curl -o git checkout/restore ...`). Anything else asks, as does the **hard list**
-    (sudo/su, `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown/reboot, `curl | sh`,
-    `chmod/chown -R`, `git push --force`, `git reset --hard`, `git clean -f`). When
-    unsure, it asks. Multi-line commands always ask.
+    globs, `!`, `\`, subshells, here-docs, assignments, newlines or `&`; a `~` only
+    at the start of a word; the only redirects are `2>&1` and `/dev/null`), **and**
+    every program is on an allowlist with arguments that cannot run code or write:
+    - any arguments: `ls pwd whoami id groups uname uptime free df du wc head tail cat
+      tac nl stat realpath readlink basename dirname nproc lscpu lsblk lsusb lspci
+      pgrep which whereis type cut tr column rev cmp diff comm md5sum sha1sum
+      sha256sum`;
+    - exact flags only (an abbreviation like `--rec` is not a match): `grep egrep
+      fgrep` (not recursive), `ps` (no `e`), `sort` (no `-o`), `uniq` (one file),
+      `find` (no `-exec -ok -delete -fprint*`), `git` (`-C dir`, `--no-pager`; status,
+      log, diff, show, blame, ls-files, rev-parse, describe, shortlog with read flags;
+      `branch`/`tag` only as lists; `remote [-v]`), `systemctl` (status, is-*,
+      list-units, list-unit-files, list-timers).
+
+    Everything else asks: `echo`/`printf`, `env`, `curl`/`wget`, pagers, `rm`, `cd`,
+    interpreters, wrappers, builtins, `make`, ... An argument that is a secret path
+    (`~/.ssh`, `.env`, `~/.config/aish`, ...; relative ones are resolved against the
+    cwd) or names `environ` asks too, and so does a program the shell redefines as
+    an alias or function (reported at each prompt). The **hard list** (sudo/su,
+    `rm -r/-f`, dd, mkfs, fdisk/parted, shutdown/reboot, `curl | sh`, `chmod/chown
+    -R`, `git push --force`, ...) is looked for at every word of a command, so
+    `setarch x86_64 rm -rf x` is on it too. Multi-line commands always ask.
   - The prompt shows the whole command as it will be typed (newlines as `⏎`, edge or
-    repeated blanks as `·`/`·×N`); more than 12 rows or 1000 characters is refused
-    ("command too long to review"). A key decides only as a single keypress (Enter,
-    `s`, `a`, Esc), not in the first 300 ms and not within 700 ms of other typing;
-    anything else shows `press Enter, s, a or Esc`.
-  - `judge`: a plain command that is not on the hard list runs as in `auto`. Anything
-    else (also multi-line or long, up to 16k characters) goes to a one-shot **judge**
-    model (`run.judge`, default the chat model; no tools, no history, 8 s; it sees only
-    the command, the cwd and your last question, masked for a non-local provider). It
-    answers `ALLOW`/`ASK`/`DENY` + a reason: `│ ⚖ allowed · reason` runs the command,
-    `│ ⚖ denied · reason` refuses it (the model is told why), `ASK` or no clean answer
-    shows the normal prompt with `⚖ reason` above the keys (a very long command shows
-    its first rows and `… N more rows`). On the hard list ALLOW becomes ASK. The prompt
-    can be extended or replaced with `run.judge_prompt`. While it thinks: `⠹ judging`.
+    repeated blanks as `·`/`·×N`). In every mode, before anything is shown or
+    judged, a command of more than 12 rows or 1000 characters is refused ("command
+    too long to review": the model splits it). A key decides only as a single keypress
+    (Enter, `s`, `a`, Esc), not in the first 300 ms and not within 700 ms of other
+    typing (also typing before the prompt appeared); anything else shows `press
+    Enter, s, a or Esc`.
+  - `judge`: a plain command runs as in `auto`. Anything else goes to a one-shot
+    **judge** model (`run.judge`, default the chat model; no tools, no history, 8 s; it
+    sees only the command, the cwd and your last question, masked for a non-local
+    provider). It answers `ALLOW`/`ASK`/`DENY` + a reason: `│ ⚖ allowed · reason` runs
+    the command, `│ ⚖ denied · reason` refuses it (the model is told why), `ASK` or no
+    clean answer shows the prompt with `⚖ reason` above the keys. A command on the
+    hard list never runs on ALLOW: it asks. The prompt has only Enter and Esc: `s` and
+    `a` (which switch to `auto`) are not offered, judge is never replaced by auto. The
+    prompt can be extended or replaced with `run.judge_prompt`. While it thinks: `⠹
+    judging`.
   - `off`: the old way — the command is put into the input line (the same checks
     as for a ```` ```bash ```` block) and the turn pauses. Run it (you may edit it;
     the model learns what was actually run), and when the block ends the model

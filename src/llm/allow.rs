@@ -590,7 +590,7 @@ fn git_plan(args: &[String]) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn ps_ok(args: &[String]) -> bool {
+pub(super) fn ps_ok(args: &[String]) -> bool {
     let spec = Spec {
         short: "eAaxfFjlLmMuwTvVHhcCNZ",
         short_val: "opUtgGqs",

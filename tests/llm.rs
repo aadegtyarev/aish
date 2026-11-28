@@ -1603,7 +1603,7 @@ fn run_steps(cmds: &[&str]) -> Vec<(&'static str, Calls)> {
     v
 }
 
-const PRINT: &str = "printf 'out-%s\\n' 42";
+const PRINT: &str = "basename out-42";
 
 #[test]
 fn run_once_types_the_command_and_the_model_gets_exit_and_output() {
@@ -1614,7 +1614,7 @@ fn run_once_types_the_command_and_the_model_gets_exit_and_output() {
     settle();
     p.send("? do it\r").unwrap();
     p.expect("▶ ").unwrap();
-    p.expect("printf").unwrap();
+    p.expect("basename").unwrap();
     p.expect("Enter run · s session · a always · Esc no")
         .unwrap();
     assert_eq!(m.requests().len(), 1, "waits for the user");
@@ -1622,7 +1622,7 @@ fn run_once_types_the_command_and_the_model_gets_exit_and_output() {
     p.send("\r").unwrap();
     // typed into bash like by the user: after the prompt, visible
     p.expect("E> ").unwrap();
-    p.expect("printf").unwrap();
+    p.expect("basename").unwrap();
     p.expect("out-42\r\n").unwrap();
     p.expect("all-done").unwrap();
     p.expect("E> ").unwrap();
@@ -1665,10 +1665,7 @@ fn esc_declines_and_the_model_continues() {
 #[test]
 fn s_allows_the_session_and_the_next_command_runs_without_asking() {
     let home = TempDir::new().unwrap();
-    let m = stepped(
-        "chat",
-        run_steps(&["printf 'one-%s\\n' 1", "printf 'two-%s\\n' 2"]),
-    );
+    let m = stepped("chat", run_steps(&["basename one-1", "basename two-2"]));
     let mut p = with_run(&home, &m, "");
     p.expect("E> ").unwrap();
     settle();
@@ -1759,6 +1756,57 @@ fn auto_runs_a_harmless_command_without_asking() {
 }
 
 #[test]
+fn an_alias_or_function_named_like_a_plain_program_makes_it_ask() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&[PRINT]));
+    let dir = home.path().join(".config/aish");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("{}run: auto\n", config_kind_run(&m.url(), "chat")),
+    )
+    .unwrap();
+    let cmd = base(&home);
+    std::fs::write(
+        home.path().join(".bashrc"),
+        "PS1='E> '\nbasename() { command basename \"$@\"; }\n",
+    )
+    .unwrap();
+    let mut p = spawn(cmd);
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter run · Esc no").unwrap();
+    settle();
+    p.send("\x1b").unwrap();
+    p.expect("all-done").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn a_line_bash_never_started_is_reported_not_taken_for_the_next_command() {
+    let home = TempDir::new().unwrap();
+    let m = stepped("chat", run_steps(&["echo 'unclosed"]));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter run").unwrap();
+    settle();
+    p.send("\r").unwrap();
+    // bash waits for the closing quote; the user gives up
+    p.expect("> ").unwrap();
+    settle();
+    p.send("\x03").unwrap();
+    p.expect("all-done").unwrap();
+    let b = m.requests()[1].body.clone();
+    assert!(b.contains("did not run"), "{b}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
 fn injection_is_refused_when_the_line_is_not_empty() {
     let home = TempDir::new().unwrap();
     let marker = home.path().join("must-not-run");
@@ -1804,13 +1852,13 @@ fn injection_is_refused_when_the_line_is_not_empty() {
 #[test]
 fn ctrl_c_on_the_running_command_is_reported_as_interrupted() {
     let home = TempDir::new().unwrap();
-    let m = stepped("chat", run_steps(&["sleep 30"]));
+    let m = stepped("chat", run_steps(&["tail -f /dev/null"]));
     let mut p = with_run(&home, &m, "run: auto\n");
     p.expect("E> ").unwrap();
     settle();
     p.send("? wait\r").unwrap();
     p.expect("E> ").unwrap();
-    p.expect("sleep 30").unwrap();
+    p.expect("tail -f /dev/null").unwrap();
     std::thread::sleep(Duration::from_millis(600));
     p.send("\x03").unwrap();
     p.expect("all-done").unwrap();
@@ -2407,8 +2455,9 @@ fn judge_ask_shows_the_prompt_with_its_reason() {
     p.send("? print\r").unwrap();
     p.expect("▶ ").unwrap();
     p.expect("⚖ writes outside tmp").unwrap();
-    p.expect("Enter run · s session · a always · Esc no")
-        .unwrap();
+    // the judge is never replaced by auto: no s / a
+    let c = p.expect("Enter run · Esc no").unwrap();
+    assert!(!String::from_utf8_lossy(c.before()).contains("always"));
     settle();
     p.send("\r").unwrap();
     p.expect("v-ok\r\n").unwrap();
@@ -2490,30 +2539,22 @@ fn judge_allow_on_the_hard_list_still_asks() {
 }
 
 #[test]
-fn judge_reads_a_long_multiline_command() {
+fn a_command_too_long_to_show_whole_is_refused_before_the_judge() {
     let home = TempDir::new().unwrap();
-    let cmd = format!(
-        "printf 'a-%s\\n' 1\nprintf 'b-%s\\n' 2\n# {}",
-        "x".repeat(3000)
-    );
+    let cmd = format!("printf 'a-%s\\n' 1\n# {}", "x".repeat(3000));
     let m = judge_mock(run_steps(&[&cmd]), J::Say("ALLOW"));
     let mut p = judge_session(&home, &m, "");
     p.expect("E> ").unwrap();
     settle();
     p.send("? do it\r").unwrap();
-    p.expect("⚖ allowed").unwrap();
     p.expect("all-done").unwrap();
-    let j = judge_requests(&m);
-    assert!(
-        j.len() == 1 && j[0].contains("a-%s") && j[0].contains("xxxxxxxxxx"),
-        "{j:?}"
-    );
+    assert!(judge_requests(&m).is_empty());
     let agent: Vec<_> = m
         .requests()
         .into_iter()
         .filter(|r| r.body.contains("\"tools\""))
         .collect();
-    assert!(!agent[1].body.contains("too long"));
+    assert!(agent[1].body.contains("too long to review"));
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }

@@ -629,20 +629,20 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
                 );
             }
             let mode = env.llm.run_mode();
-            // (the judge reads long commands; a person cannot)
-            let too_long = if mode == RunMode::Judge {
-                cmd.chars().count() > super::judge::MAX_COMMAND
-            } else {
-                cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12
-            };
-            if too_long {
+            if cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12 {
                 return done(
                     "error: command too long to review: split it into smaller commands".into(),
                     "command too long to review".into(),
                 );
             }
-            let plain = super::hard::plain(&cmd);
-            let listed = super::hard::on_hard_list(&cmd);
+            let shadowed = env
+                .tracker
+                .lock()
+                .map(|t| t.shadowed().to_vec())
+                .unwrap_or_default();
+            let plain = super::hard::plain(&cmd, &shadowed, &cwd);
+            // (a plain command cannot be on the list)
+            let listed = !plain && super::hard::on_hard_list(&cmd);
             let (line, bgj) = if bg {
                 let Some(dir) = jobs_dir() else {
                     return done("error: no state directory".into(), "run: no HOME".into());
@@ -1065,9 +1065,10 @@ fn approve(
 ) -> Approval {
     let mode = llm.run_mode();
     let hard = listed || !plain;
-    let full = matches!(mode, RunMode::Ask | RunMode::Judge);
+    // `s`/`a` grant auto mode; they never replace the judge
+    let grant = mode == RunMode::Ask;
     let mut reason: Option<String> = None;
-    if !full && !hard {
+    if mode == RunMode::Auto && !hard {
         return Approval::Go;
     }
     if mode == RunMode::Judge {
@@ -1096,7 +1097,7 @@ fn approve(
         }
     }
     let r = Renderer::new(&task.theme, task.cols);
-    let hints: &[&str] = if full {
+    let hints: &[&str] = if grant {
         &[
             "Enter run · s session · a always · Esc no",
             "Enter run · s · a always · Esc",
@@ -1114,7 +1115,7 @@ fn approve(
         r.run_prompt_done(note, &mut out);
         task.write(&out);
     };
-    let hint_keys = if full {
+    let hint_keys = if grant {
         "press Enter, s, a or Esc"
     } else {
         "press Enter or Esc"
@@ -1135,7 +1136,7 @@ fn approve(
                 end(Some("declined"));
                 return Approval::Declined;
             }
-            Key::Press(k @ (b's' | b'a')) if full => {
+            Key::Press(k @ (b's' | b'a')) if grant => {
                 llm.set_run_mode(RunMode::Auto);
                 let kept = k == b'a' && super::cmd::save_run(llm, RunMode::Auto);
                 end(if k == b'a' && !kept {
@@ -1265,15 +1266,15 @@ pub fn on_block(llm: &Llm, block: &Block) {
         return;
     }
     let ran = block.command.trim();
-    // what aish typed itself is the next block, whatever bash made of it
-    let same = p.ran_by_aish || ran == p.proposed.trim();
+    // (no history entry reported: bash saw the same line as before)
+    let same = ran == p.proposed.trim() || (p.ran_by_aish && ran.is_empty());
     if !same && !small_edit(&p.proposed, ran) {
         *g = None; // the user did something else: the agent stops silently
         return;
     }
     let code = block.exit_code.map_or("?".into(), |c| c.to_string());
     let mut res = String::new();
-    if !same {
+    if !same && !p.ran_by_aish {
         res.push_str(&format!(
             "The user edited the command before running it. What they actually ran: {ran}\n"
         ));
@@ -1311,6 +1312,24 @@ pub fn on_block(llm: &Llm, block: &Block) {
         res.push_str(&format!("exit: {code}\noutput:\n{}", cap(&block.output)));
     }
     p.result = Some(res);
+}
+
+/// Bash came back to a prompt without starting the line aish typed (a syntax
+/// error, an unfinished quote that was cancelled): the model is told, and
+/// whatever the user runs next is not taken for the result.
+pub fn not_run(llm: &Llm) {
+    let Ok(mut g) = llm.pending.lock() else {
+        return;
+    };
+    if let Some(p) = g
+        .as_mut()
+        .filter(|p| p.ran_by_aish && !p.inject && p.result.is_none())
+    {
+        p.result = Some(
+            "error: the command did not run: bash did not start it (a syntax error or incomplete input). Nothing was executed."
+                .into(),
+        );
+    }
 }
 
 /// The proposed line was cleared or replaced: the turn ends.

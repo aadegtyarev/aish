@@ -75,8 +75,8 @@ roles:
 # run: ask
 #
 #   judge — a model decides instead of you. A plain command (see UX.md) runs unasked;
-#           everything else, also long and multi-line commands (up to 16k chars), goes to
-#           the judge: ALLOW runs it (`⚖ allowed · reason`), DENY refuses it (the model is
+#           everything else (multi-line too; over 12 rows or 1000 characters is refused)
+#           goes to the judge: ALLOW runs it (`⚖ allowed · reason`), DENY refuses it (the model is
 #           told why), ASK or no clear answer within 8 s shows the usual prompt with the
 #           reason. Hard-list commands never run on ALLOW. The judge sees only the
 #           command, the cwd and your last question, never outputs or history.

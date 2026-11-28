@@ -242,9 +242,11 @@ pub fn pump_output(
             }
         }
         let mut jobs_news = None;
+        let mut empty_prompt = false;
         let finished = tracker.lock().ok().and_then(|mut t| {
             t.feed(&buf[..n]);
             jobs_news = t.take_job_update();
+            empty_prompt = t.take_empty_prompt();
             let total = t.blocks().total();
             if total != seen_blocks {
                 seen_blocks = total;
@@ -259,6 +261,9 @@ pub fn pump_output(
         }
         if let (Some((total, b)), Some(c)) = (finished, &ed) {
             ctl::with(c, (), |g| g.on_block(total, &b));
+        }
+        if let (true, Some(c)) = (empty_prompt, &ed) {
+            ctl::with(c, (), |g| g.on_empty_prompt());
         }
     }
 }

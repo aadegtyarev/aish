@@ -318,6 +318,11 @@ impl Controller {
         }
     }
 
+    /// Bash came back to a prompt without starting a command.
+    pub fn on_empty_prompt(&mut self) {
+        crate::llm::agent::not_run(&self.llm);
+    }
+
     /// Every chunk of shell output, before it is shown: while we have asked
     /// the shell about a finished job, its own `[1]+ Done ...` line goes.
     pub fn job_filter(&mut self, out: &mut Vec<u8>) {
@@ -554,6 +559,9 @@ impl Controller {
                     t.offer_input(&data);
                 }
                 return Input::Handled(false);
+            }
+            if !data.is_empty() {
+                t.note_input();
             }
             for b in data {
                 if b == 0x03 {

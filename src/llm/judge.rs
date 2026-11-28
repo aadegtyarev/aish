@@ -15,8 +15,6 @@ use super::{Llm, Target};
 use crate::config::{Config, JudgePrompt, Setting};
 use crate::module::Task;
 
-/// Characters of a command the judge reads at most.
-pub const MAX_COMMAND: usize = 16_000;
 /// Characters of the user's question the judge sees.
 const MAX_QUESTION: usize = 500;
 const MAX_REASON: usize = 60;
@@ -81,10 +79,14 @@ pub fn system_prompt(cfg: Option<&Config>) -> String {
 }
 
 fn timeout() -> Duration {
-    std::env::var("AISH_JUDGE_TIMEOUT_MS")
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("AISH_JUDGE_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .map_or(Duration::from_secs(8), Duration::from_millis)
+    {
+        return Duration::from_millis(ms);
+    }
+    Duration::from_secs(8)
 }
 
 impl Llm {

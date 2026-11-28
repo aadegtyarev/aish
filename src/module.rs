@@ -95,6 +95,14 @@ impl TaskShared {
             _ => st.bad = true,
         }
     }
+    /// Keys typed before the decision prompt appeared (they go to the
+    /// typeahead) count towards the quiet time too.
+    pub fn note_input(&self) {
+        if let Ok(mut st) = self.keys.lock() {
+            st.last = Some(std::time::Instant::now());
+        }
+    }
+
     /// Drop all further output; returns once no write is in flight.
     pub fn mute(&self) {
         let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -360,5 +368,22 @@ mod tests {
         t.finish(Some("ls".into()));
         assert_eq!(shared.take_done(), Some(Some("ls".into())));
         assert!(shared.take_done().is_none()); // drop did not finish a second time
+    }
+
+    #[test]
+    fn typing_before_the_prompt_keeps_enter_from_deciding() {
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        for typed in [false, true] {
+            let t = maker().make(&Theme::plain(), 80);
+            let shared = t.shared.clone();
+            shared.keys.lock().unwrap().armed = Some(past);
+            if typed {
+                shared.note_input();
+            }
+            shared.offer_input(b"\r");
+            let st = shared.keys.lock().unwrap();
+            assert_eq!(st.key, (!typed).then_some(b'\r'));
+            assert_eq!(st.bad, typed);
+        }
     }
 }
