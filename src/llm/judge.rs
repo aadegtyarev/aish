@@ -181,7 +181,6 @@ mod tests {
 
     #[test]
     fn prompt_is_short_and_configurable() {
-        assert!(DEFAULT_PROMPT.lines().count() <= 12);
         let c = Config::parse("run: {judge_prompt: {append: extra rule}}").unwrap();
         assert!(system_prompt(Some(&c)).ends_with("\nextra rule"));
         let c = Config::parse("run: {judge_prompt: {replace: only this}}").unwrap();

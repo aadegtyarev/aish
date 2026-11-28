@@ -1405,7 +1405,7 @@ mod tests {
         assert!(ok("grep --file=pats.txt x"));
     }
 
-    /// Bypasses found in review (two probe sets): nothing here may run unasked.
+    /// Nothing here may run unasked.
     #[test]
     fn reviewed_probes_are_not_read_only() {
         let dir = tempfile::TempDir::new().unwrap();

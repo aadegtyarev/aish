@@ -691,7 +691,6 @@ mod tests {
         }
     }
 
-    /// Bypasses found in review: wrappers nobody listed.
     #[test]
     fn commands_behind_unlisted_wrappers_are_on_the_hard_list() {
         for c in [
@@ -715,7 +714,6 @@ mod tests {
         }
     }
 
-    /// Gaps found in a second review.
     #[test]
     fn env_script_and_git_c_cannot_hide_a_command() {
         for c in [
