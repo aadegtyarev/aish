@@ -1,0 +1,14 @@
+# Deliberate fragments: tests type partial words, `fpr` is gpg's fingerprint, `clen` a cursor length.
+[default.extend-words]
+fpr = "fpr"
+fo = "fo"
+clen = "clen"
+pn = "pn"
+mone = "mone"
+ommit = "ommit"
+Hel = "Hel"
+ba = "ba"
+tatus = "tatus"
+hree = "hree"
+mke = "mke"
+releas = "releas"

@@ -1,0 +1,16 @@
+# Lint image for ./check.sh: prebuilt, pinned tools (sha256 verified) on top of the dev rust image.
+FROM rust:1.93.1-bookworm
+RUN rustup component add rustfmt clippy
+RUN set -e; cd /tmp; B=https://github.com; \
+    get() { curl -sSfLO "$B/$1"; echo "$2  $(basename "$1")" | sha256sum -c -; }; \
+    get EmbarkStudios/cargo-deny/releases/download/0.22.2/cargo-deny-0.22.2-x86_64-unknown-linux-musl.tar.gz 9f831cfb5d03a5093c0810091a7bd3b5e4724a1288cbe5718d8ce8cef2590adf; \
+    get bnjbvr/cargo-machete/releases/download/v0.10.1/cargo-machete-v0.10.1-x86_64-unknown-linux-musl.tar.gz 785d381985140ffa172246d82089adeb7f2eb9c774d961c48f77a4494023afb5; \
+    get crate-ci/typos/releases/download/v1.52.2/typos-v1.52.2-x86_64-unknown-linux-musl.tar.gz 3b13d1291281d39d01822e54035636487a7a0f228e70097899b1e33aeb0e7e93; \
+    get koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198; \
+    get rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8; \
+    tar -xf cargo-deny-*.tar.gz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-deny'; \
+    tar -xf cargo-machete-*.tar.gz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-machete'; \
+    tar -xf typos-*.tar.gz -C /usr/local/bin --wildcards '*typos'; \
+    tar -xf shellcheck-*.tar.xz --strip-components=1 -C /usr/local/bin --wildcards '*/shellcheck'; \
+    tar -xf actionlint_*.tar.gz -C /usr/local/bin actionlint; \
+    rm -f /tmp/*.tar.*; ls /usr/local/bin

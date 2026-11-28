@@ -44,6 +44,13 @@ replaces them, the first change to a file leaves `<file>.aish-bak`. `aish init -
 blocks; `--yes` applies the defaults without questions. Escape hatch: `AISH_DISABLE=1 bash` starts plain bash.
 No `chsh`: for a login shell add aish's path to `/etc/shells` and run `chsh -s` yourself.
 
+## Checks
+
+`./check.sh` runs everything CI runs, in docker: fmt, clippy, tests on bash 5.2 and 5.3, cargo-deny,
+cargo-machete, typos, shellcheck, actionlint; it stops at the first failure. `./check.sh --quick` is
+fmt, clippy and the bash 5.2 tests. `./check.sh bench` builds release and measures startup and key-echo
+latency against plain bash (also a weekly CI job).
+
 ## Release packaging
 
 `./pack.sh [--arch x86_64|aarch64|all]` builds everything in docker (musl targets, zig + cargo-zigbuild

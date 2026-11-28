@@ -1,0 +1,13 @@
+# PTY latency bench (startup to first prompt, key echo) on demand; numbers go to the job summary.
+name: bench
+on:
+  schedule: [{ cron: "0 6 * * 1" }]
+  workflow_dispatch:
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./check.sh bench | tee bench.txt
+      - run: |
+          { echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
