@@ -172,7 +172,10 @@ fn profiles_switch_and_persist() {
     let cfg = home.path().join(".config/aish/config.yaml");
     let mut src = config(&m.url());
     src.push_str("profiles:\n  local: {chat: [mellum], complete: oss}\n  inet: {chat: [ds, mellum], complete: ds}\n");
-    std::fs::write(&cfg, &src).unwrap();
+    // atomically: aish may reload the file while it is being written
+    let tmp = cfg.with_extension("tmp");
+    std::fs::write(&tmp, &src).unwrap();
+    std::fs::rename(&tmp, &cfg).unwrap();
     run(&mut t, "ai profile", "inet");
     t.assert_clean();
     run(&mut t, "ai profile inet", "profile →");

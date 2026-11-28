@@ -9,15 +9,24 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-28
+
 ### Added
 - The model can `ask` you a question (with optional numbered choices; answer
-  in the input line, Esc skips) and `insert` a command into your input line
-  for you to run or edit.
+  in the input line, which shows `answer · Esc skip` meanwhile) and `insert` a
+  command into your input line for you to run or edit.
 
 ### Changed
 - With tools on, the final ```bash block of an answer is no longer put into
   the input line; the model hands commands over with `insert`.
-- In judge mode `ssh`, `scp` and `sftp` always ask you, whatever the judge says.
+- In judge mode `ssh`, `scp`, `sftp`, `rsync`, `sshpass` and `mosh` always ask
+  you, whatever the judge says.
+
+### Fixed
+- Resizing the terminal (a phone keyboard shown or hidden) while the model
+  waits for your approval or answers no longer lets bash repaint its prompt over
+  it; the hidden approval looked idle while it still waited for Enter.
+- An empty answer from the model shows a dim `empty answer` note.
 
 ## [0.4.1] - 2026-11-28
 
@@ -232,7 +241,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/aadegtyarev/aish/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/aadegtyarev/aish/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/aadegtyarev/aish/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/aadegtyarev/aish/compare/v0.3.2...v0.3.3

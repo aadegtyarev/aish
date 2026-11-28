@@ -123,6 +123,8 @@ pub struct Controller {
     tracker: Arc<Mutex<BlockTracker>>,
     /// The line we last typed into bash: the command that runs now.
     running_cmd: Option<String>,
+    /// The terminal was resized while an answer owned the screen.
+    winch_later: bool,
 }
 
 /// While background jobs exist: notice when one of their pids dies (cheap
@@ -221,6 +223,7 @@ impl Controller {
             gate,
             tracker,
             running_cmd: None,
+            winch_later: false,
         }))
     }
 
@@ -448,6 +451,11 @@ impl Controller {
         }
     }
 
+    /// A resize held back during an answer is due (bash is at a fresh prompt).
+    pub fn take_winch_later(&mut self) -> bool {
+        self.armed() && std::mem::take(&mut self.winch_later)
+    }
+
     /// The quiet timer fired.
     pub fn on_quiet(&mut self) {
         if !self.armed() {
@@ -541,11 +549,6 @@ impl Controller {
         }
         if !self.prompt {
             return self.running_input(buf, n);
-        }
-        // Esc on an empty line skips the model's question
-        if buf[..n] == [0x1b] && self.ed.text().is_empty() && crate::llm::agent::asking(&self.llm) {
-            self.intercepted("");
-            return Input::Handled(false);
         }
         let mut ev = std::mem::take(&mut self.events);
         // the kitty form of the ask key is the plain control key for the editor
@@ -854,6 +857,12 @@ impl Controller {
     /// Terminal resized: bash gets the new size via `apply`; we erase before
     /// and redraw after so the region is consistent with what the terminal shows.
     pub fn resize(&mut self, apply: impl FnOnce()) {
+        if self.task.is_some() {
+            // bash idles in readline under the answer: a new size now makes it
+            // repaint its prompt over our rows; it gets the size at the next prompt
+            self.winch_later = true;
+            return;
+        }
         let mut wait_for_bash = false;
         if self.prompt {
             // The terminal already reflowed our rows: erase with the new width.

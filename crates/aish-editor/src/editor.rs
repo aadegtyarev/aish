@@ -260,8 +260,13 @@ impl Editor {
     }
 
     fn dispatch(&mut self, key: Key) -> Action {
-        if self.each_plugin(|p, c| p.on_key(c, &key) == Handled::Yes) {
-            return Action::None;
+        let mut submit = false;
+        if self.each_plugin(|p, c| {
+            let h = p.on_key(c, &key);
+            submit = h == Handled::Submit;
+            h != Handled::Pass
+        }) {
+            return if submit { Action::Submit } else { Action::None };
         }
         if let Key::Paste(t) = &key {
             let t = t.replace("\r\n", "\n").replace('\r', "\n");

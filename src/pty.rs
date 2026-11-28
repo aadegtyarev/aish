@@ -203,6 +203,11 @@ pub fn pump_output(
     loop {
         if let (true, Some(c)) = (armed, &ed) {
             if !readable(&master, QUIET) {
+                if ctl::with(c, false, |g| g.take_winch_later()).0 {
+                    // bash repaints its prompt (if the size changed); then quiet again
+                    crate::term::set_window_size(master.as_raw_fd(), &crate::term::window_size());
+                    continue;
+                }
                 let ((), ob) = ctl::with(c, (), |g| g.on_quiet());
                 armed = false;
                 let _ = write_out(&mut master, &ob);

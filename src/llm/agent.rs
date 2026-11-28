@@ -29,6 +29,8 @@ const OUT_CAP: usize = 16 * 1024;
 const FILE_LINES: usize = 200;
 const FILE_BYTES: usize = 32 * 1024;
 const PENDING_TTL: Duration = Duration::from_secs(30 * 60);
+/// A question of the model claims the next line only this long.
+const ASK_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// What a request offers: tools at all, the provider's own search, our web tools.
 #[derive(Clone, Copy)]
@@ -163,15 +165,11 @@ tools ({}), then reply with the result, never with a list of commands to try. ",
         tools.join(", ")
     );
     g.push_str(match run {
-        Some(RunMode::Off) => {
-            "Asked how to do something, explain briefly and propose the command with run: it goes into \
-the user's input line, you get the result if they run it. "
-        }
-        Some(_) => {
+        Some(RunMode::Ask | RunMode::Judge) => {
             "Asked how to do something, explain briefly and offer to do it with run; the user approves \
 each changing command (one at a time); if declined, adapt instead of retrying. "
         }
-        None => "Asked how to do something, explain briefly and hand the command over with insert. ",
+        _ => "Asked how to do something, explain briefly and hand the command over with insert. ",
     });
     if run.is_some() {
         g.push_str("Long jobs: run with background=true, then jobs/job_output. ");
@@ -941,6 +939,8 @@ impl Drive<'_> {
                 search_notes(&s.r, &s.searches, &mut out);
                 if usage.truncated {
                     s.r.note("answer cut off (token limit)", &mut out);
+                } else if s.full.trim().is_empty() {
+                    s.r.note("empty answer", &mut out);
                 }
                 task.write(&out);
                 self.turn.msgs.push(Message::assistant(s.full));
@@ -1519,9 +1519,8 @@ pub fn abandon(llm: &Llm) {
 /// Does a question of the model wait for the user's answer?
 pub fn asking(llm: &Llm) -> bool {
     llm.pending.lock().is_ok_and(|p| {
-        p.as_ref().is_some_and(|p| {
-            matches!(p.stage, Stage::Asked { .. }) && p.at.elapsed() <= PENDING_TTL
-        })
+        p.as_ref()
+            .is_some_and(|p| matches!(p.stage, Stage::Asked { .. }) && p.at.elapsed() <= ASK_TTL)
     })
 }
 

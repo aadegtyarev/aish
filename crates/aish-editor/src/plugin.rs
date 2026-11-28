@@ -27,6 +27,8 @@ pub enum Handled {
     Yes,
     /// Not interested.
     Pass,
+    /// Consumed, and the line is submitted (through `on_submit`) as by Enter.
+    Submit,
 }
 
 /// Verdict of [`Plugin::on_submit`].

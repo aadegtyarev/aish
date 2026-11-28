@@ -1,8 +1,8 @@
 //! Questions (`?` or the configured prefix) and the `aish` command: the line
 //! stays on screen, the reply follows (dim `│` rows) and nothing reaches the shell.
 
-use aish_editor::plugins::{HintText, Intercept, RightHint};
-use aish_editor::{Class, Ctx, Handled, Plugin, Span};
+use aish_editor::plugins::{HintText, RightHint};
+use aish_editor::{Class, Ctx, Decoration, Handled, Key, Plugin, Span, SubmitAction};
 
 use std::sync::{Arc, Mutex};
 
@@ -93,9 +93,7 @@ impl Module for ModelModule {
             .status
             .set(crate::llm::status::Status::new(hint.clone(), p));
         vec![
-            Box::new(Intercept::new(move |l| {
-                claims(l, &llm) || (agent::asking(&llm) && !l.trim().is_empty())
-            })),
+            Box::new(Answering { llm, skip: false }),
             Box::new(RightHint::new(hint)),
             Box::new(Accent(p)),
             Box::new(AskToggle(p)),
@@ -256,6 +254,40 @@ fn write_rows(t: &Task, lines: &[cmd::Ln]) {
         r.split_row(&h, &d, &mut b);
     }
     t.write(&b);
+}
+
+/// Takes the lines aish handles (`?` questions, `ai …`) and, while the model
+/// waits for an answer to its question, the next line; Esc on an empty line
+/// skips that question.
+struct Answering {
+    llm: Arc<Llm>,
+    skip: bool,
+}
+
+impl Plugin for Answering {
+    fn name(&self) -> &'static str {
+        "answering"
+    }
+    fn on_key(&mut self, ctx: &mut Ctx, key: &Key) -> Handled {
+        if *key == Key::Esc && ctx.text().is_empty() && agent::asking(&self.llm) {
+            self.skip = true;
+            return Handled::Submit;
+        }
+        Handled::Pass
+    }
+    fn on_submit(&mut self, _ctx: &mut Ctx, line: &str) -> SubmitAction {
+        let answer = agent::asking(&self.llm) && !line.trim().is_empty();
+        if std::mem::take(&mut self.skip) || answer || claims(line, &self.llm) {
+            SubmitAction::Intercept
+        } else {
+            SubmitAction::Submit
+        }
+    }
+    fn decorate(&mut self, _ctx: &mut Ctx, _width: u16, out: &mut Decoration) {
+        if agent::asking(&self.llm) {
+            out.right_hint("answer · Esc skip");
+        }
+    }
 }
 
 #[cfg(test)]
