@@ -273,7 +273,7 @@ pub fn build_with(
         );
         chat = format!("{}/{m}", f.id);
     }
-    let yaml = serde_yaml::to_string(&Cfg { providers, roles }).ok()?;
+    let yaml = serde_norway::to_string(&Cfg { providers, roles }).ok()?;
     Some((yaml, chat, comp))
 }
 

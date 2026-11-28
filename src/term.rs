@@ -5,6 +5,16 @@ use std::io::IsTerminal;
 use std::os::fd::{AsRawFd, RawFd};
 
 use nix::libc;
+use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg, Termios};
+
+/// The terminal's settings before raw mode, for the panic hook and the signal thread.
+static COOKED: std::sync::Mutex<Option<Termios>> = std::sync::Mutex::new(None);
+
+fn restore() {
+    if let Some(t) = COOKED.lock().ok().as_deref().and_then(Option::as_ref) {
+        let _ = tcsetattr(std::io::stdin(), SetArg::TCSANOW, t);
+    }
+}
 
 thread_local! {
     /// Set while a controller call runs under `catch_unwind`: the panic hook must
@@ -24,14 +34,20 @@ impl RawGuard {
         if !std::io::stdin().is_terminal() {
             return None;
         }
-        crossterm::terminal::enable_raw_mode().ok()?;
+        let cooked = tcgetattr(std::io::stdin()).ok()?;
+        let mut raw = cooked.clone();
+        cfmakeraw(&mut raw);
+        tcsetattr(std::io::stdin(), SetArg::TCSANOW, &raw).ok()?;
+        if let Ok(mut c) = COOKED.lock() {
+            c.get_or_insert(cooked);
+        }
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             if IN_GUARD.with(|g| g.get()) {
                 tracing::error!("caught panic: {info}");
                 return;
             }
-            let _ = crossterm::terminal::disable_raw_mode();
+            restore();
             prev(info);
         }));
         Some(RawGuard)
@@ -40,7 +56,7 @@ impl RawGuard {
 
 impl Drop for RawGuard {
     fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
+        restore();
     }
 }
 
@@ -103,7 +119,7 @@ impl Signals {
                 if let Some(g) = &gate {
                     g.emergency_restore(); // overlay open: give the screen back
                 }
-                let _ = crossterm::terminal::disable_raw_mode();
+                restore();
                 // SAFETY: plain kill(2) on our own child.
                 unsafe { libc::kill(child_pid as i32, SIGHUP) };
                 std::process::exit(128 + sig);

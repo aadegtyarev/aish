@@ -28,16 +28,16 @@ impl<T> Setting<T> {
 
 impl<'de, T: DeserializeOwned> Deserialize<'de> for Setting<T> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let v = serde_yaml::Value::deserialize(d)?;
+        let v = serde_norway::Value::deserialize(d)?;
         match &v {
-            serde_yaml::Value::Null => return Ok(Setting::Unset),
-            serde_yaml::Value::Bool(false) => return Ok(Setting::Off),
-            serde_yaml::Value::String(s) if s.eq_ignore_ascii_case("off") => {
+            serde_norway::Value::Null => return Ok(Setting::Unset),
+            serde_norway::Value::Bool(false) => return Ok(Setting::Off),
+            serde_norway::Value::String(s) if s.eq_ignore_ascii_case("off") => {
                 return Ok(Setting::Off)
             }
             _ => {}
         }
-        serde_yaml::from_value(v)
+        serde_norway::from_value(v)
             .map(Setting::Value)
             .map_err(serde::de::Error::custom)
     }
@@ -117,10 +117,10 @@ pub struct Role {
 impl<'de> Deserialize<'de> for Role {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        fn refs<E: Error>(v: &serde_yaml::Value) -> Result<Vec<String>, E> {
+        fn refs<E: Error>(v: &serde_norway::Value) -> Result<Vec<String>, E> {
             let ids: Vec<String> = match v {
-                serde_yaml::Value::String(s) => vec![s.clone()],
-                serde_yaml::Value::Sequence(q) => q
+                serde_norway::Value::String(s) => vec![s.clone()],
+                serde_norway::Value::Sequence(q) => q
                     .iter()
                     .map(|x| {
                         x.as_str()
@@ -135,14 +135,14 @@ impl<'de> Deserialize<'de> for Role {
             }
             Ok(ids)
         }
-        let v = serde_yaml::Value::deserialize(d)?;
+        let v = serde_norway::Value::deserialize(d)?;
         match &v {
-            serde_yaml::Value::Mapping(m) => {
+            serde_norway::Value::Mapping(m) => {
                 let id = m
                     .get("id")
                     .ok_or_else(|| D::Error::custom("role needs `id`"))?;
                 let effort = match m.get("effort") {
-                    Some(e) => serde_yaml::from_value(e.clone()).map_err(D::Error::custom)?,
+                    Some(e) => serde_norway::from_value(e.clone()).map_err(D::Error::custom)?,
                     None => Setting::Unset,
                 };
                 Ok(Role {
@@ -277,12 +277,12 @@ pub struct RunCfg {
 impl<'de> Deserialize<'de> for RunCfg {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        let v = serde_yaml::Value::deserialize(d)?;
-        let mode = |v: &serde_yaml::Value| -> Result<Setting<String>, D::Error> {
-            serde_yaml::from_value(v.clone()).map_err(D::Error::custom)
+        let v = serde_norway::Value::deserialize(d)?;
+        let mode = |v: &serde_norway::Value| -> Result<Setting<String>, D::Error> {
+            serde_norway::from_value(v.clone()).map_err(D::Error::custom)
         };
         let m = match &v {
-            serde_yaml::Value::Mapping(m) => m,
+            serde_norway::Value::Mapping(m) => m,
             other => {
                 return Ok(RunCfg {
                     mode: mode(other)?,
@@ -291,9 +291,9 @@ impl<'de> Deserialize<'de> for RunCfg {
             }
         };
         let judge = match m.get("judge") {
-            None | Some(serde_yaml::Value::Null) => Vec::new(),
-            Some(serde_yaml::Value::String(s)) => vec![s.clone()],
-            Some(serde_yaml::Value::Sequence(q)) => q
+            None | Some(serde_norway::Value::Null) => Vec::new(),
+            Some(serde_norway::Value::String(s)) => vec![s.clone()],
+            Some(serde_norway::Value::Sequence(q)) => q
                 .iter()
                 .map(|x| {
                     x.as_str()
@@ -304,8 +304,8 @@ impl<'de> Deserialize<'de> for RunCfg {
             Some(_) => return Err(D::Error::custom("run.judge must be a model reference")),
         };
         let judge_prompt = match m.get("judge_prompt") {
-            None | Some(serde_yaml::Value::Null) => None,
-            Some(serde_yaml::Value::Mapping(p)) => {
+            None | Some(serde_norway::Value::Null) => None,
+            Some(serde_norway::Value::Mapping(p)) => {
                 let get = |k: &str| p.get(k).and_then(|x| x.as_str()).map(str::to_owned);
                 match (get("append"), get("replace")) {
                     (Some(a), None) => Some(JudgePrompt::Append(a)),
@@ -362,10 +362,10 @@ impl ToolsCfg {
 
 /// Any scalar read as text (`prefix: 5` must reach our own message).
 fn scalar_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(match serde_yaml::Value::deserialize(d)? {
-        serde_yaml::Value::String(s) => Some(s),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+    Ok(match serde_norway::Value::deserialize(d)? {
+        serde_norway::Value::String(s) => Some(s),
+        serde_norway::Value::Number(n) => Some(n.to_string()),
+        serde_norway::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     })
 }
@@ -377,10 +377,10 @@ pub struct Percent(pub f64);
 impl<'de> Deserialize<'de> for Percent {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        let v = serde_yaml::Value::deserialize(d)?;
+        let v = serde_norway::Value::deserialize(d)?;
         let n = match &v {
-            serde_yaml::Value::Number(n) => n.as_f64(),
-            serde_yaml::Value::String(s) => s.trim().trim_end_matches('%').trim().parse().ok(),
+            serde_norway::Value::Number(n) => n.as_f64(),
+            serde_norway::Value::String(s) => s.trim().trim_end_matches('%').trim().parse().ok(),
             _ => None,
         };
         match n {
@@ -425,7 +425,7 @@ pub struct Resolved<'a> {
 
 impl Config {
     pub fn parse(src: &str) -> Result<Config> {
-        let cfg: Config = serde_yaml::from_str(src).context("invalid config YAML")?;
+        let cfg: Config = serde_norway::from_str(src).context("invalid config YAML")?;
         cfg.validate()?;
         Ok(cfg)
     }

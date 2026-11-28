@@ -13,7 +13,7 @@ fn main() -> ExitCode {
         eprintln!("aish: exec bash: {e}");
         return ExitCode::from(127);
     }
-    let _log = aish::shell::init_logging();
+    aish::shell::init_logging();
     // A panic is a failed start too: unwinding restores the terminal, then bash.
     let res = std::panic::catch_unwind(aish::run)
         .unwrap_or_else(|_| Err(anyhow::anyhow!("aish panicked")));
@@ -22,7 +22,6 @@ fn main() -> ExitCode {
         Err(e) => {
             // Never leave the user without a shell: log and fall back to plain bash.
             tracing::error!("{e:#}");
-            drop(_log);
             let e = aish::exec_bash(&[], true);
             eprintln!("aish: exec bash: {e}");
             ExitCode::from(127)

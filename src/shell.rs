@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::prelude::*;
 
 const RC: &str = include_str!("rc.bash");
 
@@ -31,18 +33,28 @@ pub fn install_file(name: &str, content: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Log to a file only; never to stdout/stderr. Keep the guard alive.
-pub fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let dir = state_dir()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    let (w, guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::never(dir, "aish.log"));
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_writer(w)
-        .with_ansi(false)
-        .with_env_filter(filter)
+/// Log to `aish.log` only; never to stdout/stderr. Level from `RUST_LOG`
+/// (`info` or `aish=debug,...`), default info.
+pub fn init_logging() {
+    let Some(dir) = state_dir() else { return };
+    let file = std::fs::create_dir_all(&dir).ok().and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("aish.log"))
+            .ok()
+    });
+    let Some(file) = file else { return };
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| v.parse::<Targets>().ok())
+        .unwrap_or_else(|| Targets::new().with_default(tracing::Level::INFO));
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .with_filter(filter),
+        )
         .init();
-    Some(guard)
 }

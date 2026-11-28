@@ -9,6 +9,11 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Changed
+- Smaller binary: 5.59 MB -> 4.78 MB (glibc release build) after dropping the
+  regex, `time`, crossterm and `serde_yaml` dependencies (YAML now via the
+  maintained `serde_norway` fork).
+
 ### Fixed
 - `aish init` wrote `config.yaml` readable by everyone; it is now private
   (0600) like every other write of the config. If your config holds API keys,
