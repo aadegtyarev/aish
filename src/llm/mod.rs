@@ -149,7 +149,7 @@ impl Llm {
 
     /// The context window of the model in tokens: `context_window` from the
     /// config, else what a local llama.cpp server says (`/props`, asked once
-    /// per model), else 8192.
+    /// per model), else [`compact::default_window`].
     pub fn window(&self, t: &Target) -> u64 {
         if let Some(w) = t.window {
             return w;
@@ -171,7 +171,7 @@ impl Llm {
                 return n;
             }
         }
-        compact::DEFAULT_WINDOW
+        compact::default_window(t.local)
     }
 
     /// The window as far as it is known without asking the server.
@@ -184,7 +184,7 @@ impl Llm {
                     .ok()
                     .and_then(|w| w.get(&key).copied().flatten())
             })
-            .unwrap_or(compact::DEFAULT_WINDOW)
+            .unwrap_or_else(|| compact::default_window(t.local))
     }
 
     /// The model that writes summaries: `compact.model`, else `chat`.

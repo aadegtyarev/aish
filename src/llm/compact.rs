@@ -10,8 +10,15 @@ use super::wait::Waiter;
 use super::{Llm, Target};
 use crate::task::Task;
 
-/// The window assumed when neither the config nor the server says.
-pub const DEFAULT_WINDOW: u64 = 8192;
+/// The window assumed when neither the config nor the server says: small
+/// for a local server, the common minimum of today's remote APIs otherwise.
+pub fn default_window(local: bool) -> u64 {
+    if local {
+        8192
+    } else {
+        32768
+    }
+}
 
 /// No model this small is in use: below this the window is not looked up.
 const MIN_WINDOW: u64 = 2048;

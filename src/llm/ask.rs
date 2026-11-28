@@ -150,7 +150,23 @@ fn run_turn(
         return None;
     }
     let history = llm.convo.lock().map(|c| c.clone()).unwrap_or_default();
-    let mut turn = agent::start_turn(history, format!("Context:\n{ctx}\nQuestion: {q}"), q);
+    // a narrow phone screen wraps wide tables into noise
+    let screen = if task.cols < 80 {
+        format!(
+            "screen: {} columns: keep lines short, no wide tables\n",
+            task.cols
+        )
+    } else {
+        String::new()
+    };
+    // right next to the question small models follow it far more often
+    let nudge = if t.tools && !overlay {
+        "\n(Get the facts with your tools, then answer.)"
+    } else {
+        ""
+    };
+    let msg = format!("Context:\n{screen}{ctx}\nQuestion: {q}{nudge}");
+    let mut turn = agent::start_turn(history, msg, q);
     turn.overlay = overlay;
     agent::drive(llm, tracker, t, turn, task)
 }

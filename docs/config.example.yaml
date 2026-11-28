@@ -114,7 +114,8 @@ roles:
 # language: Russian
 
 # Conversation memory. When it grows past `at` of the chat model's context window
-# (`context_window` on the model; else a local llama.cpp's n_ctx from /props; else 8192),
+# (`context_window` on the model; else a local llama.cpp's n_ctx from /props; else 8192
+# for a local server, 32768 for a remote API),
 # the next question first replaces it with a summary of about `size` of the window.
 # `?c` compacts at once, `?n` starts a new conversation, `?h` lists the forms.
 # compact:

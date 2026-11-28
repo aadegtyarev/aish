@@ -9,6 +9,13 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Changed
+- A remote model without a known context window is assumed to have 32k tokens
+  (was 8k), so the conversation is no longer compacted every few questions.
+- On a narrow screen the model is told the width and keeps its lines short.
+- Small local models gather facts with their tools far more reliably (a short
+  nudge next to the question).
+
 ## [0.4.2] - 2026-11-28
 
 ### Added
