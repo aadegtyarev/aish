@@ -542,6 +542,11 @@ impl Controller {
         if !self.prompt {
             return self.running_input(buf, n);
         }
+        // Esc on an empty line skips the model's question
+        if buf[..n] == [0x1b] && self.ed.text().is_empty() && crate::llm::agent::asking(&self.llm) {
+            self.intercepted("");
+            return Input::Handled(false);
+        }
         let mut ev = std::mem::take(&mut self.events);
         // the kitty form of the ask key is the plain control key for the editor
         let normal;
@@ -775,6 +780,9 @@ impl Controller {
                     left = true;
                 }
                 Event::PassKey(b) => {
+                    if b == [0x03] {
+                        crate::llm::agent::abandon(&self.llm); // Ctrl-C drops a waiting question
+                    }
                     if !left {
                         self.erase();
                         self.leave(true);

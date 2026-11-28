@@ -226,6 +226,16 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
   `~/.aws/credentials`, `~/.netrc`, aish's own config — are refused).
   Background: `run(…, background=true)` puts `<cmd> &>…/jobs/<n>.log &` into the
   line (honest and visible), and `job_output` reads that log.
+- `insert(command)` hands the user a command to run or edit: it is shown like
+  an approval (`Enter insert · Esc no`), Enter puts it into the input line
+  without running it, and if you run it the result goes back to the model. Esc
+  tells the model you declined.
+- `ask(question, choices?)` asks you something: the question, numbered choices
+  and `answer · Esc skip` are shown, the turn pauses, and your next line in the
+  normal input is the answer (a bare number picks that choice); Esc on an empty
+  line skips. Ctrl-C drops the question.
+- With tools on, a final ```` ```bash ```` block of the answer is not put into
+  the input line any more (the model uses `insert`); it stays visible.
 - Up to 12 steps per `?`, then a dim note. Ctrl-C stops the agent at any moment
   (`│ ⏹`). Command outputs are masked for a non-local provider, like the whole
   context.

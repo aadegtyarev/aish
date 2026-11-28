@@ -76,6 +76,13 @@ fn start_llm_rows(home: &TempDir, m: &Mock, ps1: &str, cols: u16, rows: u16) -> 
     start_rows(home, ps1, "", cols, rows)
 }
 
+/// Tools off: the model's bash block is prefilled into the input line.
+fn start_no_tools(home: &TempDir, m: &Mock, ps1: &str, cols: u16, rows: u16) -> Term {
+    let cfg = mock_config(&m.url()).replace("{id: test}", "{id: test, tools: off}");
+    write_config(home.path(), &cfg);
+    start_rows(home, ps1, "", cols, rows)
+}
+
 fn prompt(n: usize) -> String {
     // n visible columns, ends with "$ "
     let mut s = String::from("u@h:");
@@ -526,7 +533,7 @@ fn question_answer_keeps_the_bar_and_fits_the_width() {
         let home = TempDir::new().unwrap();
         let m = answer_mock();
         let ps1 = prompt(n);
-        let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+        let mut t = start_no_tools(&home, &m, &ps1, cols, 40);
         t.send("? say hi\r");
         t.wait_for("Try:");
         t.pump_for(Duration::from_millis(800));
@@ -758,7 +765,7 @@ fn two_line_prompt_answer_reruns_prompt_command() {
         )
         .unwrap();
         let m = answer_mock();
-        let mut t = start_llm_rows(&home, &m, TWO_LINE, cols, 40);
+        let mut t = start_no_tools(&home, &m, TWO_LINE, cols, 40);
         let runs = || {
             std::fs::read_to_string(home.path().join("pc.log"))
                 .unwrap()
@@ -1516,3 +1523,51 @@ both!(
     stray_background_output_then_a_notice_keeps_the_output,
     wide_characters_and_colours_in_the_prompt
 );
+
+// ---- insert and ask ----------------------------------------------------------
+
+#[test]
+fn ask_and_insert_prompts_fit_the_width() {
+    let long = "echo a-rather-long-command-for-a-phone --with --many --flags";
+    for (name, args, last) in [
+        (
+            "ask",
+            serde_json::json!({
+                "question": "Which of these very long names should I use for it?",
+                "choices": ["first-choice-that-is-much-too-long-for-the-row", "b"]
+            }),
+            "answer · Esc skip",
+        ),
+        (
+            "insert",
+            serde_json::json!({ "command": long }),
+            "Enter insert · Esc no",
+        ),
+    ] {
+        let home = TempDir::new().unwrap();
+        let args = args.to_string();
+        let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let m = Mock::start(move |_, c| {
+            if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                mock::chat_calls_stream(c, "", &[("c1", name, &args)]);
+            } else {
+                mock::chat_stream(c, &["ok\n"], Duration::ZERO);
+            }
+        });
+        let mut t = start_llm_rows(&home, &m, &prompt(12), 36, 40);
+        t.send("? help\r");
+        t.wait_for(last);
+        t.pump_for(Duration::from_millis(500));
+        t.assert_clean();
+        let first = t.scr.find_row("? help").unwrap();
+        for y in first + 1..=t.scr.last_text_row() {
+            let row = t.scr.row_text(y);
+            assert!(
+                row.chars().count() <= 36,
+                "row {y} too wide\n{}",
+                t.scr.dump()
+            );
+            assert!(!t.scr.row_wrapped(y), "row {y} wrapped\n{}", t.scr.dump());
+        }
+    }
+}

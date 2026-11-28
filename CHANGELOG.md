@@ -9,6 +9,15 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+### Added
+- The model can `ask` you a question (with optional numbered choices; answer
+  in the input line, Esc skips) and `insert` a command into your input line
+  for you to run or edit.
+
+### Changed
+- With tools on, the final ```bash block of an answer is no longer put into
+  the input line; the model hands commands over with `insert`.
+
 ## [0.4.1] - 2026-11-28
 
 ### Changed

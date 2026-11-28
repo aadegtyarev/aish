@@ -65,7 +65,7 @@ struct ToolSpec {
     schema: &'static str,
 }
 
-const TOOLS: [ToolSpec; 7] = [
+const TOOLS: [ToolSpec; 9] = [
     ToolSpec {
         name: "run",
         switch: "run",
@@ -74,6 +74,21 @@ const TOOLS: [ToolSpec; 7] = [
                their output is returned. Any other command is placed in the user's input line; the user runs it \
                and you receive its exit code and output.",
         schema: r#"{"type":"object","properties":{"command":{"type":"string"},"background":{"type":"boolean","description":"start as a background job (for long-running commands)"}},"required":["command"]}"#,
+    },
+    ToolSpec {
+        name: "insert",
+        switch: "",
+        overlay_ok: false,
+        desc: "Hand the user a command to run or edit themselves: after they agree it is placed in their input line, not executed. \
+               If they run it you receive its exit code and output.",
+        schema: r#"{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}"#,
+    },
+    ToolSpec {
+        name: "ask",
+        switch: "",
+        overlay_ok: false,
+        desc: "Ask the user a question and wait for the answer; optionally with a short list of choices.",
+        schema: r#"{"type":"object","properties":{"question":{"type":"string"},"choices":{"type":"array","items":{"type":"string"}}},"required":["question"]}"#,
     },
     ToolSpec {
         name: "read_block",
@@ -159,7 +174,7 @@ each changing command (one at a time); if declined, adapt instead of retrying. "
         None => NO_RUN,
     });
     if run.is_some() {
-        g.push_str("Long jobs: run with background=true, then jobs/job_output. No ```bash block when you use run. ");
+        g.push_str("Long jobs: run with background=true, then jobs/job_output. If something is unclear or risky, ask with ask. To hand the user a command to run or edit themselves, use insert; never rely on ```bash blocks. ");
     }
     g.push_str("Stop calling tools once done.");
     g
@@ -272,6 +287,8 @@ enum Stage {
     /// prompt came back without the line starting; a block that follows (an
     /// Enter that raced the injection) is not its result.
     Typed { not_run: bool },
+    /// A question for the user: their next line is the result.
+    Asked { choices: Vec<String> },
     /// Tool result, once the block of the command finished.
     Done(String),
 }
@@ -281,6 +298,13 @@ enum ToolOut {
     Done { result: String, shown: String },
     /// Put into the input line; the turn pauses.
     Handoff { line: String, bg: Option<Bg> },
+    /// `insert`: the user agrees, then it is put into the input line.
+    Insert { line: String },
+    /// `ask`: shown to the user; the turn pauses for the answer.
+    Ask {
+        question: String,
+        choices: Vec<String>,
+    },
     /// The model wants to run it in the user's bash (`run: ask|judge`).
     Run {
         line: String,
@@ -633,6 +657,8 @@ fn exec_tool(env: &Env, call: &ToolCall, cols: usize) -> ToolOut {
         "web_search" => tool_web(env, true, &v, cols),
         "web_read" => tool_web(env, false, &v, cols),
         "run" => tool_run(env, &v, cols),
+        "insert" => tool_insert(&v, cols),
+        "ask" => tool_ask(&v),
         "read_block" => {
             let n = arg_u(&v, "n").unwrap_or(1);
             done(read_block(env, n), format!("read_block {n}"))
@@ -676,6 +702,45 @@ fn tool_web(env: &Env, search: bool, v: &Value, cols: usize) -> ToolOut {
     }
 }
 
+/// A command the user could not review properly is refused.
+fn refuse_cmd(cmd: &str, cols: usize) -> Option<ToolOut> {
+    if unsafe_cmd(cmd) {
+        return Some(done(
+            "error: the command contains control characters and was refused",
+            "command with control characters rejected",
+        ));
+    }
+    if cmd.chars().count() > 1000 || run_rows(cmd, cols as u16) > 12 {
+        return Some(done(
+            "error: command too long to review: split it into smaller commands",
+            "command too long to review",
+        ));
+    }
+    None
+}
+
+fn tool_insert(v: &Value, cols: usize) -> ToolOut {
+    let Some(line) = arg_str(v, "command").filter(|c| !c.trim().is_empty()) else {
+        return done("error: missing command", "insert: ?");
+    };
+    refuse_cmd(&line, cols).unwrap_or(ToolOut::Insert { line })
+}
+
+fn tool_ask(v: &Value) -> ToolOut {
+    let Some(question) = arg_str(v, "question").filter(|q| !q.trim().is_empty()) else {
+        return done("error: missing question", "ask: ?");
+    };
+    let choices = v["choices"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| c.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    ToolOut::Ask { question, choices }
+}
+
 /// A read-only command runs on the spot; anything else is handed to the user.
 fn tool_run(env: &Env, v: &Value, cols: usize) -> ToolOut {
     let Some(cmd) = arg_str(v, "command").filter(|c| !c.trim().is_empty()) else {
@@ -709,17 +774,8 @@ fn tool_run(env: &Env, v: &Value, cols: usize) -> ToolOut {
         );
         return done(result, format!("$ {}{tail}", short(&cmd, cols)));
     }
-    if unsafe_cmd(&cmd) {
-        return done(
-            "error: the command contains control characters and was refused",
-            "command with control characters rejected",
-        );
-    }
-    if cmd.chars().count() > 1000 || run_rows(&cmd, cols as u16) > 12 {
-        return done(
-            "error: command too long to review: split it into smaller commands",
-            "command too long to review",
-        );
+    if let Some(refused) = refuse_cmd(&cmd, cols) {
+        return refused;
     }
     let listed = super::hard::on_hard_list(&cmd);
     let (line, bgj) = if bg {
@@ -826,8 +882,8 @@ enum Calls {
     Done,
     /// Cancelled or out of steps: the turn ends.
     Stop,
-    /// A command waits for the user: call id, line, background job, approved.
-    Paused(String, String, Option<Bg>, bool),
+    /// The user has to act: call id, line, background job, where it waits.
+    Paused(String, String, Option<Bg>, Stage),
 }
 
 /// The agent loop for one turn. Returns the text for the input line.
@@ -876,7 +932,9 @@ impl Drive<'_> {
             let mut out = Vec::new();
             if calls.is_empty() {
                 // A cut-off answer never yields a command to run.
-                let cmd = s.r.finish(&mut out, !usage.truncated);
+                // with tools the model hands commands over with `insert`
+                let prefill = !usage.truncated && (!self.offer.tools || self.turn.overlay);
+                let cmd = s.r.finish(&mut out, prefill);
                 search_notes(&s.r, &s.searches, &mut out);
                 if usage.truncated {
                     s.r.note("answer cut off (token limit)", &mut out);
@@ -899,7 +957,8 @@ impl Drive<'_> {
             match self.run_calls(&calls) {
                 Calls::Done => {}
                 Calls::Stop => return None,
-                Calls::Paused(call_id, line, bg, inject) => {
+                Calls::Paused(call_id, line, bg, stage) => {
+                    let prefill = stage == Stage::Prefilled;
                     if let Ok(mut p) = self.llm.pending.lock() {
                         *p = Some(Pending {
                             turn: self.turn,
@@ -907,16 +966,12 @@ impl Drive<'_> {
                             proposed: line.clone(),
                             bg,
                             at: Instant::now(),
-                            stage: if inject {
-                                Stage::Approved
-                            } else {
-                                Stage::Prefilled
-                            },
+                            stage,
                         });
                     }
                     // an approved command is typed into bash by the controller at the
-                    // next idle prompt (`take_inject`); otherwise it is prefilled
-                    return (!inject).then_some(line);
+                    // next idle prompt (`take_inject`); a proposed one is prefilled
+                    return prefill.then_some(line);
                 }
             }
         }
@@ -1055,7 +1110,7 @@ impl Drive<'_> {
             overlay: self.turn.overlay,
             web: self.web.as_ref(),
         };
-        let mut paused: Option<(String, String, Option<Bg>, bool)> = None;
+        let mut paused: Option<(String, String, Option<Bg>, Stage)> = None;
         for c in calls {
             if paused.is_some() {
                 self.turn.msgs.push(Message::tool_result(
@@ -1083,7 +1138,23 @@ impl Drive<'_> {
                     self.turn.msgs.push(Message::tool_result(&c.id, result));
                 }
                 ToolOut::Handoff { line, bg } => {
-                    paused = Some((c.id.clone(), line, bg, false));
+                    paused = Some((c.id.clone(), line, bg, Stage::Prefilled));
+                }
+                ToolOut::Insert { line } => match confirm_with(task, &line, None, INSERT_HINTS, false, llm) {
+                    Approval::Go => paused = Some((c.id.clone(), line, None, Stage::Prefilled)),
+                    Approval::Cancelled => {
+                        note_only(task, "⏹");
+                        return Calls::Stop;
+                    }
+                    _ => self.turn.msgs.push(Message::tool_result(
+                        &c.id,
+                        "The user declined to insert this command. Do not retry it: continue without it, \
+                         or propose something different.",
+                    )),
+                },
+                ToolOut::Ask { question, choices } => {
+                    ask_prompt(task, &question, &choices);
+                    paused = Some((c.id.clone(), String::new(), None, Stage::Asked { choices }));
                 }
                 ToolOut::Run {
                     line,
@@ -1108,12 +1179,12 @@ impl Drive<'_> {
                             if why.is_empty() { String::new() } else { format!(": {why}") }
                         ),
                     )),
-                    Approval::Go => paused = Some((c.id.clone(), line, bg, true)),
+                    Approval::Go => paused = Some((c.id.clone(), line, bg, Stage::Approved)),
                 },
             }
         }
         match paused {
-            Some((id, line, bg, inject)) => Calls::Paused(id, line, bg, inject),
+            Some((id, line, bg, stage)) => Calls::Paused(id, line, bg, stage),
             None => Calls::Done,
         }
     }
@@ -1165,19 +1236,32 @@ fn approve(llm: &Llm, task: &Task, cmd: &str, listed: bool, question: &str, cwd:
             }
         }
     }
+    let hints = if grant { RUN_HINTS_GRANT } else { RUN_HINTS };
+    confirm_with(task, cmd, reason.as_deref(), hints, grant, llm)
+}
+
+const RUN_HINTS_GRANT: &[&str] = &[
+    "Enter run · s session · a always · Esc no",
+    "Enter run · s · a always · Esc",
+    "Enter · s · a · Esc",
+    "⏎ s a Esc",
+];
+const RUN_HINTS: &[&str] = &["Enter run · Esc no", "Enter · Esc", "⏎ Esc"];
+const INSERT_HINTS: &[&str] = &["Enter insert · Esc no", "Enter · Esc", "⏎ Esc"];
+
+/// Show `cmd` with a hint row and wait for the user's key. `grant`: `s` and
+/// `a` switch the run mode to judge.
+fn confirm_with(
+    task: &Task,
+    cmd: &str,
+    reason: Option<&str>,
+    hints: &[&str],
+    grant: bool,
+    llm: &Llm,
+) -> Approval {
     let r = Renderer::new(&task.theme, task.cols);
-    let hints: &[&str] = if grant {
-        &[
-            "Enter run · s session · a always · Esc no",
-            "Enter run · s · a always · Esc",
-            "Enter · s · a · Esc",
-            "⏎ s a Esc",
-        ]
-    } else {
-        &["Enter run · Esc no", "Enter · Esc", "⏎ Esc"]
-    };
     let mut out = Vec::new();
-    r.run_prompt(cmd, reason.as_deref(), hints, &mut out);
+    r.run_prompt(cmd, reason, hints, &mut out);
     task.write(&out);
     let end = |note: Option<&str>| {
         let mut out = Vec::new();
@@ -1218,6 +1302,21 @@ fn approve(llm: &Llm, task: &Task, cmd: &str, listed: bool, question: &str, cwd:
             Key::Press(_) => {}
         }
     }
+}
+
+/// A question of the model and its numbered choices; the answer is typed
+/// into the input line afterwards.
+fn ask_prompt(task: &Task, question: &str, choices: &[String]) {
+    let mut r = Renderer::new(&task.theme, task.cols);
+    let mut out = Vec::new();
+    r.push(&format!("{question}\n"), &mut out);
+    r.finish(&mut out, false);
+    let room = usize::from(task.cols).saturating_sub(2);
+    for (i, c) in choices.iter().enumerate() {
+        r.note(&fit_line(&format!("{} {c}", i + 1), room), &mut out);
+    }
+    r.note(&fit_line("answer · Esc skip", room), &mut out);
+    task.write(&out);
 }
 
 /// The approved command of a paused turn, to be typed into bash now (once).
@@ -1412,6 +1511,37 @@ pub fn abandon(llm: &Llm) {
     if let Ok(mut p) = llm.pending.lock() {
         *p = None;
     }
+}
+
+/// Does a question of the model wait for the user's answer?
+pub fn asking(llm: &Llm) -> bool {
+    llm.pending.lock().is_ok_and(|p| {
+        p.as_ref().is_some_and(|p| {
+            matches!(p.stage, Stage::Asked { .. }) && p.at.elapsed() <= PENDING_TTL
+        })
+    })
+}
+
+/// The user's line answers the pending question: a number picks that choice,
+/// an empty line skips. The turn is then resumable.
+pub fn answer(llm: &Llm, line: &str) {
+    let Ok(mut g) = llm.pending.lock() else {
+        return;
+    };
+    let Some(p) = g.as_mut() else { return };
+    let Stage::Asked { choices } = &p.stage else {
+        return;
+    };
+    let line = line.trim();
+    let picked = line
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| choices.get(n.checked_sub(1)?));
+    p.stage = Stage::Done(if line.is_empty() {
+        "the user did not answer".into()
+    } else {
+        picked.map_or(line, |c| c.as_str()).to_owned()
+    });
 }
 
 /// Is a paused turn waiting for its command to be run?
@@ -1626,12 +1756,49 @@ mod tests {
             read: false,
         };
         let (sys, tools) = request_parts(&llm, false, &on);
-        assert!(!sys.contains("cannot run") && sys.contains("use run"));
+        assert!(!sys.contains("cannot run") && sys.contains("use insert"));
         assert!(tools.iter().any(|t| t.name == "run"));
+        let names = |overlay| -> Vec<String> {
+            request_parts(&llm, overlay, &on)
+                .1
+                .into_iter()
+                .map(|t| t.name)
+                .collect()
+        };
+        assert!(
+            names(false).iter().any(|n| n == "ask") && names(false).iter().any(|n| n == "insert")
+        );
+        assert!(names(true).iter().all(|n| n != "ask" && n != "insert"));
         let (sys, tools) = request_parts(&llm, false, &Offer { tools: false, ..on });
         assert!(sys.contains("```bash") && tools.is_empty());
         llm.set_tool("run", false);
         let (sys, tools) = request_parts(&llm, false, &on);
         assert!(sys.contains("You cannot run") && tools.iter().all(|t| t.name != "run"));
+    }
+
+    #[test]
+    fn an_answer_picks_a_choice_or_skips() {
+        let llm = pending_llm("");
+        let ask = |line: &str| {
+            *llm.pending
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|p| &mut p.stage)
+                .unwrap() = Stage::Asked {
+                choices: vec!["red".into(), "blue".into()],
+            };
+            assert!(asking(&llm));
+            answer(&llm, line);
+            match &llm.pending.lock().unwrap().as_ref().unwrap().stage {
+                Stage::Done(r) => r.clone(),
+                _ => panic!("not answered"),
+            }
+        };
+        assert_eq!(ask("2"), "blue");
+        assert_eq!(ask("3"), "3");
+        assert_eq!(ask("my own"), "my own");
+        assert_eq!(ask("  "), "the user did not answer");
+        assert!(!asking(&llm));
     }
 }

@@ -134,6 +134,9 @@ plain file names). Aliases/functions/PATH of the sidecar feed the highlighter.
   command history, and propose one mutating command at a time into your input line: after you run it the
   model continues with its output. Max 12 steps, Ctrl-C stops. Models without tools fall back to the
   single-step answer (`tools: off` per model forces it). See docs/UX.md.
+  The model can also `insert` a command into your input line (after you press Enter on it; nothing is
+  run) and `ask` you a question: answer in the input line, a number picks a listed choice, Esc skips.
+  With tools on, a final ```bash block is no longer prefilled (without tools it still is).
 - `ai` (inside a session; always wins over any program of that name — rename or disable it with
   `command: mm` / `command: off` in the config) and its always-available long form `aish` show the roles and whether they answer;
   `ai help` lists the commands, `ai models` the models by provider, `ai model [chat|complete] <alias|provider/alias>`

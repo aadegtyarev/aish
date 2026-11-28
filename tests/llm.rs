@@ -19,6 +19,13 @@ fn with_config(home: &TempDir, mock: &Mock) -> Session {
     spawn(base(home))
 }
 
+/// Tools off for the model: its bash block is the only way to hand a command over.
+fn with_no_tools(home: &TempDir, mock: &Mock) -> Session {
+    let cfg = mock_config(&mock.url()).replace("{id: test}", "{id: test, tools: off}");
+    write_config(home.path(), &cfg);
+    spawn(base(home))
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(400));
 }
@@ -44,7 +51,7 @@ fn answering_mock() -> Mock {
 fn question_streams_styled_answer_and_prefills_command() {
     let home = TempDir::new().unwrap();
     let m = answering_mock();
-    let mut p = with_config(&home, &m);
+    let mut p = with_no_tools(&home, &m);
     p.expect("E> ").unwrap();
     settle();
     let t = Instant::now();
@@ -323,7 +330,7 @@ fn enter_pressed_while_streaming_never_runs_the_model_command() {
             Duration::from_millis(300),
         )
     });
-    let mut p = with_config(&home, &m);
+    let mut p = with_no_tools(&home, &m);
     p.expect("E> ").unwrap();
     settle();
     p.send("? hi\r").unwrap();
@@ -2467,6 +2474,154 @@ fn ai_run_judge_is_set_shown_and_saved_into_a_mapping() {
     settle();
     p.send_line("ai run judge").unwrap();
     p.expect("run: judge · this session").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+// ---- insert and ask -----------------------------------------------------
+
+fn call(id: &'static str, name: &'static str, args: serde_json::Value) -> Calls {
+    vec![(id, name, args.to_string())]
+}
+
+/// The model calls `name` once, then answers `all-done`.
+fn one_call(name: &'static str, args: serde_json::Value) -> Mock {
+    stepped(
+        "chat",
+        vec![("", call("c1", name, args)), ("all-done\n", vec![])],
+    )
+}
+
+#[test]
+fn insert_enter_prefills_without_running_and_the_result_goes_back() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("inserted-marker");
+    let cmd = format!("touch {}", marker.display());
+    let m = one_call("insert", serde_json::json!({ "command": cmd }));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter insert · Esc no").unwrap();
+    settle();
+    p.send("\r").unwrap();
+    p.expect("E> ").unwrap();
+    p.expect("touch").unwrap();
+    settle();
+    assert!(!marker.exists(), "insert must not run the command");
+    assert_eq!(m.requests().len(), 1, "waits for the user");
+    p.send("\r").unwrap();
+    p.expect("all-done").unwrap();
+    assert!(marker.exists());
+    let last = m.requests()[1].body.clone();
+    assert!(last.contains("exit: 0"), "{last}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn insert_esc_declines_and_the_model_continues() {
+    let home = TempDir::new().unwrap();
+    let m = one_call("insert", serde_json::json!({ "command": "echo nope" }));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? do it\r").unwrap();
+    p.expect("Enter insert").unwrap();
+    settle();
+    p.send("\x1b").unwrap();
+    p.expect("all-done").unwrap();
+    let last = m.requests()[1].body.clone();
+    assert!(last.contains("declined to insert"), "{last}");
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+/// Ask, then type `reply` into the input line; the second request's body.
+fn ask_with(args: serde_json::Value, shown: &[&str], reply: &str) -> String {
+    let home = TempDir::new().unwrap();
+    let m = one_call("ask", args);
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? help\r").unwrap();
+    for s in shown {
+        p.expect(*s).unwrap();
+    }
+    p.expect("answer · Esc skip").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert_eq!(m.requests().len(), 1, "waits for the answer");
+    p.send(reply).unwrap();
+    p.expect("all-done").unwrap();
+    let last = m.requests()[1].body.clone();
+    p.send_line("echo still-bash").unwrap();
+    p.expect("\x07still-bash\r\n").unwrap();
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+    last
+}
+
+#[test]
+fn ask_free_text_answer_reaches_the_model_not_bash() {
+    let args = serde_json::json!({ "question": "Which name?" });
+    let last = ask_with(args, &["Which name?"], "my-answer\r");
+    assert!(last.contains("my-answer"), "{last}");
+}
+
+#[test]
+fn ask_choices_are_numbered_and_a_digit_picks_one() {
+    let args = serde_json::json!({ "question": "Pick:", "choices": ["red", "blue"] });
+    let last = ask_with(args, &["1 red", "2 blue"], "2\r");
+    assert!(last.contains("blue") && !last.contains("\"2\""), "{last}");
+}
+
+#[test]
+fn ask_esc_means_no_answer() {
+    let args = serde_json::json!({ "question": "Which name?" });
+    let last = ask_with(args, &["Which name?"], "\x1b");
+    assert!(last.contains("the user did not answer"), "{last}");
+}
+
+#[test]
+fn a_cancelled_ask_does_not_swallow_the_next_line() {
+    let home = TempDir::new().unwrap();
+    let m = one_call("ask", serde_json::json!({ "question": "Which?" }));
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? help\r").unwrap();
+    p.expect("answer · Esc skip").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("\x03").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("echo to-bash\r").unwrap();
+    p.expect("\x07to-bash\r\n").unwrap();
+    assert_eq!(m.requests().len(), 1);
+    p.send_line("exit").unwrap();
+    p.expect(Eof).unwrap();
+}
+
+#[test]
+fn with_tools_a_bash_block_is_not_prefilled() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("block-marker");
+    let reply: &'static str =
+        Box::leak(format!("Try:\n```bash\ntouch {}\n```\n", marker.display()).into_boxed_str());
+    let m = stepped("chat", vec![(reply, vec![])]);
+    let mut p = with_run(&home, &m, "");
+    p.expect("E> ").unwrap();
+    settle();
+    p.send("? how\r").unwrap();
+    p.expect("touch").unwrap();
+    p.expect("E> ").unwrap();
+    settle();
+    assert!(m.requests()[0].body.contains("\"tools\""));
+    p.send("\r").unwrap(); // an empty line: nothing was prefilled
+    settle();
+    assert!(!marker.exists(), "the block must stay in the answer");
     p.send_line("exit").unwrap();
     p.expect(Eof).unwrap();
 }

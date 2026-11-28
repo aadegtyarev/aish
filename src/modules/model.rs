@@ -93,7 +93,9 @@ impl Module for ModelModule {
             .status
             .set(crate::llm::status::Status::new(hint.clone(), p));
         vec![
-            Box::new(Intercept::new(move |l| claims(l, &llm))),
+            Box::new(Intercept::new(move |l| {
+                claims(l, &llm) || (agent::asking(&llm) && !l.trim().is_empty())
+            })),
             Box::new(RightHint::new(hint)),
             Box::new(Accent(p)),
             Box::new(AskToggle(p)),
@@ -130,6 +132,16 @@ impl Module for ModelModule {
         let Some((llm, tracker)) = self.env.clone() else {
             return false;
         };
+        if agent::asking(&llm) && !claims(line, &llm) {
+            agent::answer(&llm, line);
+            let note = if line.trim().is_empty() {
+                "skipped"
+            } else {
+                "answer sent"
+            };
+            out.extend_from_slice(format!("│ {note}").as_bytes());
+            return true;
+        }
         if !claims(line, &llm) {
             return false;
         }
