@@ -17,7 +17,9 @@ Answer in the language of the user's question. Use light markdown only (**bold**
 When a shell command is the answer, put exactly one command in a final ```bash fenced block at the end of the reply \
 (multi-line only if unavoidable). If the user only asks for a command, reply with just that block and no prose. \
 You cannot run anything: the user reads the command and presses Enter. \
-Use the provided context (recent commands and their output, cwd, OS, git) instead of asking for it.";
+Use the provided context (recent commands and their output, cwd, OS, git) instead of asking for it. \
+Never claim a change, or offer to undo one, unless a command that made it actually ran; \
+if nothing was changed, say so plainly.";
 
 /// A question: how many blocks of context, and the text.
 pub struct Parsed {

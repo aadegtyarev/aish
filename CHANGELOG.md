@@ -9,6 +9,12 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-28
+
+### Fixed
+- The model no longer claims, or offers to undo, a change it never made; when
+  nothing was changed it says so.
+
 ## [0.3.0] - 2026-11-28
 
 ### Fixed
@@ -164,7 +170,8 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/aadegtyarev/aish/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/aadegtyarev/aish/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/aadegtyarev/aish/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/aadegtyarev/aish/compare/v0.1.0...v0.2.0

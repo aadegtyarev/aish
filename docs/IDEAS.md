@@ -14,10 +14,6 @@
    skills index → summary + conversation → dynamic context (cwd, git, recent
    blocks, jobs) last.
 4. **Overridable system prompt.** `system: {replace: <file|text>, append: <text>}`.
-5. **Honest about actions.** One line in the chat system prompt: the model
-   changes nothing without a `run` the user approved, never claims or "undoes"
-   an edit that did not happen, and says "I changed nothing" when that is so.
-   Seen in 0.3.0: "no! undo your editing" got made-up steps to revert a prompt.
 
 ## Ideas
 
