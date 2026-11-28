@@ -213,6 +213,74 @@ pub struct Config {
     /// `update_check: off` — no daily check for a newer release.
     #[serde(default)]
     pub update_check: Setting<String>,
+    /// `run: ask|auto|off` — what the model's `run` tool does with commands
+    /// that are not read-only (default `ask`).
+    #[serde(default)]
+    pub run: Setting<String>,
+    /// `tools: {run, files, web, skills}` — per-tool on/off.
+    #[serde(default)]
+    pub tools: ToolsCfg,
+}
+
+/// How the model's `run` tool treats commands that are not read-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunMode {
+    /// Ask before each command (default).
+    #[default]
+    Ask,
+    /// Run without asking (the hard list still asks).
+    Auto,
+    /// Never run: prefill the command into the input line.
+    Off,
+}
+
+impl RunMode {
+    pub const ALL: [RunMode; 3] = [RunMode::Ask, RunMode::Auto, RunMode::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            RunMode::Ask => "ask",
+            RunMode::Auto => "auto",
+            RunMode::Off => "off",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<RunMode> {
+        RunMode::ALL.into_iter().find(|m| m.name() == s)
+    }
+}
+
+/// Switchable tools (`tools:` in the config).
+pub const SWITCHABLE_TOOLS: &[&str] = &["run", "files", "web", "skills"];
+
+/// `tools:` section: `on` / `off` per tool; absent = on. `skills` is reserved.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ToolsCfg {
+    #[serde(default)]
+    pub run: Setting<String>,
+    #[serde(default)]
+    pub files: Setting<String>,
+    #[serde(default)]
+    pub web: Setting<String>,
+    #[serde(default)]
+    pub skills: Setting<String>,
+}
+
+impl ToolsCfg {
+    fn get(&self, name: &str) -> Option<&Setting<String>> {
+        Some(match name {
+            "run" => &self.run,
+            "files" => &self.files,
+            "web" => &self.web,
+            "skills" => &self.skills,
+            _ => return None,
+        })
+    }
+
+    /// Is the tool on (unset = on)?
+    pub fn on(&self, name: &str) -> bool {
+        !matches!(self.get(name), Some(Setting::Off))
+    }
 }
 
 /// Key bindings (`keys:` in the config).
@@ -244,6 +312,18 @@ impl Config {
         for (i, p) in self.providers.iter().enumerate() {
             if self.providers[..i].iter().any(|q| q.id == p.id) {
                 bail!("duplicate provider id '{}'", p.id);
+            }
+        }
+        if let Setting::Value(v) = &self.run {
+            if RunMode::parse(v).is_none() {
+                bail!("run: must be ask, auto or off");
+            }
+        }
+        for name in SWITCHABLE_TOOLS {
+            if let Some(Setting::Value(v)) = self.tools.get(name) {
+                if v != "on" {
+                    bail!("tools.{name}: must be on or off");
+                }
             }
         }
         if let Setting::Value(w) = &self.web {
@@ -290,6 +370,15 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The configured `run:` mode (`ask` when unset).
+    pub fn run_mode(&self) -> RunMode {
+        match &self.run {
+            Setting::Off => RunMode::Off,
+            Setting::Value(v) => RunMode::parse(v).unwrap_or_default(),
+            Setting::Unset => RunMode::Ask,
+        }
     }
 
     pub fn profile_roles(&self, name: &str) -> Option<&HashMap<String, Role>> {
@@ -515,6 +604,23 @@ roles:
         let m = "providers:\n  - {id: p, url: u, type: chat, models: {m: {id: a, web: native}}}";
         assert!(Config::parse(m).is_ok());
         assert!(Config::parse(&m.replace("native", "yes")).is_err());
+    }
+
+    #[test]
+    fn run_and_tools_sections() {
+        let c = Config::parse("{}").unwrap();
+        assert_eq!(c.run_mode(), RunMode::Ask);
+        assert!(c.tools.on("run") && c.tools.on("files") && c.tools.on("web"));
+        let c = Config::parse("run: auto\ntools: {web: off, run: on}").unwrap();
+        assert_eq!(c.run_mode(), RunMode::Auto);
+        assert!(c.tools.on("run") && !c.tools.on("web"));
+        assert_eq!(Config::parse("run: off").unwrap().run_mode(), RunMode::Off);
+        assert!(Config::parse("run: sometimes").is_err());
+        assert!(Config::parse("tools: {web: maybe}").is_err());
+        assert!(!Config::parse("tools: {skills: off}")
+            .unwrap()
+            .tools
+            .on("skills"));
     }
 
     #[test]

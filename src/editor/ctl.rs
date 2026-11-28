@@ -35,6 +35,9 @@ const DSR_TTL: Duration = Duration::from_secs(1);
 const REDRAW_KEY: &[u8] = b"\x1b[1337~";
 /// Bound to the job report function in rc.bash.
 const JOBS_KEY: &[u8] = b"\x1b[1338~";
+/// Tool result when the model's command cannot be typed in.
+const NOT_EMPTY: &str = "error: not run: the input line is not empty (the user is typing); \
+nothing was executed";
 /// How long after poking the shell its own job report lines are swallowed.
 const JOB_WINDOW: Duration = Duration::from_millis(1500);
 
@@ -460,6 +463,18 @@ impl Controller {
         if self.task.is_none() {
             let mut task = Some(self.tasks.make(self.ed.theme(), width()));
             let shared = task.as_ref().map(|t| t.shared.clone());
+            // the model's approved command: typed into bash as if by the
+            // user, but only into an empty line (nothing typed meanwhile);
+            // otherwise the model is told and the turn continues
+            let typing = self.typeahead.iter().any(|b| !b.is_ascii_whitespace());
+            if let Some(line) =
+                crate::llm::agent::take_inject(&self.llm, typing.then_some(NOT_EMPTY))
+            {
+                self.typeahead.clear();
+                self.leave(true);
+                self.send_line(&line);
+                return;
+            }
             let taken = self.modules.iter_mut().any(|m| m.on_resume(&mut task));
             if taken && task.is_none() {
                 // bash's prompt is on this line: the continued answer replaces it
@@ -532,9 +547,21 @@ impl Controller {
                 }
                 data = out;
             }
+            let wanted = t.keys_wanted.load(std::sync::atomic::Ordering::Relaxed);
+            let esc_alone = data == [0x1b];
+            let has_esc = data.contains(&0x1b);
             for b in data {
                 if b == 0x03 {
                     t.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                } else if wanted {
+                    // the agent asks: Enter, s, a or a lone Esc decide; the
+                    // rest (arrows, text) is not kept for later
+                    match b {
+                        0x1b if esc_alone => t.offer_key(0x1b),
+                        b'\r' | b'\n' if !has_esc => t.offer_key(b'\r'),
+                        b's' | b'a' if !has_esc => t.offer_key(b),
+                        _ => {}
+                    }
                 } else if self.typeahead.len() < 65536 {
                     self.typeahead.push(b);
                 }
@@ -571,6 +598,7 @@ impl Controller {
                 }
                 if self.scan.b_seen && !out.is_empty() {
                     self.dirty = out[out.len() - 1] != 0x03;
+                    self.refuse_inject_if_dirty();
                 }
                 return Input::ForwardOwned(out);
             }
@@ -581,6 +609,7 @@ impl Controller {
             }
             if self.scan.b_seen && n > 0 {
                 self.dirty = buf[n - 1] != 0x03;
+                self.refuse_inject_if_dirty();
             }
             return Input::Forward(n);
         }
@@ -599,6 +628,14 @@ impl Controller {
         self.handle_events(&mut ev);
         self.events = ev;
         Input::Handled(self.ed.has_pending_input())
+    }
+
+    /// The user typed into bash's line while the model's approved command
+    /// waits for an empty one: it is not typed in, the model is told.
+    fn refuse_inject_if_dirty(&mut self) {
+        if self.dirty {
+            crate::llm::agent::refuse_inject(&self.llm, NOT_EMPTY);
+        }
     }
 
     /// Input went quiet while a partial key was pending.

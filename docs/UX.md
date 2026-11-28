@@ -12,8 +12,9 @@ UI text is English only; the conversation follows the user's language.
 1. **Invisible by default.** If you don't talk to the model, aish is
    indistinguishable from `bash`. PS1, aliases, `.bashrc`, `vim`, `ssh` are all yours.
 2. **2–3 steps to any action.** No settings menu, no dialogs.
-3. **Propose, don't do.** The model never runs a command itself; it puts the
-   command into your input line. Enter is the confirmation.
+3. **Propose, don't do.** The model puts a command into your input line, or, with
+   your permission (`ai run`), types it into your bash. Nothing runs unasked, and
+   the hard list (sudo, `rm -rf`, redirection into files ...) always asks.
 4. **Instant.** Typing never waits for the network. LLM suggestions catch up,
    they don't block. Keypress latency < 1 ms, history < 5 ms.
 5. **Quiet.** Network and model errors are one dim line, not a stack trace.
@@ -101,12 +102,45 @@ $ cargo build 2>&1 | tail -30               ← in the input line; Enter runs it
   `<(…)`, redirects into files, environment assignments and a pipe into a
   command that is not allowed make a command "not read-only".
   Your own prefixes go in `allow:` in config.yaml.
-- **Everything else** is put into the input line (the same checks as for a
-  ```` ```bash ```` block), and the turn pauses. Run the command (you may edit
-  it; the model learns what was actually run), and when the block ends the model
-  continues in a new `│` section. Ctrl-C on the line, or a different command
-  instead of the proposed one, stops the agent silently.
-- Tools: `run(command, background?)`, `read_block(n)`, `jobs()`,
+- **Everything else** goes through `run` and depends on the mode (`ai run`):
+  - `ask` (default): a dim prompt under the answer, one key decides:
+    ```
+    │ ▶ apt list --upgradable
+    │   Enter run · s session · a always · Esc no
+    ```
+    The command is shown as it is (control and bidi characters are refused, long
+    commands wrap with the bar, at most 6 rows; the hint gets shorter on a narrow
+    screen). **Enter** types the command into your bash as if you typed it: it is
+    visible, its output is an ordinary block, sudo can ask for a password, `cd`
+    persists, Ctrl-C stops it. The agent waits for the end of the block and gets
+    the exit code, the output tail (masked for a non-local provider) and the
+    duration (`interrupted by the user` after Ctrl-C). It is typed only when bash is
+    at an idle prompt with an empty line: if you typed something meanwhile, nothing
+    runs and the model is told so. **s** — the model runs commands without asking
+    until aish exits. **a** — the same, and `run: auto` is saved to the config
+    (a targeted edit). **Esc** — declined: the model is told, it continues.
+  - `auto`: no prompt, except the **hard list**, which always asks: sudo/doas/su;
+    `rm` with `-r/-R/-f` (or long forms); dd; mkfs*; fdisk/parted/wipefs;
+    shutdown/reboot/poweroff/halt, `systemctl reboot|poweroff`; any redirection
+    into a file (`>`, `>>`, `&>`; `/dev/null` and `2>&1` are fine) or `tee`;
+    `curl|wget … | sh|bash`; `chmod/chown -R`; `git push --force/-f`,
+    `git reset --hard`, `git clean -f`. The line is parsed like a shell would
+    (quotes, `\rm`, `command rm`, `env X=1 rm`, `sudo` anywhere in `;`/`&&`/`|`
+    chains, `sh -c '…'`, `xargs`); `$(…)`, backticks, unterminated quotes and
+    unknown program names count as hard: when unsure, it asks.
+  - `off`: the old way — the command is put into the input line (the same checks
+    as for a ```` ```bash ```` block) and the turn pauses. Run it (you may edit it;
+    the model learns what was actually run), and when the block ends the model
+    continues in a new `│` section. Ctrl-C on the line, or a different command
+    instead of the proposed one, stops the agent silently.
+  - `ai run` shows the mode, `ai run ask|auto|off` sets it for the session, add
+    `--save` to write `run:` to the config. Read-only commands run by themselves
+    in every mode. The Ctrl-Q overlay never has `run` (the foreground may be another host).
+- Tools (`ai tools` switches `run`, `files`, `web`; an off tool is not sent to the
+  model, not mentioned in its prompt, and a call to it is refused. `tools: {run: off}`
+  means no run tool at all, even read-only; that differs from `ai run off`, which
+  only stops the model from running other commands itself. `skills` is reserved):
+  `run(command, background?)`, `read_block(n)`, `jobs()`,
   `job_output(id, lines)`, `read_file(path, start_line?, max_lines?)`
   (up to 200 lines / 32 KB; secret files — `~/.ssh/*`, `*.pem`, `.env*`,
   `~/.aws/credentials`, `~/.netrc`, aish's own config — are refused).
@@ -261,6 +295,8 @@ $ ai help          ← commands: `command — what it does`, long ones wrap (fit
 $ ai models        ← models by provider: alias, id (dim, cut with …), roles (`chat`, `complete`)
 $ ai model chat ds ← switch a role's model AND save it to the config (`ai model ds` = chat; `ai chat ds` is the same)
 $ ai profile       ← profiles (the active one is marked `*`); `ai profile inet` switches and saves
+$ ai run [ask|auto|off]    ← may the model run commands (`--save` keeps it in the config)
+$ ai tools [name on|off]   ← the agent's tools run/files/web (`--save` keeps it)
 $ ai off / ai on          ← turn model suggestions off/on
 $ ai config                ← puts `${EDITOR:-vi} ~/.config/aish/config.yaml` into the input line (Enter opens it)
 ```
@@ -286,7 +322,7 @@ profile's entry.
 **Any line with `ai`.** A line starting with `ai` (or the name from `command:`)
 is ours and never goes to bash or to the model. If the first word is exactly a
 subcommand (`help`, `models`, `model`, `chat`, `complete`, `profile`, `status`,
-`on`, `off`, `config`, `init`), it runs. Anything else (a typo, text in another
+`on`, `off`, `config`, `init`, `run`, `tools`), it runs. Anything else (a typo, text in another
 language, any words) prints, dimmed: `unknown chst · did you mean chat?` (only if
 a subcommand is close: edit distance ≤ 2 or a unique prefix), the line
 `ask the model: ? <question>` and the ordinary `ai help`. A bare `ai` = `ai help`.
@@ -388,4 +424,5 @@ overlay hints get shorter. New UI elements are checked by tests at a narrow widt
 - Before sending to the cloud, secrets are masked: `*_KEY=`, `*TOKEN*`,
   `Authorization:`, private keys, passwords in URLs.
 - For a local provider masking can be turned off.
-- Nothing runs without Enter, except allowlisted read-only commands.
+- Nothing runs without Enter (or your `s`/`a` for the session), except allowlisted
+  read-only commands. The hard list always asks.

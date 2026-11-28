@@ -6,12 +6,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{Llm, Target};
-use crate::config::{Config, Setting};
+use crate::config::{Config, RunMode, Setting};
 
 pub const SUBS: &[&str] = &[
     "status", "chat", "complete", "model", "models", "profile", "on", "off", "config", "init",
-    "help",
+    "help", "run", "tools",
 ];
+
+/// Tools `ai tools` can switch (`skills` is reserved in the config only).
+pub const TOOL_NAMES: &[&str] = &["run", "files", "web"];
 
 fn is_cmd_line(s: &str, name: &str) -> bool {
     let mut w = s.split_whitespace();
@@ -93,6 +96,10 @@ pub enum Cmd {
     Suggest(bool),
     Config,
     Init,
+    /// `run [ask|auto|off] [--save]`
+    Run(Option<String>, bool),
+    /// `tools [name on|off] [--save]`
+    Tools(Option<(String, Option<String>)>, bool),
     /// A first word that is no subcommand: a hint and the help, nothing else.
     Unknown(String),
 }
@@ -110,6 +117,17 @@ pub fn parse(line: &str) -> Cmd {
         (Some("model"), Some(m), None) => Cmd::Model("chat".into(), m.into()),
         (Some("model"), Some(r), Some(m)) => Cmd::Model(r.into(), m.into()),
         (Some("profile"), n, _) => Cmd::Profile(n.map(Into::into)),
+        (Some("run"), ..) => {
+            let save = w[2..].contains(&"--save");
+            let a = w[2..].iter().find(|x| **x != "--save");
+            Cmd::Run(a.map(|x| (*x).to_owned()), save)
+        }
+        (Some("tools"), ..) => {
+            let save = w[2..].contains(&"--save");
+            let a: Vec<&&str> = w[2..].iter().filter(|x| **x != "--save").collect();
+            let first = a.first().map(|x| (**x).to_owned());
+            Cmd::Tools(first.map(|n| (n, a.get(1).map(|x| (**x).to_owned()))), save)
+        }
         (None, ..)
         | (Some("help" | "-h" | "--help"), ..)
         | (Some("chat" | "complete" | "model"), None, _) => Cmd::Help,
@@ -165,6 +183,11 @@ const HELP: &[(&str, &str)] = &[
     ("model [role] <model>", "switch model and save"),
     ("chat|complete <model>", "same for a role"),
     ("profile [name]", "profiles, switch"),
+    (
+        "run [ask|auto|off]",
+        "may the model run commands; --save keeps it",
+    ),
+    ("tools [name on|off]", "switch tools; --save keeps it"),
     ("on | off", "suggestions"),
     ("config", "open the config"),
     ("init", "set up launch"),
@@ -300,6 +323,93 @@ fn persist(
     crate::config_edit::write_atomic(path, &new).is_ok()
 }
 
+/// Write `run: <mode>` to the config; false if the file's shape does not allow it.
+pub fn save_run(llm: &Llm, mode: RunMode) -> bool {
+    persist(
+        llm,
+        |s| crate::config_edit::set_top(s, "run", mode.name()),
+        |c| c.run_mode() == mode,
+    )
+}
+
+fn save_tool(llm: &Llm, name: &str, on: bool) -> bool {
+    persist(
+        llm,
+        |s| crate::config_edit::set_tool(s, name, if on { "on" } else { "off" }),
+        |c| c.tools.on(name) == on,
+    )
+}
+
+fn run_lines(llm: &Llm, arg: Option<&str>, save: bool) -> Vec<Ln> {
+    let Some(a) = arg else {
+        let mode = llm.run_mode();
+        let mut v = vec![Ln::dim(format!("run: {}", mode.name()))];
+        if !llm.tool_on("run") {
+            v.push(Ln::dim("tool run is off: ai tools run on"));
+        } else {
+            v.push(Ln::dim("ask | auto | off · add --save to keep"));
+        }
+        return v;
+    };
+    let Some(mode) = RunMode::parse(a) else {
+        let names: Vec<&str> = RunMode::ALL.iter().map(|m| m.name()).collect();
+        return vec![Ln::dim(format!(
+            "no mode: {a} {}",
+            did_you_mean(a, &names, "ask | auto | off")
+        ))];
+    };
+    llm.set_run_mode(mode);
+    let tail = if !save {
+        "this session"
+    } else if save_run(llm, mode) {
+        "saved"
+    } else {
+        "session only: config unchanged"
+    };
+    vec![Ln::dim(format!("run: {} · {tail}", mode.name()))]
+}
+
+fn tools_lines(llm: &Llm, arg: Option<&(String, Option<String>)>, save: bool) -> Vec<Ln> {
+    let Some((name, state)) = arg else {
+        let cfg_web = llm.config().is_none_or(|c| !matches!(c.web, Setting::Off));
+        let mut v: Vec<Ln> = TOOL_NAMES
+            .iter()
+            .map(|n| {
+                let on = llm.tool_on(n) && (*n != "web" || cfg_web);
+                Ln::dim(format!("{n:<6}{}", if on { "on" } else { "off" }))
+            })
+            .collect();
+        v.push(Ln::dim("ai tools <name> on|off · --save"));
+        return v;
+    };
+    if !TOOL_NAMES.contains(&name.as_str()) {
+        return vec![Ln::dim(format!(
+            "no tool: {name} {}",
+            did_you_mean(name, TOOL_NAMES, "run | files | web")
+        ))];
+    }
+    let on = match state.as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        other => {
+            let shown = other.map_or_else(|| "on | off".to_owned(), |o| format!("{o}? on | off"));
+            return vec![Ln::dim(format!("{name}: {shown}"))];
+        }
+    };
+    llm.set_tool(name, on);
+    let tail = if !save {
+        "this session"
+    } else if save_tool(llm, name, on) {
+        "saved"
+    } else {
+        "session only: config unchanged"
+    };
+    vec![Ln::dim(format!(
+        "{name}: {} · {tail}",
+        if on { "on" } else { "off" }
+    ))]
+}
+
 fn bad_ref(cfg: &Config, r: &str) -> String {
     let mut aliases: Vec<&str> = Vec::new();
     for p in &cfg.providers {
@@ -394,6 +504,8 @@ pub fn run(llm: &Llm, cmd: &Cmd, width: usize) -> Vec<Ln> {
         Cmd::Models => models_lines(llm, width),
         Cmd::Model(role, r) => set_model(llm, role, r),
         Cmd::Profile(n) => profile_lines(llm, n.as_deref()),
+        Cmd::Run(a, save) => run_lines(llm, a.as_deref(), *save),
+        Cmd::Tools(a, save) => tools_lines(llm, a.as_ref(), *save),
         Cmd::Unknown(w) => {
             let mut v = Vec::new();
             if let Some(c) = closest(w, SUBS.iter().copied()) {

@@ -265,6 +265,74 @@ impl Renderer {
         self.route(buf, out);
     }
 
+    /// The approval prompt of a command the model wants to run:
+    /// `│ ▶ cmd` (long commands wrapped, at most `RUN_ROWS` rows) and a dim
+    /// hint row. The last row is the hint; no trailing newline.
+    pub fn run_prompt(&self, cmd: &str, hints: &[&str], out: &mut Vec<u8>) {
+        const RUN_ROWS: usize = 6;
+        let w = self.cols.saturating_sub(2).max(1);
+        let mut rows: Vec<String> = Vec::new();
+        for l in cmd.lines() {
+            let l = l.replace('\t', "    ");
+            let mut cur = String::new();
+            let mut cw = 0;
+            for c in l.chars().filter(|&c| !is_bad(c)) {
+                if cw + width(c) > w {
+                    rows.push(std::mem::take(&mut cur));
+                    cw = 0;
+                }
+                cur.push(c);
+                cw += width(c);
+            }
+            rows.push(cur);
+        }
+        if rows.len() > RUN_ROWS {
+            let more = rows.len() - (RUN_ROWS - 1);
+            rows.truncate(RUN_ROWS - 1);
+            rows.push(format!("… {more} more rows"));
+        }
+        for (i, r) in rows.iter().enumerate() {
+            out.extend_from_slice(b"\r\n");
+            self.bar(out);
+            self.sgr(out, &self.dim.clone());
+            out.extend_from_slice(if i == 0 { "▶ " } else { "  " }.as_bytes());
+            self.reset(out);
+            self.sgr(out, &self.accent.clone());
+            out.extend_from_slice(r.as_bytes());
+            self.reset(out);
+        }
+        // the longest hint that fits: the bar, two spaces and the text
+        let room = self.cols.saturating_sub(2);
+        let hint = hints
+            .iter()
+            .find(|h| h.chars().count() < room)
+            .or(hints.last())
+            .copied()
+            .unwrap_or("");
+        out.extend_from_slice(b"\r\n");
+        self.bar(out);
+        self.sgr(out, &self.dim.clone());
+        out.extend_from_slice(b"  ");
+        out.extend_from_slice(fit_line(&sanitize(hint), room).as_bytes());
+        self.reset(out);
+    }
+
+    /// Take the hint row of `run_prompt` back (the cursor ends on the row
+    /// above, so the next output reuses it); `note` replaces it instead.
+    pub fn run_prompt_done(&self, note: Option<&str>, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\r\x1b[2K");
+        match note {
+            Some(n) => {
+                self.bar(out);
+                self.sgr(out, &self.dim.clone());
+                out.extend_from_slice(b"  ");
+                out.extend_from_slice(sanitize(n).as_bytes());
+                self.reset(out);
+            }
+            None => out.extend_from_slice(b"\x1b[A"),
+        }
+    }
+
     /// A command shown as accent-colored rows under the bar (the overlay shows
     /// the command before it is inserted).
     pub fn code_block(&self, cmd: &str, out: &mut Vec<u8>) {
