@@ -9,6 +9,8 @@ version and date, and the release notes on GitHub are taken from it.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-28
+
 ### Fixed
 - Narrow terminals (phones, ~36 columns): a prompt that exactly fills the row
   no longer disables ghost text, the marker, Ctrl-R, Tab and notices (UTF-8).
@@ -63,6 +65,7 @@ First public release.
   (`crates/aish-editor`, not on crates.io yet).
 - Static musl binaries and deb packages for x86_64 and arm64.
 
-[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aadegtyarev/aish/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/aadegtyarev/aish/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/aadegtyarev/aish/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aadegtyarev/aish/releases/tag/v0.1.0
