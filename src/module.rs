@@ -6,6 +6,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
 use lineedit_wip::plugins::SharedHistory;
@@ -34,6 +35,11 @@ pub struct TaskShared {
     /// Held around "check muted + write" so `mute` is a barrier.
     write_lock: Mutex<()>,
     wake: Arc<File>,
+    /// A status row (spinner) is the last row on screen: the next output
+    /// replaces it. Changed only under `write_lock`.
+    status_row: AtomicBool,
+    /// Output has replaced the status row: no more spinner until `status_reset`.
+    status_off: AtomicBool,
 }
 
 impl TaskShared {
@@ -75,7 +81,24 @@ impl Task {
         if self.shared.muted.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
+        let mut bytes = bytes;
+        if self.shared.status_row.swap(false, Relaxed) {
+            // the output takes the place of the status row
+            let _ = (&*self.out).write_all(b"\r\x1b[2K");
+            bytes = bytes.strip_prefix(b"\r\n").unwrap_or(bytes);
+        }
+        if !bytes.is_empty() {
+            self.shared.status_off.store(true, Relaxed);
+        }
         let _ = (&*self.out).write_all(bytes);
+    }
+
+    /// A writer for the status row that a worker thread can own.
+    pub fn status_writer(&self) -> StatusWriter {
+        StatusWriter {
+            out: self.out.clone(),
+            shared: self.shared.clone(),
+        }
     }
 
     /// Done: show the prompt again, with `prefill` typed into the line.
@@ -84,6 +107,16 @@ impl Task {
     }
 
     fn complete(&self, prefill: Option<String>) {
+        {
+            let _g = self
+                .shared
+                .write_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if self.shared.status_row.swap(false, Relaxed) {
+                let _ = (&*self.out).write_all(b"\r\x1b[2K");
+            }
+        }
         self.shared
             .finished
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -91,6 +124,44 @@ impl Task {
             *d = Some(prefill);
         }
         let _ = (&*self.shared.wake).write(&[1]);
+    }
+}
+
+/// Draws the one in-place status row of a task (see `editor::wait`).
+#[derive(Clone)]
+pub struct StatusWriter {
+    out: Arc<File>,
+    shared: Arc<TaskShared>,
+}
+
+impl StatusWriter {
+    /// Forget that output replaced the status row: a new wait begins.
+    pub fn reset(&self) {
+        let _g = self
+            .shared
+            .write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.shared.status_off.store(false, Relaxed);
+    }
+
+    /// Show `row` (a complete row: bar and text) as the status row, in place
+    /// when it is already there. False when output has taken over.
+    pub fn show(&self, row: &[u8]) -> bool {
+        let _g = self
+            .shared
+            .write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self.shared.muted.load(Relaxed) || self.shared.status_off.load(Relaxed) {
+            return false;
+        }
+        let first = !self.shared.status_row.swap(true, Relaxed);
+        let mut b = Vec::with_capacity(row.len() + 8);
+        b.extend_from_slice(if first { b"\r\n" } else { b"\r\x1b[2K" });
+        b.extend_from_slice(row);
+        let _ = (&*self.out).write_all(&b);
+        true
     }
 }
 
@@ -128,6 +199,8 @@ impl TaskMaker {
                 muted: AtomicBool::new(false),
                 write_lock: Mutex::new(()),
                 wake: self.wake.clone(),
+                status_row: AtomicBool::new(false),
+                status_off: AtomicBool::new(false),
             }),
         }
     }

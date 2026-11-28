@@ -5,3 +5,4 @@ pub mod ctl;
 pub mod overlay;
 pub mod resolve;
 pub mod scan;
+pub mod wait;

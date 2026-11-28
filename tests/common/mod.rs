@@ -542,6 +542,12 @@ impl Term {
         self.pump_for(Duration::from_millis(300));
     }
 
+    /// Type without waiting for the screen to settle (for output that never
+    /// goes quiet, like a spinner).
+    pub fn type_only(&mut self, s: &str) {
+        self.p.write_all(s.as_bytes()).unwrap();
+    }
+
     pub fn send(&mut self, s: &str) {
         self.p.write_all(s.as_bytes()).unwrap();
         self.pump();
@@ -554,6 +560,22 @@ impl Term {
             self.pump_for(Duration::from_millis(100));
             if self.scr.everything().contains(needle) {
                 self.pump();
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "timeout waiting for {needle:?}\n{}",
+                self.scr.dump()
+            );
+        }
+    }
+
+    /// Pump until `needle` is on screen and return at once (no settling).
+    pub fn see(&mut self, needle: &str) {
+        let end = Instant::now() + Duration::from_secs(20);
+        loop {
+            self.pump_for(Duration::from_millis(30));
+            if self.scr.everything().contains(needle) {
                 return;
             }
             assert!(

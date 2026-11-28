@@ -173,6 +173,10 @@ pub enum Event {
     Delta(String),
     /// The provider searched the web by itself (the query, may be empty).
     Search(String),
+    /// The host was resolved: the request goes out now (progress only).
+    Connected,
+    /// Only reasoning or keep-alive data has arrived so far (progress only).
+    Thinking,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +213,8 @@ impl std::error::Error for Error {}
 enum Msg {
     /// Something arrived (reasoning, keep-alive): resets the timeouts.
     Alive,
+    /// The host was resolved, the connection is being made.
+    Connected,
     Delta(String),
     Search(String),
     Tools(Vec<ToolCall>),
@@ -262,9 +268,24 @@ pub(crate) enum Item {
 /// `read` is the socket read timeout: it bounds the wait for response headers
 /// (the first token) and doubles as the poll interval of the body reader,
 /// which re-checks the cancel flag whenever a read times out.
-fn agent(read: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(CONNECT_TIMEOUT)
+/// Resolves like the system and tells the caller the request goes out now.
+struct Notify(mpsc::Sender<Msg>);
+
+impl ureq::Resolver for Notify {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        use std::net::ToSocketAddrs;
+        let a: Vec<_> = netloc.to_socket_addrs()?.collect();
+        let _ = self.0.send(Msg::Connected);
+        Ok(a)
+    }
+}
+
+fn agent(read: Duration, tx: Option<mpsc::Sender<Msg>>) -> ureq::Agent {
+    let mut b = ureq::AgentBuilder::new();
+    if let Some(tx) = tx {
+        b = b.resolver(Notify(tx));
+    }
+    b.timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(read)
         .build()
 }
@@ -350,7 +371,9 @@ pub fn stream_tools(
             Ok(Msg::Alive) => {
                 first = false;
                 last = Instant::now();
+                on_event(Event::Thinking);
             }
+            Ok(Msg::Connected) => on_event(Event::Connected),
             Ok(Msg::Delta(s)) => {
                 first = false;
                 last = Instant::now();
@@ -397,7 +420,7 @@ fn worker(
     tx: mpsc::Sender<Msg>,
     closed: &AtomicBool,
 ) {
-    let r = authorize(agent(read_timeout).post(url), &key)
+    let r = authorize(agent(read_timeout, Some(tx.clone())).post(url), &key)
         .set("Content-Type", "application/json")
         .set("Accept", "text/event-stream")
         .send_string(&body);

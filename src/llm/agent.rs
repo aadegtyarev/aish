@@ -696,18 +696,24 @@ pub fn drive(
         let mut full = String::new();
         let mut searches: Vec<String> = Vec::new();
         let mut got_output = false;
-        let res = aish_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |e| match e {
-            Event::Delta(d) => {
-                got_output = true;
-                full.push_str(&d);
-                let mut out = Vec::new();
-                r.push(&d, &mut out);
-                if !out.is_empty() {
-                    task.write(&out);
+        let mut waiter = crate::editor::wait::Waiter::start(task, t.local.then(|| t.ep.clone()));
+        let res = aish_llm::stream_tools(&t.ep, &req, &task.shared.cancel, |e| {
+            waiter.event(&e);
+            match e {
+                Event::Delta(d) => {
+                    got_output = true;
+                    full.push_str(&d);
+                    let mut out = Vec::new();
+                    r.push(&d, &mut out);
+                    if !out.is_empty() {
+                        task.write(&out);
+                    }
                 }
+                Event::Search(q) => searches.push(q),
+                _ => {}
             }
-            Event::Search(q) => searches.push(q),
         });
+        waiter.stop();
         let mut out = Vec::new();
         let (usage, calls) = match res {
             Ok(x) => x,

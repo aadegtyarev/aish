@@ -15,6 +15,10 @@ version and date, and the release notes on GitHub are taken from it.
   from `.bashrc` no longer appear twice. Rerun `aish init` to move an old block.
 
 ### Added
+- A waiting indicator for `?` answers (also in the Ctrl-Q overlay): one dim
+  status row, `│ ⠹ ждёт ответ · 4с`, updated in place and replaced by the
+  answer; phases подключение / ждёт ответ / думает / загружает модель (llama.cpp
+  router mode), `Ctrl-C — отмена` after 10 s when it fits; cut to the width.
 - Bare model aliases: `ai chat ds` works when only one provider has `ds`
   (`provider/alias` still works and is required when names collide); roles in
   the config accept them too, and `ai chat` suggests them.

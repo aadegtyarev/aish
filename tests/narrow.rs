@@ -1073,6 +1073,200 @@ fn question_without_a_model() {
     }
 }
 
+// ---- the waiting indicator ----------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Slow {
+    /// Silence for `ms`, then the answer.
+    Silent,
+    /// Reasoning chunks only for `ms`, then the answer.
+    Reasoning,
+    /// Silence, and /models says the model is not loaded.
+    Unloaded,
+    /// Silence, then an HTTP error.
+    Error,
+}
+
+fn slow_mock(kind: Slow, ms: u64) -> Mock {
+    use aish_llm::mock::{sse_data, sse_head};
+    Mock::start(move |r, c| {
+        let wait = || std::thread::sleep(Duration::from_millis(ms));
+        if r.path.ends_with("/models") {
+            let st = if matches!(kind, Slow::Unloaded) {
+                r#","status":{"value":"unloaded"}"#
+            } else {
+                ""
+            };
+            mock::json(c, 200, &format!(r#"{{"data":[{{"id":"test"{st}}}]}}"#));
+            return;
+        }
+        match kind {
+            Slow::Error => {
+                wait();
+                mock::json(c, 500, r#"{"error":{"message":"сервер упал"}}"#);
+            }
+            Slow::Reasoning => {
+                sse_head(c);
+                sse_data(c, r#"{"choices":[{"delta":{"reasoning_content":"хм"}}]}"#);
+                wait();
+                answer_tail(c);
+            }
+            _ => {
+                wait();
+                sse_head(c);
+                answer_tail(c);
+            }
+        }
+    })
+}
+
+fn answer_tail(c: &mut std::net::TcpStream) {
+    use aish_llm::mock::sse_data;
+    sse_data(
+        c,
+        r#"{"choices":[{"delta":{"content":"Привет, это ответ.\n"}}]}"#,
+    );
+    sse_data(
+        c,
+        r#"{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#,
+    );
+    sse_data(c, "[DONE]");
+}
+
+/// The status row (if any): its text after the bar.
+fn status_row(t: &Term, needle: &str) -> Option<(usize, String)> {
+    let y = t.scr.find_row(needle)?;
+    Some((y, t.scr.row_text(y)))
+}
+
+fn spinner_residue(t: &Term) {
+    let all = t.scr.everything();
+    for g in [
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+        "ждёт ответ",
+        "подключение",
+        "думает",
+        "загружает",
+    ] {
+        assert!(!all.contains(g), "status residue {g:?}\n{}", t.scr.dump());
+    }
+}
+
+fn waiting_phases() {
+    let ps1 = prompt(12);
+    for (kind, phase) in [
+        (Slow::Silent, "ждёт ответ"),
+        (Slow::Reasoning, "думает"),
+        (Slow::Unloaded, "загружает модель"),
+    ] {
+        for cols in [36u16, 80] {
+            let m = slow_mock(kind, 2500);
+            let home = TempDir::new().unwrap();
+            let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+            t.type_only("? тест\r");
+            t.see(phase);
+            let (y, row) = status_row(&t, phase).unwrap();
+            // right under the question line, bar first, never wrapped, one row only
+            assert!(row.starts_with("│ "), "{row:?}\n{}", t.scr.dump());
+            assert!(t.scr.row_text(y - 1).contains("? тест"), "{}", t.scr.dump());
+            assert!(!t.scr.row_wrapped(y) && t.scr.row_text(y).chars().count() < cols as usize);
+            assert!(t.scr.is_dim(0, y));
+            assert_eq!(
+                t.scr.lines().iter().filter(|r| r.contains(phase)).count(),
+                1
+            );
+            if phase != "ждёт ответ" || cols == 36 {
+                // the elapsed time shows after a second and the row stays one row
+                t.see("1с");
+                assert_eq!(t.scr.lines().iter().filter(|r| r.contains("1с")).count(), 1);
+            }
+            t.wait_for("Привет");
+            t.pump_for(Duration::from_millis(600));
+            t.assert_clean();
+            spinner_residue(&t);
+            assert_transcript(&t, &ps1, "? тест", &|rest| {
+                rest.first().is_some_and(|r| r.starts_with("│ Привет")) && rest.len() >= 2
+            });
+        }
+    }
+}
+
+fn waiting_error_replaces_the_row() {
+    let ps1 = prompt(12);
+    let m = slow_mock(Slow::Error, 1500);
+    let home = TempDir::new().unwrap();
+    let mut t = start_llm_rows(&home, &m, &ps1, 36, 40);
+    t.type_only("? тест\r");
+    t.see("ждёт ответ");
+    t.wait_for("сервер упал");
+    t.pump_for(Duration::from_millis(600));
+    spinner_residue(&t);
+    assert_transcript(&t, &ps1, "? тест", &|rest| {
+        rest.first()
+            .is_some_and(|r| r.starts_with("│ ") && r.contains("сервер упал"))
+    });
+}
+
+fn waiting_ctrl_c_cancels_and_cleans_up() {
+    let ps1 = prompt(12);
+    let m = slow_mock(Slow::Silent, 30_000);
+    for cols in [36u16, 80] {
+        let home = TempDir::new().unwrap();
+        let mut t = start_llm_rows(&home, &m, &ps1, cols, 40);
+        t.type_only("? тест\r");
+        t.see("ждёт ответ");
+        // after 10 s the hint shows when it fits, and the row stays one row
+        t.see("10с");
+        let (_, row) = status_row(&t, "10с").unwrap();
+        assert_eq!(
+            row.contains("Ctrl-C — отмена"),
+            cols == 80,
+            "{row:?}\n{}",
+            t.scr.dump()
+        );
+        assert!(row.chars().count() < cols as usize);
+        t.type_only("\x03");
+        t.pump_for(Duration::from_millis(800));
+        spinner_residue(&t);
+        assert_transcript(&t, &ps1, "? тест", &|rest| {
+            rest.first().is_some_and(|r| r.starts_with("│ ⏹"))
+        });
+    }
+}
+
+fn waiting_in_the_overlay() {
+    let m = slow_mock(Slow::Silent, 2500);
+    let home = TempDir::new().unwrap();
+    let ps1 = prompt(12);
+    let mut t = start_llm_rows(&home, &m, &ps1, 36, 40);
+    t.send("cat\r");
+    t.send("\x11");
+    t.type_only("почему\r");
+    t.see("ждёт ответ");
+    let (y, row) = status_row(&t, "ждёт ответ").unwrap();
+    assert!(
+        row.starts_with("│ ") && !t.scr.row_wrapped(y),
+        "{}",
+        t.scr.dump()
+    );
+    t.wait_for("Привет");
+    t.pump_for(Duration::from_millis(600));
+    spinner_residue(&t);
+    let l = t.scr.lines();
+    let k = l.iter().position(|r| r.starts_with("│ Привет")).unwrap();
+    assert!(l[k - 1].starts_with("? почему"), "{}", t.scr.dump());
+    t.send("\x1b");
+}
+
 macro_rules! both {
     ($($n:ident),* $(,)?) => {
         mod utf8 {
@@ -1085,6 +1279,10 @@ macro_rules! both {
 }
 
 both!(
+    waiting_phases,
+    waiting_error_replaces_the_row,
+    waiting_ctrl_c_cancels_and_cleans_up,
+    waiting_in_the_overlay,
     question_answer,
     question_without_a_model,
     late_first_run,

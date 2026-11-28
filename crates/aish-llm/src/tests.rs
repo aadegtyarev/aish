@@ -360,6 +360,7 @@ fn responses_native_search_tool_and_status_events() {
     stream_tools(&e, &r, &AtomicBool::new(false), |ev| match ev {
         Event::Delta(d) => text.push_str(&d),
         Event::Search(q) => searches.push(q),
+        _ => {}
     })
     .unwrap();
     assert_eq!(text, "answer ");
